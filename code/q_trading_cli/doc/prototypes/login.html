@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>登录 - 量化策略交易系统</title>
+    <script src="https://modao.cc/agent-py/static/source/js/tailwindcss.js">
+    </script>
+    <script src="https://modao.cc/agent-py/static/source/js/iconify-icon.min.js">
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html,
+        body {
+            height: 100%;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f0f1a;
+            color: #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        .login-card {
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 1.25rem;
+            padding: 2.5rem 2.5rem 2rem;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+            margin: 0 auto;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            justify-content: center;
+            margin-bottom: 2rem;
+        }
+        .brand-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            background: #3b82f6;
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+        }
+        .brand-text {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #f3f4f6;
+            letter-spacing: -0.02em;
+        }
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            background-color: #111827;
+            border-radius: 0.75rem;
+            padding: 0.25rem;
+            margin-bottom: 2rem;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 0.6rem 0;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: transparent;
+            color: #9ca3af;
+        }
+        .tab-btn.active {
+            background: #1e293b;
+            color: #60a5fa;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+        .tab-btn:hover:not(.active) {
+            color: #e5e7eb;
+        }
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #d1d5db;
+            margin-bottom: 0.3rem;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 0.7rem 1rem;
+            background-color: #111827;
+            border: 1px solid #334155;
+            border-radius: 0.75rem;
+            color: #e5e7eb;
+            font-size: 0.95rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+        }
+        .form-group input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+        }
+        .form-group input::placeholder {
+            color: #6b7280;
+        }
+        .form-options {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.875rem;
+            margin-bottom: 1.5rem;
+        }
+        .form-options label {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            color: #9ca3af;
+            cursor: pointer;
+        }
+        .form-options label input[type="checkbox"] {
+            accent-color: #3b82f6;
+            width: 1rem;
+            height: 1rem;
+        }
+        .form-options a {
+            color: #60a5fa;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .form-options a:hover {
+            text-decoration: underline;
+        }
+        .btn-primary {
+            width: 100%;
+            padding: 0.75rem;
+            background: #3b82f6;
+            border: none;
+            border-radius: 0.75rem;
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+        .btn-primary:active {
+            transform: scale(0.98);
+        }
+        .switch-text {
+            text-align: center;
+            margin-top: 1.5rem;
+            font-size: 0.875rem;
+            color: #9ca3af;
+        }
+        .switch-text a {
+            color: #60a5fa;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .switch-text a:hover {
+            text-decoration: underline;
+        }
+        .form-panel {
+            display: block;
+            transition: opacity 0.25s ease;
+        }
+        .form-panel.hidden {
+            display: none;
+        }
+        .password-wrapper {
+            position: relative;
+        }
+        .password-wrapper input {
+            padding-right: 2.8rem;
+        }
+        .password-toggle {
+            position: absolute;
+            right: 0.75rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            color: #9ca3af;
+            cursor: pointer;
+            padding: 0;
+            font-size: 1.2rem;
+            line-height: 1;
+        }
+        .password-toggle:hover {
+            color: #e5e7eb;
+        }
+        .error-msg {
+            color: #f87171;
+            font-size: 0.8rem;
+            margin-top: 0.25rem;
+            display: none;
+        }
+        .error-msg.show {
+            display: block;
+        }
+        @media (max-width: 480px) {
+            .login-card {
+                padding: 1.5rem;
+            }
+            .brand-text {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <!-- Brand -->
+        <div class="brand">
+            <div class="brand-icon">
+                <iconify-icon icon="lucide:trending-up"></iconify-icon>
+            </div>
+            <span class="brand-text">QuantSys</span>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs" role="tablist">
+            <button class="tab-btn active" data-tab="login" role="tab" aria-selected="true">登录</button>
+            <button class="tab-btn" data-tab="register" role="tab" aria-selected="false">注册</button>
+        </div>
+
+        <!-- Login Panel -->
+        <div id="panel-login" class="form-panel" role="tabpanel">
+            <form id="loginForm" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="login-account">用户名 / 邮箱 / 手机号</label>
+                    <input id="login-account" type="text" placeholder="请输入用户名、邮箱或手机号" autocomplete="username" />
+                </div>
+                <div class="form-group">
+                    <label for="login-password">密码</label>
+                    <div class="password-wrapper">
+                        <input id="login-password" type="password" placeholder="请输入密码" autocomplete="current-password" />
+                        <button type="button" class="password-toggle" aria-label="显示密码" onclick="togglePassword('login-password', this)">
+                            <iconify-icon icon="lucide:eye"></iconify-icon>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-options">
+                    <label>
+                        <input type="checkbox" checked /> 记住我
+                    </label>
+                    <a href="#">忘记密码？</a>
+                </div>
+                <button type="submit" class="btn-primary">登 录</button>
+            </form>
+            <div class="switch-text">
+                还没有账号？ <a id="switchToRegister">立即注册</a>
+            </div>
+        </div>
+
+        <!-- Register Panel -->
+        <div id="panel-register" class="form-panel hidden" role="tabpanel">
+            <form id="registerForm" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="reg-username">用户名</label>
+                    <input id="reg-username" type="text" placeholder="请设置用户名（4-16位字母或数字）" autocomplete="username" />
+                </div>
+                <div class="form-group">
+                    <label for="reg-email">邮箱</label>
+                    <input id="reg-email" type="email" placeholder="请输入邮箱" autocomplete="email" />
+                </div>
+                <div class="form-group">
+                    <label for="reg-phone">手机号</label>
+                    <input id="reg-phone" type="tel" placeholder="请输入手机号" autocomplete="tel" />
+                </div>
+                <div class="form-group">
+                    <label for="reg-password">密码</label>
+                    <div class="password-wrapper">
+                        <input id="reg-password" type="password" placeholder="至少8位，含字母和数字" autocomplete="new-password" />
+                        <button type="button" class="password-toggle" aria-label="显示密码" onclick="togglePassword('reg-password', this)">
+                            <iconify-icon icon="lucide:eye"></iconify-icon>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="reg-confirm">确认密码</label>
+                    <div class="password-wrapper">
+                        <input id="reg-confirm" type="password" placeholder="再次输入密码" autocomplete="new-password" />
+                        <button type="button" class="password-toggle" aria-label="显示密码" onclick="togglePassword('reg-confirm', this)">
+                            <iconify-icon icon="lucide:eye"></iconify-icon>
+                        </button>
+                    </div>
+                </div>
+                <button type="submit" class="btn-primary">注 册</button>
+            </form>
+            <div class="switch-text">
+                已有账号？ <a id="switchToLogin">去登录</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ---------- Tab 切换 ----------
+        const tabs = document.querySelectorAll('.tab-btn');
+        const panels = {
+            login: document.getElementById('panel-login'),
+            register: document.getElementById('panel-register')
+        };
+
+        function activateTab(tabId) {
+            tabs.forEach(btn => {
+                const id = btn.dataset.tab;
+                if (id === tabId) {
+                    btn.classList.add('active');
+                    btn.setAttribute('aria-selected', 'true');
+                } else {
+                    btn.classList.remove('active');
+                    btn.setAttribute('aria-selected', 'false');
+                }
+            });
+            Object.keys(panels).forEach(key => {
+                if (key === tabId) {
+                    panels[key].classList.remove('hidden');
+                } else {
+                    panels[key].classList.add('hidden');
+                }
+            });
+        }
+
+        tabs.forEach(btn => {
+            btn.addEventListener('click', function() {
+                const tabId = this.dataset.tab;
+                activateTab(tabId);
+            });
+        });
+
+        // ---------- 切换链接 ----------
+        document.getElementById('switchToRegister').addEventListener('click', function(e) {
+            e.preventDefault();
+            activateTab('register');
+        });
+        document.getElementById('switchToLogin').addEventListener('click', function(e) {
+            e.preventDefault();
+            activateTab('login');
+        });
+
+        // ---------- 密码显示切换 ----------
+        function togglePassword(inputId, btn) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            const isPassword = input.getAttribute('type') === 'password';
+            input.setAttribute('type', isPassword ? 'text' : 'password');
+            const icon = btn.querySelector('iconify-icon');
+            if (icon) {
+                icon.setAttribute('icon', isPassword ? 'lucide:eye-off' : 'lucide:eye');
+            }
+        }
+        window.togglePassword = togglePassword;
+
+        // ---------- 简单表单提交（演示） ----------
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            alert('登录功能演示，实际将提交登录请求。');
+        });
+        document.getElementById('registerForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            alert('注册功能演示，实际将提交注册请求。');
+        });
+
+        // 默认激活登录
+        activateTab('login');
+    </script>
+</body>
+
+</html>

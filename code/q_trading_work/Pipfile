@@ -1,0 +1,25 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+akshare = ">=1.9.58"
+apscheduler = ">=3.10.1"
+pymongo = ">=3.12.0"
+mysql = ">=0.0.3"
+dbutils = ">=3.0.2"
+redis = ">=4.5.4"
+exchange-calendars = ">=4.2.5"
+pyyaml = ">=6.0"
+pathlib2 = ">=2.3.7.post1"
+paho-mqtt = ">=2.1.0"
+pyinstaller = "*"
+pytz = "*"
+tzdata = "*"
+python-dateutil = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"

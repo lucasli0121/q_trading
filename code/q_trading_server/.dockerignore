@@ -1,0 +1,36 @@
+**/.classpath
+**/.dockerignore
+**/.env
+**/.git
+**/.gitignore
+**/.project
+**/.settings
+**/.toolstarget
+**/.vs
+**/.vscode
+**/*.*proj.user
+**/*.dbmdl
+**/*.jfm
+**/bin
+**/charts
+**/docker-compose*
+**/compose*
+**/Dockerfile*
+**/node_modules
+**/npm-debug.log
+**/obj
+**/secrets.dev.yaml
+**/values.dev.yaml
+LICENSE
+README.md
+# Large files
+*.mp4
+*.pdf
+# Build artifacts (PyInstaller output — not needed in image, breaks Docker build)
+dist
+build
+*.spec
+# Runtime logs & caches
+log
+**/__pycache__
+.venv

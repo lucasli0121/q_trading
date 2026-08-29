@@ -1,0 +1,571 @@
+definitions:
+  mongo.IndexHq:
+    properties:
+      adjust:
+        type: string
+      amount:
+        type: number
+      chgamount:
+        type: number
+      close:
+        type: number
+      code:
+        type: string
+      date:
+        type: string
+      high:
+        type: number
+      id:
+        type: string
+      low:
+        type: number
+      name:
+        type: string
+      open:
+        type: number
+      perchg:
+        type: number
+      volume:
+        type: number
+    required:
+    - amount
+    - chgamount
+    - close
+    - code
+    - high
+    - low
+    - name
+    - open
+    - perchg
+    - volume
+    type: object
+  mysql.IndexInfo:
+    properties:
+      code:
+        description: 代码
+        type: string
+      id:
+        type: integer
+      name:
+        description: 名称
+        type: string
+      publish_date:
+        type: string
+      update_date:
+        type: string
+    required:
+    - code
+    - name
+    type: object
+  mysql.IndexStock:
+    properties:
+      code:
+        description: 代码
+        type: string
+      id:
+        type: integer
+      in_date:
+        type: string
+      index_code:
+        description: 代码
+        type: string
+      name:
+        description: 名称
+        type: string
+      update_date:
+        type: string
+    required:
+    - code
+    - index_code
+    - name
+    type: object
+  mysql.StockHisHq:
+    properties:
+      adjust:
+        type: string
+      amount:
+        type: number
+      chgamount:
+        type: number
+      close:
+        type: number
+      code:
+        type: string
+      date:
+        type: string
+      high:
+        type: number
+      id:
+        type: integer
+      low:
+        type: number
+      name:
+        type: string
+      open:
+        type: number
+      pchg:
+        type: number
+      period:
+        type: string
+      turnover:
+        type: number
+      volume:
+        type: number
+    required:
+    - code
+    - name
+    type: object
+  mysql.StockInfo:
+    properties:
+      circul_cap:
+        type: number
+      circul_shares:
+        type: number
+      code:
+        type: string
+      his_update_date:
+        type: string
+      id:
+        type: integer
+      industry:
+        type: string
+      market_date:
+        type: string
+      name:
+        type: string
+      total_cap:
+        type: number
+      total_shares:
+        type: number
+    required:
+    - code
+    - name
+    type: object
+  mysql.StockRealTimeData:
+    properties:
+      amount:
+        type: number
+      cap:
+        type: number
+      chgamount:
+        type: number
+      chginyear:
+        type: number
+      code:
+        type: string
+      createtime:
+        type: string
+      fcap:
+        type: number
+      high:
+        type: number
+      id:
+        type: integer
+      low:
+        type: number
+      name:
+        type: string
+      open:
+        type: number
+      pchg:
+        type: number
+      pe:
+        type: number
+      preclose:
+        type: number
+      price:
+        type: number
+      turnover:
+        type: number
+      volume:
+        type: number
+    required:
+    - code
+    - name
+    type: object
+info:
+  contact: {}
+paths:
+  /v1/index/insertIndex:
+    post:
+      description: insert stock index information
+      parameters:
+      - description: index information
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.IndexInfo'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.IndexInfo'
+      summary: insertIndex
+      tags:
+      - stock index
+  /v1/index/insertIndexHq:
+    post:
+      description: insert stock index hq data
+      parameters:
+      - description: index information
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mongo.IndexHq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mongo.IndexHq'
+      summary: insertIndexHq
+      tags:
+      - stock index
+  /v1/index/queryAllIndexCoStock:
+    get:
+      description: 查询指数成分股
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.IndexStock'
+      summary: queryAllIndexCoStock
+      tags:
+      - stock index
+  /v1/index/queryAllIndexInfo:
+    get:
+      description: 查询所有指数基本信息，行情有哪些指数，指数的代码，名称，更新时间等
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.IndexInfo'
+      summary: queryAllIndexInfo
+      tags:
+      - stock index
+  /v1/index/queryIndexCoStockByCond:
+    get:
+      description: 查询指数成分股
+      parameters:
+      - description: index code
+        in: query
+        name: index_code
+        required: true
+        type: string
+      - description: publish date
+        in: query
+        name: public_date
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.IndexStock'
+      summary: queryIndexCoStockByCond
+      tags:
+      - stock index
+  /v1/index/queryIndexHqByCode:
+    get:
+      description: 查询指数行情数据
+      parameters:
+      - description: index code
+        in: query
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mongo.IndexHq'
+      summary: queryIndexHqByCode
+      tags:
+      - stock index
+  /v1/index/queryIndexInfoByCode:
+    get:
+      description: 查询股票指数基本信息，行情有哪些指数，指数的代码，名称，更新时间等
+      parameters:
+      - description: index code
+        in: query
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.IndexInfo'
+      summary: queryIndexInfoByCode
+      tags:
+      - stock index
+  /v1/index/updateIndex:
+    post:
+      description: update stock index information
+      parameters:
+      - description: index information
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.IndexInfo'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.IndexInfo'
+      summary: updateIndex
+      tags:
+      - stock index
+  /v1/index/updateIndexHq:
+    post:
+      description: update stock index hq data
+      parameters:
+      - description: index hq
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mongo.IndexHq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mongo.IndexHq'
+      summary: updateIndexHq
+      tags:
+      - stock index
+  /v1/stock/insertRealTimeHq:
+    post:
+      description: insert stock real-time data
+      parameters:
+      - description: stock real-time data
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.StockRealTimeData'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockRealTimeData'
+      summary: insertRealTimeHq
+      tags:
+      - stock
+  /v1/stock/insertStockHisHq:
+    post:
+      description: insert stock history data
+      parameters:
+      - description: stock history data
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.StockHisHq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockHisHq'
+      summary: insertStockHisHq
+      tags:
+      - stock
+  /v1/stock/insertStockInfo:
+    post:
+      description: insert stock information
+      parameters:
+      - description: stock information
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.StockInfo'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockInfo'
+      summary: insertStockInfo
+      tags:
+      - stock
+  /v1/stock/queryAllLatestRealTimeHq:
+    get:
+      description: 查询股票实时行情数据
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockRealTimeData'
+      summary: queryAllLatestRealTimeHq
+      tags:
+      - stock
+  /v1/stock/queryRealTimeHqByCode:
+    get:
+      description: 查询股票实时行情数据
+      parameters:
+      - description: stock code
+        in: query
+        name: code
+        type: string
+      - description: query start time
+        in: query
+        name: start_time
+        type: string
+      - description: query end time
+        in: query
+        name: end_time
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockRealTimeData'
+      summary: queryRealTimeHqByCode
+      tags:
+      - stock
+  /v1/stock/queryStockHisHq:
+    get:
+      description: 查询股票实时行情数据
+      parameters:
+      - description: stock code
+        in: query
+        name: code
+        type: string
+      - description: query start date
+        in: query
+        name: start_date
+        type: string
+      - description: query end date
+        in: query
+        name: end_date
+        type: string
+      - description: query period, day, week, month
+        in: query
+        name: period
+        type: string
+      - description: query adjust, qfq, hfq, empty for no adjust
+        in: query
+        name: adjust
+        type: string
+      - description: query order, order by createdate, 1 for asc, 0 for desc
+        in: query
+        name: order
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockHisHq'
+      summary: queryStockHisHq
+      tags:
+      - stock
+  /v1/stock/queryStockInfoByCode:
+    get:
+      description: 根据code查询股票基本信息，股票基本信息包含股票代码，名称，市值，流通，所属行业等
+      parameters:
+      - description: stock code
+        in: query
+        name: code
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockInfo'
+      summary: queryStockInfoByCode
+      tags:
+      - stock
+  /v1/stock/updateRealTimeHq:
+    post:
+      description: update stock real-time data
+      parameters:
+      - description: stock real-time data
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.StockRealTimeData'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockRealTimeData'
+      summary: updateRealTimeHq
+      tags:
+      - stock
+  /v1/stock/updateStockHisHq:
+    post:
+      description: update stock history data
+      parameters:
+      - description: stock history data
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.StockHisHq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockHisHq'
+      summary: updateStockHisHq
+      tags:
+      - stock
+  /v1/stock/updateStockInfo:
+    post:
+      description: update stock information
+      parameters:
+      - description: stock information
+        in: body
+        name: in
+        required: true
+        schema:
+          $ref: '#/definitions/mysql.StockInfo'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mysql.StockInfo'
+      summary: updateStockInfo
+      tags:
+      - stock
+swagger: "2.0"

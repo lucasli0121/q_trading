@@ -1,0 +1,16 @@
+version: '3.4'
+
+services:
+  q_trading_server:
+    image: q_trading_server:latest
+    container_name: q_trading_server
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+
+    volumes:
+      - ../q_trading_server:/q_trading_server

@@ -1,0 +1,46 @@
+**/.classpath
+**/.dockerignore
+**/.env
+**/.git
+**/.gitignore
+**/.project
+**/.settings
+**/.toolstarget
+**/.vs
+**/.vscode
+**/*.*proj.user
+**/*.dbmdl
+**/*.jfm
+**/bin
+**/charts
+**/docker-compose*
+**/compose*
+**/Dockerfile*
+**/node_modules
+**/npm-debug.log
+**/obj
+**/secrets.dev.yaml
+**/values.dev.yaml
+LICENSE
+README.md
+# Large files
+*.mp4
+*.pdf
+# Python & PyInstaller build artifacts
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+# Virtual environment
+venv/
+.venv/
+# Logs
+log/
+*.log
+# IDE
+.idea/
+# OS
+.DS_Store
+Thumbs.db

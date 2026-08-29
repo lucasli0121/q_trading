@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>仪表盘 - 量化策略交易系统</title>
+    <script src="https://modao.cc/agent-py/static/source/js/tailwindcss.js">
+    </script>
+    <script src="https://modao.cc/agent-py/static/source/js/iconify-icon.min.js">
+    </script>
+    <script src="https://modao.cc/agent-py/static/source/js/echarts.min.js">
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f0f1a;
+            color: #e5e7eb;
+        }
+        .sidebar-active {
+            background-color: #1e293b !important;
+            color: #60a5fa !important;
+            border-right: 3px solid #3b82f6;
+        }
+        .sidebar-active iconify-icon {
+            color: #60a5fa !important;
+        }
+        /* 覆盖卡片和边框 */
+        .card-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .border-dark {
+            border-color: #334155;
+        }
+        .bg-dark-50 {
+            background-color: #1e293b;
+        }
+        .bg-dark-100 {
+            background-color: #111827;
+        }
+        .text-dark {
+            color: #e5e7eb;
+        }
+        .text-dark-muted {
+            color: #9ca3af;
+        }
+        /* 侧边栏 */
+        .sidebar-dark {
+            background-color: #111827;
+            border-color: #1f2937;
+        }
+        .sidebar-dark .nav-link {
+            color: #9ca3af;
+        }
+        .sidebar-dark .nav-link:hover {
+            background-color: #1e293b;
+            color: #e5e7eb;
+        }
+        /* 顶部栏 */
+        .topbar-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        /* 表格 */
+        .table-dark thead {
+            background-color: #1e293b;
+        }
+        .table-dark tbody tr {
+            border-color: #2d3748;
+        }
+        .table-dark tbody tr:hover {
+            background-color: #2d3748;
+        }
+        /* 按钮和标签 */
+        .badge-dark {
+            background-color: #2d3748;
+            color: #e5e7eb;
+        }
+        .badge-green-dark {
+            background-color: #064e3b;
+            color: #34d399;
+        }
+        .badge-red-dark {
+            background-color: #7f1d1d;
+            color: #f87171;
+        }
+        .badge-gray-dark {
+            background-color: #374151;
+            color: #d1d5db;
+        }
+        /* 输入框和选择器 */
+        .input-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        .input-dark:focus {
+            border-color: #3b82f6;
+            ring-color: #3b82f6;
+        }
+        .select-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        /* 统计卡片中的小标签 */
+        .stat-label {
+            color: #9ca3af;
+        }
+        .stat-value {
+            color: #f3f4f6;
+        }
+        /* 图表容器自动适应 */
+        #revenueChart {
+            background-color: transparent;
+        }
+        /* 滚动条 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+    </style>
+</head>
+
+<body class="bg-[#0f0f1a] text-gray-200 flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-[#111827] border-r border-[#1f2937] flex flex-col fixed h-full transition-all duration-300">
+        <div class="p-6 flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
+                <iconify-icon icon="lucide:trending-up"></iconify-icon>
+            </div>
+            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+        </div>
+        <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
+            <a class="flex items-center px-4 py-3 text-sm font-medium rounded-lg sidebar-active" href="home.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layout-dashboard"></iconify-icon> 仪表盘
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">策略管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategies.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:list"></iconify-icon> 策略列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategy-monitor.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:activity"></iconify-icon> 策略监控
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">股票池管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-pools.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layers"></iconify-icon> 股票池列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-quotes.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:candlestick-chart"></iconify-icon> 股票行情
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">系统设置</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-preferences.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:settings"></iconify-icon> 个人喜好
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-blacklist.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:shield-ban"></iconify-icon> 黑名单
+            </a>
+        </nav>
+        <div class="p-4 border-t border-[#1f2937] mt-auto">
+            <div class="flex items-center gap-3 px-2">
+                <div class="w-8 h-8 rounded-full bg-blue-900 flex items-center justify-center text-blue-300">
+                    <iconify-icon icon="lucide:user"></iconify-icon>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-sm font-medium text-gray-200 truncate">管理员</p>
+                    <p class="text-xs text-gray-500 truncate">admin@quant.com</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+    <!-- Main Content -->
+    <main class="ml-64 flex-1 flex flex-col min-w-0">
+        <!-- Topbar -->
+        <header class="h-16 bg-[#1e293b] border-b border-[#334155] flex items-center justify-between px-8 sticky top-0 z-10">
+            <h1 class="text-xl font-bold text-gray-100">仪表盘</h1>
+            <div class="flex items-center gap-4">
+                <div class="text-sm text-gray-400">
+                    <span class="inline-block w-2 h-2 bg-green-500 rounded-full mr-1"></span>
+                    交易系统运行中
+                </div>
+                <button class="p-2 text-gray-400 hover:text-gray-200">
+                    <iconify-icon class="text-xl" icon="lucide:bell"></iconify-icon>
+                </button>
+            </div>
+        </header>
+        <!-- Page Body -->
+        <div class="p-8 space-y-8">
+            <!-- Stats Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div class="bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-blue-900/40 text-blue-400 rounded-lg">
+                            <iconify-icon class="text-2xl" icon="lucide:file-text"></iconify-icon>
+                        </div>
+                        <span class="text-xs font-medium text-green-400 bg-green-900/30 px-2 py-1 rounded">+2 本月</span>
+                    </div>
+                    <p class="text-sm text-gray-400">策略总数</p>
+                    <p class="text-2xl font-bold text-gray-100 mt-1">12</p>
+                </div>
+                <div class="bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-green-900/40 text-green-400 rounded-lg">
+                            <iconify-icon class="text-2xl" icon="lucide:play-circle"></iconify-icon>
+                        </div>
+                        <span class="text-xs font-medium text-gray-400">运行平稳</span>
+                    </div>
+                    <p class="text-sm text-gray-400">运行中策略</p>
+                    <p class="text-2xl font-bold text-gray-100 mt-1">5</p>
+                </div>
+                <div class="bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-purple-900/40 text-purple-400 rounded-lg">
+                            <iconify-icon class="text-2xl" icon="lucide:database"></iconify-icon>
+                        </div>
+                    </div>
+                    <p class="text-sm text-gray-400">股票池数量</p>
+                    <p class="text-2xl font-bold text-gray-100 mt-1">8</p>
+                </div>
+                <div class="bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-orange-900/40 text-orange-400 rounded-lg">
+                            <iconify-icon class="text-2xl" icon="lucide:zap"></iconify-icon>
+                        </div>
+                        <span class="text-xs font-medium text-red-400 bg-red-900/30 px-2 py-1 rounded">今日活跃</span>
+                    </div>
+                    <p class="text-sm text-gray-400">今日信号数</p>
+                    <p class="text-2xl font-bold text-gray-100 mt-1">24</p>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!--收益图表-->
+                <div class="lg:col-span-2 bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
+                    <div class="flex items-center justify-between mb-6">
+                        <h3 class="text-lg font-bold text-gray-100">系统累计收益概览</h3>
+                        <div class="flex gap-2">
+                            <button class="px-3 py-1 text-xs font-medium rounded border border-[#334155] text-gray-400 hover:bg-[#2d3748]">7天</button>
+                            <button class="px-3 py-1 text-xs font-medium rounded border border-blue-600 bg-blue-900/30 text-blue-400">30天</button>
+                            <button class="px-3 py-1 text-xs font-medium rounded border border-[#334155] text-gray-400 hover:bg-[#2d3748]">1年</button>
+                        </div>
+                    </div>
+                    <div class="h-80 w-full" id="revenueChart"></div>
+                </div>
+                <!--近期活动-->
+                <div class="bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
+                    <h3 class="text-lg font-bold text-gray-100 mb-6">近期运行状态</h3>
+                    <div class="space-y-6">
+                        <div class="flex items-start gap-4">
+                            <div class="w-2 h-2 mt-2 bg-green-500 rounded-full"></div>
+                            <div>
+                                <p class="text-sm font-semibold text-gray-200">均线金叉策略 A</p>
+                                <p class="text-xs text-gray-400 mt-1">触发买入信号: 600519 (茅台)</p>
+                                <p class="text-xs text-gray-500 mt-0.5">10分钟前</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-4">
+                            <div class="w-2 h-2 mt-2 bg-blue-500 rounded-full"></div>
+                            <div>
+                                <p class="text-sm font-semibold text-gray-200">RSI超卖反弹策略</p>
+                                <p class="text-xs text-gray-400 mt-1">系统自检完成，状态正常</p>
+                                <p class="text-xs text-gray-500 mt-0.5">1小时前</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-4">
+                            <div class="w-2 h-2 mt-2 bg-red-500 rounded-full"></div>
+                            <div>
+                                <p class="text-sm font-semibold text-gray-200">小盘绩优成长股</p>
+                                <p class="text-xs text-gray-400 mt-1">选股池更新异常: 数据源超时</p>
+                                <p class="text-xs text-gray-500 mt-0.5">3小时前</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-4">
+                            <div class="w-2 h-2 mt-2 bg-green-500 rounded-full"></div>
+                            <div>
+                                <p class="text-sm font-semibold text-gray-200">MACD波段追踪</p>
+                                <p class="text-xs text-gray-400 mt-1">获利止盈卖出: 000001 (平安银行)</p>
+                                <p class="text-xs text-gray-500 mt-0.5">昨天 14:50</p>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="w-full mt-8 py-2 text-sm text-blue-400 font-medium hover:bg-blue-900/20 rounded-lg transition-colors">查看全部活动</button>
+                </div>
+            </div>
+            <!--近期策略表格-->
+            <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm overflow-hidden">
+                <div class="px-6 py-4 border-b border-[#334155] flex items-center justify-between">
+                    <h3 class="text-lg font-bold text-gray-100">近期更新策略</h3>
+                    <a class="text-sm text-blue-400 hover:underline" href="strategies.html">管理所有策略</a>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left">
+                        <thead class="bg-[#111827] border-b border-[#334155]">
+                            <tr>
+                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">策略名称</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">类型</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">创建日期</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">状态</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">收益率 (30d)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[#2d3748]">
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer">
+                                <td class="px-6 py-4 font-medium text-gray-200">均线金叉策略 A</td>
+                                <td class="px-6 py-4 text-sm text-gray-400">趋势追踪</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-06-15</td>
+                                <td class="px-6 py-4">
+                                    <span class="px-2.5 py-0.5 text-xs font-medium bg-green-900/50 text-green-400 rounded-full">运行中</span>
+                                </td>
+                                <td class="px-6 py-4 text-sm font-semibold text-green-400">+12.4%</td>
+                            </tr>
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer">
+                                <td class="px-6 py-4 font-medium text-gray-200">RSI超卖反弹策略</td>
+                                <td class="px-6 py-4 text-sm text-gray-400">反转策略</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-06-20</td>
+                                <td class="px-6 py-4">
+                                    <span class="px-2.5 py-0.5 text-xs font-medium bg-gray-700 text-gray-300 rounded-full">已停止</span>
+                                </td>
+                                <td class="px-6 py-4 text-sm font-semibold text-red-400">-2.1%</td>
+                            </tr>
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer">
+                                <td class="px-6 py-4 font-medium text-gray-200">小盘绩优成长股</td>
+                                <td class="px-6 py-4 text-sm text-gray-400">多因子选股</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-06-28</td>
+                                <td class="px-6 py-4">
+                                    <span class="px-2.5 py-0.5 text-xs font-medium bg-green-900/50 text-green-400 rounded-full">运行中</span>
+                                </td>
+                                <td class="px-6 py-4 text-sm font-semibold text-green-400">+5.8%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+    <script>
+        // 初始化收益图表（深色配置）
+        const chartDom = document.getElementById('revenueChart');
+        const myChart = echarts.init(chartDom, 'dark');
+        const option = {
+            grid: { top: 20, right: 20, bottom: 40, left: 40 },
+            tooltip: { trigger: 'axis' },
+            xAxis: {
+                type: 'category',
+                data: ['06-10', '06-15', '06-20', '06-25', '06-30', '07-05', '07-10'],
+                axisLine: { lineStyle: { color: '#334155' } },
+                axisLabel: { color: '#9ca3af' }
+            },
+            yAxis: {
+                type: 'value',
+                axisLine: { show: false },
+                splitLine: { lineStyle: { color: '#2d3748', type: 'dashed' } },
+                axisLabel: { color: '#9ca3af', formatter: '{value}%' }
+            },
+            series: [{
+                data: [0.5, 2.4, 1.8, 3.5, 6.2, 5.8, 8.4],
+                type: 'line',
+                smooth: true,
+                symbol: 'none',
+                lineStyle: { color: '#3b82f6', width: 3 },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(59, 130, 246, 0.3)' },
+                        { offset: 1, color: 'rgba(59, 130, 246, 0)' }
+                    ])
+                }
+            }]
+        };
+        myChart.setOption(option);
+        window.addEventListener('resize', () => myChart.resize());
+    </script>
+</body>
+
+</html>

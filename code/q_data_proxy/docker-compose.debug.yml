@@ -1,0 +1,17 @@
+version: '3.4'
+
+services:
+  q_data_proxy:
+    image: q_data_proxy:latest
+    container_name: q_data_proxy
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    environment:
+      - TZ=Asia/Shanghai
+    # 调试时覆盖入口命令，让容器保持运行
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      # ---- Claude Code 配置 ----
+      - c:/users/lucasli/.claude:/home/appuser/.claude
+      - ../q_data_proxy:/q_data_proxy

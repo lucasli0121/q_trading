@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>股票池管理 - 量化策略交易系统</title>
+    <script src="https://modao.cc/agent-py/static/source/js/tailwindcss.js">
+    </script>
+    <script src="https://modao.cc/agent-py/static/source/js/iconify-icon.min.js">
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f0f1a;
+            color: #e5e7eb;
+        }
+        .sidebar-active {
+            background-color: #1e293b !important;
+            color: #60a5fa !important;
+            border-right: 3px solid #3b82f6;
+        }
+        .sidebar-active iconify-icon {
+            color: #60a5fa !important;
+        }
+        .card-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .border-dark {
+            border-color: #334155;
+        }
+        .bg-dark-50 {
+            background-color: #1e293b;
+        }
+        .bg-dark-100 {
+            background-color: #111827;
+        }
+        .text-dark {
+            color: #e5e7eb;
+        }
+        .text-dark-muted {
+            color: #9ca3af;
+        }
+        .sidebar-dark {
+            background-color: #111827;
+            border-color: #1f2937;
+        }
+        .topbar-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .input-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        .input-dark:focus {
+            border-color: #3b82f6;
+        }
+        .select-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+        .pool-card:hover {
+            border-color: #3b82f6;
+        }
+        /* 模态框样式 */
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+        }
+        .modal-content {
+            background-color: #1e293b;
+            border-color: #334155;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        .modal-content::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        .modal-content::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+
+<body class="bg-[#0f0f1a] text-gray-200 flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-[#111827] border-r border-[#1f2937] flex flex-col fixed h-full transition-all duration-300">
+        <div class="p-6 flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
+                <iconify-icon icon="lucide:trending-up"></iconify-icon>
+            </div>
+            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+        </div>
+        <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="home.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layout-dashboard"></iconify-icon> 仪表盘
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">策略管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategies.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:list"></iconify-icon> 策略列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategy-monitor.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:activity"></iconify-icon> 策略监控
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">股票池管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium rounded-lg sidebar-active" href="stock-pools.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layers"></iconify-icon> 股票池列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-quotes.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:candlestick-chart"></iconify-icon> 股票行情
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">系统设置</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-preferences.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:settings"></iconify-icon> 个人喜好
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-blacklist.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:shield-ban"></iconify-icon> 黑名单
+            </a>
+        </nav>
+        <div class="p-4 border-t border-[#1f2937] mt-auto">
+            <div class="flex items-center gap-3 px-2">
+                <div class="w-8 h-8 rounded-full bg-blue-900 flex items-center justify-center text-blue-300">
+                    <iconify-icon icon="lucide:user"></iconify-icon>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-sm font-medium text-gray-200 truncate">管理员</p>
+                    <p class="text-xs text-gray-500 truncate">admin@quant.com</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+    <!-- Main Content -->
+    <main class="ml-64 flex-1 flex flex-col min-w-0">
+        <!-- Topbar -->
+        <header class="h-16 bg-[#1e293b] border-b border-[#334155] flex items-center justify-between px-8 sticky top-0 z-10">
+            <h1 class="text-xl font-bold text-gray-100">股票池列表</h1>
+            <div class="flex items-center gap-4">
+                <button id="openCreatePoolModal" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium hover:bg-blue-700 transition-colors">
+                    <iconify-icon icon="lucide:plus"></iconify-icon>
+                    创建股票池
+                </button>
+            </div>
+        </header>
+        <!-- Page Body -->
+        <div class="p-8 space-y-6">
+            <div class="bg-[#1e293b] p-4 rounded-xl border border-[#334155] shadow-sm flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <div class="px-4 py-2 bg-blue-900/30 text-blue-400 rounded-lg text-sm font-bold">总数: 8</div>
+                    <div class="px-4 py-2 bg-green-900/30 text-green-400 rounded-lg text-sm font-bold">自动更新: 6</div>
+                    <div class="px-4 py-2 bg-[#2d3748] text-gray-400 rounded-lg text-sm font-bold">静态池: 2</div>
+                </div>
+                <div class="relative w-64">
+                    <iconify-icon class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" icon="lucide:search"></iconify-icon>
+                    <input class="w-full pl-10 pr-4 py-2 border border-[#334155] rounded-lg text-sm focus:outline-none bg-[#111827] text-gray-200" placeholder="搜索股票池..." type="text" />
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                <!-- Pool Card 1 -->
+                <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm hover:border-blue-600 transition-all group p-6">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-3 bg-blue-900/40 text-blue-400 rounded-xl">
+                            <iconify-icon class="text-2xl" icon="lucide:layers"></iconify-icon>
+                        </div>
+                        <span class="px-2 py-1 bg-green-900/40 text-green-400 text-[10px] font-bold rounded uppercase">自动同步</span>
+                    </div>
+                    <h3 class="text-lg font-bold text-gray-100 mb-1">沪深300指数成分</h3>
+                    <p class="text-sm text-gray-400 mb-6 line-clamp-2">包含沪深市场规模大、流动性好的300只核心蓝筹股。</p>
+                    <div class="flex items-center justify-between text-xs text-gray-500 mb-6 border-t border-[#334155] pt-4">
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:list"></iconify-icon> 300 只股票</span>
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:calendar"></iconify-icon> 每日更新</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="flex-1 py-2 text-sm font-medium bg-[#111827] text-gray-300 rounded-lg hover:bg-[#2d3748] transition-colors">查看股票</button>
+                        <button class="px-3 py-2 border border-[#334155] text-gray-500 rounded-lg hover:text-blue-400 hover:border-blue-600 transition-colors"><iconify-icon icon="lucide:edit-3"></iconify-icon></button>
+                    </div>
+                </div>
+                <!-- Pool Card 2 -->
+                <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm hover:border-blue-600 transition-all group p-6">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-3 bg-purple-900/40 text-purple-400 rounded-xl">
+                            <iconify-icon class="text-2xl" icon="lucide:zap"></iconify-icon>
+                        </div>
+                        <span class="px-2 py-1 bg-green-900/40 text-green-400 text-[10px] font-bold rounded uppercase">条件筛选</span>
+                    </div>
+                    <h3 class="text-lg font-bold text-gray-100 mb-1">绩优成长股-选拔池</h3>
+                    <p class="text-sm text-gray-400 mb-6 line-clamp-2">筛选条件: PE &lt; 30, ROE &gt; 15%, 营收增长率 &gt; 20%。</p>
+                    <div class="flex items-center justify-between text-xs text-gray-500 mb-6 border-t border-[#334155] pt-4">
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:list"></iconify-icon> 42 只股票</span>
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:calendar"></iconify-icon> 盘后更新</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="flex-1 py-2 text-sm font-medium bg-[#111827] text-gray-300 rounded-lg hover:bg-[#2d3748] transition-colors">查看股票</button>
+                        <button class="px-3 py-2 border border-[#334155] text-gray-500 rounded-lg hover:text-blue-400 hover:border-blue-600 transition-colors"><iconify-icon icon="lucide:edit-3"></iconify-icon></button>
+                    </div>
+                </div>
+                <!-- Pool Card 3 -->
+                <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm hover:border-blue-600 transition-all group p-6">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-3 bg-orange-900/40 text-orange-400 rounded-xl">
+                            <iconify-icon class="text-2xl" icon="lucide:user"></iconify-icon>
+                        </div>
+                        <span class="px-2 py-1 bg-[#2d3748] text-gray-400 text-[10px] font-bold rounded uppercase">手动维护</span>
+                    </div>
+                    <h3 class="text-lg font-bold text-gray-100 mb-1">个人核心观察池</h3>
+                    <p class="text-sm text-gray-400 mb-6 line-clamp-2">长期跟踪的白马股及行业龙头，手动增删。</p>
+                    <div class="flex items-center justify-between text-xs text-gray-500 mb-6 border-t border-[#334155] pt-4">
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:list"></iconify-icon> 15 只股票</span>
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:calendar"></iconify-icon> 2026-07-01 更新</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="flex-1 py-2 text-sm font-medium bg-[#111827] text-gray-300 rounded-lg hover:bg-[#2d3748] transition-colors">查看股票</button>
+                        <button class="px-3 py-2 border border-[#334155] text-gray-500 rounded-lg hover:text-blue-400 hover:border-blue-600 transition-colors"><iconify-icon icon="lucide:edit-3"></iconify-icon></button>
+                    </div>
+                </div>
+                <!-- Pool Card 4 -->
+                <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm hover:border-blue-600 transition-all group p-6">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-3 bg-red-900/40 text-red-400 rounded-xl">
+                            <iconify-icon class="text-2xl" icon="lucide:alert-triangle"></iconify-icon>
+                        </div>
+                        <span class="px-2 py-1 bg-green-900/40 text-green-400 text-[10px] font-bold rounded uppercase">系统自动</span>
+                    </div>
+                    <h3 class="text-lg font-bold text-gray-100 mb-1">ST及风险警示池</h3>
+                    <p class="text-sm text-gray-400 mb-6 line-clamp-2">系统自动汇总的ST股票及有退市风险标的，用于策略排除。</p>
+                    <div class="flex items-center justify-between text-xs text-gray-500 mb-6 border-t border-[#334155] pt-4">
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:list"></iconify-icon> 124 只股票</span>
+                        <span class="flex items-center gap-1"><iconify-icon icon="lucide:calendar"></iconify-icon> 实时同步</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="flex-1 py-2 text-sm font-medium bg-[#111827] text-gray-300 rounded-lg hover:bg-[#2d3748] transition-colors">查看股票</button>
+                        <button class="px-3 py-2 border border-[#334155] text-gray-500 rounded-lg hover:text-blue-400 hover:border-blue-600 transition-colors"><iconify-icon icon="lucide:edit-3"></iconify-icon></button>
+                    </div>
+                </div>
+                <!-- New Pool Placeholder (点击触发展开模态框) -->
+                <button id="openCreatePoolModal2" class="border-2 border-dashed border-[#334155] rounded-xl hover:border-blue-500 hover:bg-blue-900/20 transition-all flex flex-col items-center justify-center p-8 min-h-[280px] group">
+                    <div class="w-12 h-12 bg-[#1e293b] rounded-full flex items-center justify-center text-gray-500 group-hover:bg-blue-900/30 group-hover:text-blue-400 mb-4 transition-colors">
+                        <iconify-icon class="text-2xl" icon="lucide:plus"></iconify-icon>
+                    </div>
+                    <span class="font-bold text-gray-400 group-hover:text-blue-400">创建新股票池</span>
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- ========== 创建股票池模态框 ========== -->
+    <div id="createPoolModal" class="fixed inset-0 z-50 flex items-center justify-center modal-overlay hidden">
+        <div class="modal-content w-full max-w-5xl rounded-xl border shadow-sm p-6 relative mx-4">
+            <!-- 关闭按钮 -->
+            <button id="closePoolModal" class="absolute top-4 right-4 text-gray-400 hover:text-gray-200">
+                <iconify-icon icon="lucide:x" class="text-2xl"></iconify-icon>
+            </button>
+            <h2 class="text-2xl font-bold text-gray-100 mb-6">创建新股票池</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- 左侧表单 -->
+                <div class="lg:col-span-2 space-y-6">
+                    <!-- 基本信息 -->
+                    <section class="space-y-4">
+                        <h3 class="text-lg font-bold text-gray-100">基本信息</h3>
+                        <div class="space-y-4">
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-medium text-gray-300">股票池名称</label>
+                                <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="例如: 科技龙头精选" type="text" />
+                            </div>
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-medium text-gray-300">描述</label>
+                                <textarea class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="说明该股票池的用途..." rows="2"></textarea>
+                            </div>
+                        </div>
+                    </section>
+                    <!-- 筛选条件 -->
+                    <section class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-lg font-bold text-gray-100">自动筛选条件</h3>
+                            <button class="text-blue-400 text-xs font-bold px-2 py-1 bg-blue-900/30 rounded hover:bg-blue-900/50">管理因子库</button>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="space-y-2">
+                                <label class="text-sm font-medium text-gray-300 flex justify-between">
+                                    <span>市值范围 (亿元)</span>
+                                    <span class="text-blue-400">100 - 5000</span>
+                                </label>
+                                <div class="h-1.5 bg-[#2d3748] rounded-full relative">
+                                    <div class="absolute left-1/4 right-1/4 h-full bg-blue-600 rounded-full"></div>
+                                    <div class="absolute left-1/4 -top-1.5 w-4 h-4 bg-[#1e293b] border-2 border-blue-500 rounded-full shadow-sm"></div>
+                                    <div class="absolute right-1/4 -top-1.5 w-4 h-4 bg-[#1e293b] border-2 border-blue-500 rounded-full shadow-sm"></div>
+                                </div>
+                            </div>
+                            <div class="space-y-2">
+                                <label class="text-sm font-medium text-gray-300 flex justify-between">
+                                    <span>PE (市盈率) 范围</span>
+                                    <span class="text-blue-400">0 - 45</span>
+                                </label>
+                                <div class="h-1.5 bg-[#2d3748] rounded-full relative">
+                                    <div class="absolute left-0 right-1/2 h-full bg-blue-600 rounded-full"></div>
+                                    <div class="absolute left-0 -top-1.5 w-4 h-4 bg-[#1e293b] border-2 border-blue-500 rounded-full shadow-sm"></div>
+                                    <div class="absolute right-1/2 -top-1.5 w-4 h-4 bg-[#1e293b] border-2 border-blue-500 rounded-full shadow-sm"></div>
+                                </div>
+                            </div>
+                            <div class="col-span-2 space-y-2">
+                                <label class="text-sm font-medium text-gray-300">所属行业 (可多选)</label>
+                                <div class="flex flex-wrap gap-2 pt-1">
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-700 bg-blue-900/30 text-blue-400">信息技术</button>
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-700 bg-blue-900/30 text-blue-400">电子</button>
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-gray-400 hover:border-blue-600 hover:text-blue-400 transition-colors">医药生物</button>
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-gray-400 hover:border-blue-600 hover:text-blue-400 transition-colors">食品饮料</button>
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-gray-400 hover:border-blue-600 hover:text-blue-400 transition-colors">银行</button>
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-gray-400 hover:border-blue-600 hover:text-blue-400 transition-colors">非银金融</button>
+                                    <button class="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-gray-400 hover:border-blue-600 hover:text-blue-400 transition-colors">+ 更多</button>
+                                </div>
+                            </div>
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-medium text-gray-300">近20日涨幅 (%)</label>
+                                <div class="flex items-center gap-2">
+                                    <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" placeholder="Min" type="number" />
+                                    <span class="text-gray-500">~</span>
+                                    <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" placeholder="Max" type="number" />
+                                </div>
+                            </div>
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-medium text-gray-300">平均换手率 (%)</label>
+                                <div class="flex items-center gap-2">
+                                    <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" placeholder="Min" type="number" />
+                                    <span class="text-gray-500">~</span>
+                                    <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" placeholder="Max" type="number" />
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                    <!-- 手动追加 -->
+                    <section class="space-y-2">
+                        <h3 class="text-lg font-bold text-gray-100">手动追加股票 (可选)</h3>
+                        <textarea class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="输入股票代码，以逗号或换行分隔。例如: 600519, 000001" rows="2"></textarea>
+                        <p class="text-[10px] text-gray-500">手动追加的股票将无视筛选条件强行入池。</p>
+                    </section>
+                </div>
+                <!-- 右侧预览 -->
+                <div class="space-y-4">
+                    <div class="bg-[#111827] rounded-xl border border-[#334155] overflow-hidden sticky top-4">
+                        <div class="p-4 border-b border-[#334155]">
+                            <div class="flex items-center justify-between mb-1">
+                                <h4 class="font-bold text-gray-100">实时预览结果</h4>
+                                <span class="text-xs text-blue-400 font-bold">12 只入选</span>
+                            </div>
+                            <p class="text-xs text-gray-500 italic">基于当前条件模拟筛选出的股票</p>
+                        </div>
+                        <div class="max-h-60 overflow-y-auto">
+                            <table class="w-full text-left text-xs">
+                                <thead class="bg-[#1e293b] sticky top-0">
+                                    <tr>
+                                        <th class="px-3 py-2 text-gray-400 uppercase font-semibold">代码/名称</th>
+                                        <th class="px-3 py-2 text-gray-400 uppercase font-semibold">最新价</th>
+                                        <th class="px-3 py-2 text-gray-400 uppercase font-semibold text-right">PE</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-[#2d3748]">
+                                    <tr><td class="px-3 py-2 font-medium text-gray-200">600519<br /><span class="text-gray-500">贵州茅台</span></td><td class="px-3 py-2 text-gray-300">1645.20</td><td class="px-3 py-2 text-right text-gray-300">28.4</td></tr>
+                                    <tr><td class="px-3 py-2 font-medium text-gray-200">000858<br /><span class="text-gray-500">五粮液</span></td><td class="px-3 py-2 text-gray-300">154.60</td><td class="px-3 py-2 text-right text-gray-300">19.2</td></tr>
+                                    <tr><td class="px-3 py-2 font-medium text-gray-200">600276<br /><span class="text-gray-500">恒瑞医药</span></td><td class="px-3 py-2 text-gray-300">42.15</td><td class="px-3 py-2 text-right text-gray-300">44.1</td></tr>
+                                    <tr><td class="px-3 py-2 font-medium text-gray-200">002415<br /><span class="text-gray-500">海康威视</span></td><td class="px-3 py-2 text-gray-300">32.88</td><td class="px-3 py-2 text-right text-gray-300">15.5</td></tr>
+                                    <tr><td class="px-3 py-2 font-medium text-gray-200">601318<br /><span class="text-gray-500">中国平安</span></td><td class="px-3 py-2 text-gray-300">45.20</td><td class="px-3 py-2 text-right text-gray-300">9.8</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="p-3 bg-[#111827] border-t border-[#334155]">
+                            <button class="w-full py-1.5 bg-[#1e293b] border border-[#334155] text-blue-400 rounded-lg text-xs font-bold hover:bg-[#2d3748]">刷新预览</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- 底部按钮 -->
+            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-[#334155]">
+                <button id="closePoolModal2" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 font-medium">取消</button>
+                <button class="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">保存股票池</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 模态框控制
+        const modal = document.getElementById('createPoolModal');
+        const openBtns = document.querySelectorAll('#openCreatePoolModal, #openCreatePoolModal2');
+        const closeBtns = document.querySelectorAll('#closePoolModal, #closePoolModal2');
+
+        function openModal() {
+            modal.classList.remove('hidden');
+        }
+
+        function closeModal() {
+            modal.classList.add('hidden');
+        }
+
+        openBtns.forEach(btn => btn.addEventListener('click', openModal));
+        closeBtns.forEach(btn => btn.addEventListener('click', closeModal));
+        // 点击遮罩关闭
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) closeModal();
+        });
+        // ESC关闭
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
+        });
+    </script>
+</body>
+
+</html>
