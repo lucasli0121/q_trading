@@ -1,0 +1,16 @@
+apscheduler>=3.10.1
+dbutils>=3.0.2
+exchange-calendars>=4.2.5
+pyyaml>=6.0
+pathlib2>=2.3.7.post1
+dbutils>=3.0.2
+pytz
+tzdata
+pyqlib
+ta-lib
+paho-mqtt
+httpx>=0.24.0
+debugpy
+itchat-uos
+scipy>=1.10.0
+redis>=4.5.4

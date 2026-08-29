@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>个人喜好 - 量化策略交易系统</title>
+    <script src="https://modao.cc/agent-py/static/source/js/tailwindcss.js">
+    </script>
+    <script src="https://modao.cc/agent-py/static/source/js/iconify-icon.min.js">
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f0f1a;
+            color: #e5e7eb;
+        }
+        .sidebar-active {
+            background-color: #1e293b !important;
+            color: #60a5fa !important;
+            border-right: 3px solid #3b82f6;
+        }
+        .sidebar-active iconify-icon {
+            color: #60a5fa !important;
+        }
+        .card-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .border-dark {
+            border-color: #334155;
+        }
+        .bg-dark-50 {
+            background-color: #1e293b;
+        }
+        .bg-dark-100 {
+            background-color: #111827;
+        }
+        .text-dark {
+            color: #e5e7eb;
+        }
+        .text-dark-muted {
+            color: #9ca3af;
+        }
+        .sidebar-dark {
+            background-color: #111827;
+            border-color: #1f2937;
+        }
+        .topbar-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .input-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        .input-dark:focus {
+            border-color: #3b82f6;
+        }
+        .select-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        .toggle-checked {
+            background-color: #3b82f6;
+        }
+        .toggle-checked>div {
+            transform: translateX(1.5rem);
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+    </style>
+</head>
+
+<body class="bg-[#0f0f1a] text-gray-200 flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-[#111827] border-r border-[#1f2937] flex flex-col fixed h-full transition-all duration-300">
+        <div class="p-6 flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
+                <iconify-icon icon="lucide:trending-up"></iconify-icon>
+            </div>
+            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+        </div>
+        <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="home.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layout-dashboard"></iconify-icon> 仪表盘
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">策略管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategies.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:list"></iconify-icon> 策略列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategy-monitor.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:activity"></iconify-icon> 策略监控
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">股票池管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-pools.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layers"></iconify-icon> 股票池列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-quotes.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:candlestick-chart"></iconify-icon> 股票行情
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">系统设置</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium rounded-lg sidebar-active" href="settings-preferences.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:settings"></iconify-icon> 个人喜好
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-blacklist.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:shield-ban"></iconify-icon> 黑名单
+            </a>
+        </nav>
+        <div class="p-4 border-t border-[#1f2937] mt-auto">
+            <div class="flex items-center gap-3 px-2">
+                <div class="w-8 h-8 rounded-full bg-blue-900 flex items-center justify-center text-blue-300">
+                    <iconify-icon icon="lucide:user"></iconify-icon>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-sm font-medium text-gray-200 truncate">管理员</p>
+                    <p class="text-xs text-gray-500 truncate">admin@quant.com</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+    <!-- Main Content -->
+    <main class="ml-64 flex-1 flex flex-col min-w-0">
+        <!-- Topbar -->
+        <header class="h-16 bg-[#1e293b] border-b border-[#334155] flex items-center justify-between px-8 sticky top-0 z-10">
+            <h1 class="text-xl font-bold text-gray-100">个人喜好设置</h1>
+            <div class="flex items-center gap-4">
+                <button class="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">保存更改</button>
+            </div>
+        </header>
+        <!-- Page Body -->
+        <div class="p-8 max-w-4xl space-y-8">
+            <!-- Appearance Section -->
+            <section class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm">
+                <div class="p-6 border-b border-[#334155]">
+                    <h3 class="font-bold text-gray-100">界面显示</h3>
+                </div>
+                <div class="p-6 space-y-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-semibold text-gray-200">深色模式</p>
+                            <p class="text-xs text-gray-500">切换系统的显示主题风格</p>
+                        </div>
+                        <div class="w-12 h-6 bg-[#374151] rounded-full p-1 cursor-pointer transition-colors relative">
+                            <div class="w-4 h-4 bg-white rounded-full shadow transition-transform"></div>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-semibold text-gray-200">默认启动页</p>
+                            <p class="text-xs text-gray-500">登录后首个显示的页面</p>
+                        </div>
+                        <select class="text-sm border border-[#334155] rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-[#111827] text-gray-200">
+                            <option>仪表盘</option>
+                            <option>策略列表</option>
+                            <option>策略监控</option>
+                            <option>股票行情</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+            <!-- Notifications Section -->
+            <section class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm">
+                <div class="p-6 border-b border-[#334155]">
+                    <h3 class="font-bold text-gray-100">通知与提醒</h3>
+                </div>
+                <div class="p-6 space-y-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-semibold text-gray-200">策略信号推送</p>
+                            <p class="text-xs text-gray-500">当策略触发买入或卖出信号时发送通知</p>
+                        </div>
+                        <div class="w-12 h-6 bg-blue-600 rounded-full p-1 cursor-pointer transition-colors relative">
+                            <div class="w-4 h-4 bg-white rounded-full shadow translate-x-6 transition-transform"></div>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-semibold text-gray-200">邮件异常警报</p>
+                            <p class="text-xs text-gray-500">当策略运行出现数据中断或连接错误时发送邮件</p>
+                        </div>
+                        <div class="w-12 h-6 bg-blue-600 rounded-full p-1 cursor-pointer transition-colors relative">
+                            <div class="w-4 h-4 bg-white rounded-full shadow translate-x-6 transition-transform"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <!-- Data Settings Section -->
+            <section class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm">
+                <div class="p-6 border-b border-[#334155]">
+                    <h3 class="font-bold text-gray-100">数据管理</h3>
+                </div>
+                <div class="p-6 space-y-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-semibold text-gray-200">行情刷新频率</p>
+                            <p class="text-xs text-gray-500">行情数据的自动更新间隔</p>
+                        </div>
+                        <select class="text-sm border border-[#334155] rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-[#111827] text-gray-200">
+                            <option>1秒 (实时)</option>
+                            <option selected>5秒 (标准)</option>
+                            <option>15秒 (节能)</option>
+                            <option>不自动刷新</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center justify-between border-t border-[#334155] pt-6">
+                        <div>
+                            <p class="text-sm font-semibold text-gray-200">默认选股池</p>
+                            <p class="text-xs text-gray-500">创建新策略时默认选中的股票池</p>
+                        </div>
+                        <select class="text-sm border border-[#334155] rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-[#111827] text-gray-200">
+                            <option>全市场</option>
+                            <option>沪深300</option>
+                            <option>自选股</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+</body>
+
+</html>

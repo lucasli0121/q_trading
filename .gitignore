@@ -1,0 +1,79 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# ===== 运行日志与数据 =====
+log/
+logs/
+*.log
+data/
+*.db
+*.sqlite3
+dump_bin/
+bin_data/
+test_data/
+*.pkl
+*.parquet
+*.feather
+
+# ===== 打包产物 =====
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.tar.gz
+*.tgz
+*.zip
+*.whl
+*.7z
+*.rar
+
+# ===== 证书/私钥（敏感信息，不提交） =====
+*.key
+*.pem
+*.crt
+*.csr
+*.srl
+*.p12
+*.pfx
+cert/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.fleet/
+
+# ===== 第三方库（完整副本，可用 pip 安装，不提交） =====
+code/qlib/
+code/akshare/
+code/ta-lib-python/
+code/microsoft-quant/
+code/THSDataInterface_Windows/
+
+# ===== 子模块缓存 =====
+.git/
+.git_backup_*/

@@ -1,0 +1,5 @@
+#!/bin/bash
+
+sudo docker run -d  -p 27017:27017  -v /home/ubuntu/mongo_data/db:/data/db -v /home/ubuntu/mongo_data/mongo.conf:/data/configdb/mongo.conf  --memory-swap -1   --name mongo mongo:latest --auth
+
+sudo docker ps

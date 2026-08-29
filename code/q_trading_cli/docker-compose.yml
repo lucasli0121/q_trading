@@ -1,0 +1,19 @@
+version: '3.4'
+
+services:
+  q_trading_cli:
+    image: q_trading_cli:latest
+    container_name: q_trading_cli
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    environment:
+      - TZ=Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9000:9000"   # web 端口
+
+    volumes:
+      # ---- Claude Code 配置 ----
+      - ../q_trading_cli:/q_trading_cli

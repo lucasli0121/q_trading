@@ -1,0 +1,12 @@
+tickflow 股票接口
+
+第一个账号：
+注册邮箱: liguoqiang0121@qq.com
+密码: Lgq#@1234
+default key: tk_05dbc5b4f3a1479c87d2305a06bd32b5
+
+第二个账号：
+邮箱: lgqzlx@hotmail.com
+密码: Lgq#@1234
+UID: 8LJEQEED9K
+default key: tk_44651f1f77e04d3a8b5ce8e3bf868990

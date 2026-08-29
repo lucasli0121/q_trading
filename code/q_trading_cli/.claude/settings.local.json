@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_base_strategy.py -v --tb=short)",
+      "Bash(python -c \"from strategy.strong_rebound_strategy import StrongReboundStrategy; s = StrongReboundStrategy\\(\\); print\\('OK:', s.strategy_name, s.BUY_CONSECUTIVE_MINUTES\\)\")"
+    ]
+  }
+}

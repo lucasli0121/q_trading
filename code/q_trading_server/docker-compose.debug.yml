@@ -1,0 +1,20 @@
+version: '3.4'
+
+services:
+  q_trading_server:
+    image: q_trading_server:latest
+    container_name: q_trading_server
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    environment:
+      - TZ=Asia/Shanghai
+    # 调试时覆盖入口命令，让容器保持运行
+    entrypoint: ["sleep", "infinity"]
+    ports:
+      - "8000:8000"   # FastAPI 端口
+      - "5678:5678"   # debugpy 远程调试端口
+    volumes:
+      # ---- Claude Code 配置 ----
+      - c:/users/lucasli/.claude:/home/appuser/.claude
+      - ../q_trading_server:/q_trading_server

@@ -1,0 +1,17 @@
+version: '3.4'
+
+services:
+  q_trading_work:
+    image: q_trading_work:latest
+    container_name: q_trading_work
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    environment:
+      - TZ=Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # ---- Claude Code 配置 ----
+      - ../q_trading_work:/q_trading_work

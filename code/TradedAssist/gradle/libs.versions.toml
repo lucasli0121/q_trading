@@ -1,0 +1,83 @@
+# 所有的库都可以在 https://mvnrepository.com/artifact 上找到，并且可以查看到对应的依赖关系库
+[versions]
+agp = "8.9.0-alpha04"
+annotation = "1.9.1"
+dagger = "2.51.1"
+accompanist = "0.36.0"
+android-compileSdk = "34"  # 目前编译版本是 34
+android-minSdk = "28"
+android-targetSdk = "34"
+androidx-activityCompose = "1.9.3"  #1.9.3可以在SDK 34下编译，如果再高就要SDK 35编译了
+androidx-appcompat = "1.7.0"
+androidx-constraintlayout = "2.2.0"
+androidx-core-ktx = "1.14.0-alpha01" #1.14.0-alpha01 这个版本可以在SDK 34下编译，再高版本需要SDK 35
+androidx-espresso-core = "3.6.1"
+androidx-lifecycle = "2.8.7"
+androidx-material = "1.12.0"
+androidx-test-junit = "1.2.1"
+compose-multiplatform = "1.7.0"
+compose-foundation = "1.7.5"  # 对应的material3版本是"1.4.0-alpha04"
+compose-ui = "1.7.5"  # 对应的material3版本是"1.4.0-alpha04"
+compose-material3 = "1.4.0-alpha04"  # 参考网址 https://mvnrepository.com/artifact/androidx.compose.material3/material3/1.4.0-alpha04
+junit = "4.13.2"
+kotlin = "2.0.21"
+kotlinx-coroutines = "1.9.0"
+#多平台日志库
+napier = "2.7.1"
+
+[libraries]
+androidx-annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
+dagger = { module = "com.google.dagger:dagger", version.ref = "dagger" }
+accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidx-core-ktx" }
+androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidx-test-junit" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "androidx-espresso-core" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "androidx-appcompat" }
+androidx-material = { group = "com.google.android.material", name = "material", version.ref = "androidx-material" }
+androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "androidx-constraintlayout" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activityCompose" }
+kotlinx-coroutines-swing = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "androidx-lifecycle" }
+androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name="lifecycle-viewmodel-ktx", version.ref = "androidx-lifecycle" }
+androidx-lifecycle-livedata-ktx = { group = "androidx.lifecycle", name="lifecycle-livedata-ktx", version.ref = "androidx-lifecycle" }
+androidx-lifecycle-livedata-core = { group = "androidx.lifecycle", name="lifecycle-livedata-core", version.ref = "androidx-lifecycle" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name="lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
+# 在跨平台中不能在commonMain中引用bom库，因为bom库依赖很多库不支持跨平台
+compose-bom = { module = "androidx.compose:compose-bom", version = "2024.11.00" }
+# 下面compose库在跨平台已经不需要了，在commonMain中可以直接因为系统的跨平台compose相关库
+compose-ui = { module = "androidx.compose.ui:ui", version.ref = "compose-ui" }
+compose-icons = { module = "androidx.compose.material:material-icons-core" }
+compose-foundation = { module = "androidx.compose.foundation:foundation", version.ref = "compose-foundation" }
+compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "compose-material3" }
+napier = { module = "io.github.aakira:napier", version.ref = "napier" }
+
+[bundles]
+accompanist = [
+    "accompanist-permissions",
+]
+# 这是一个AndroidX的集合
+androidx = [
+    "androidx-core-ktx",
+    "androidx-activity-compose",
+    "androidx-appcompat",
+    "androidx-material",
+    "androidx-constraintlayout",
+    "androidx-lifecycle-viewmodel-compose",
+    "androidx-lifecycle-viewmodel-ktx",
+    "androidx-lifecycle-livedata-ktx",
+    "androidx-lifecycle-livedata-core",
+]
+commonUtils = [
+    "dagger",
+    "napier"
+]
+
+[plugins]
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+androidLibrary = { id = "com.android.library", version.ref = "agp" }
+composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "compose-multiplatform" }
+composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

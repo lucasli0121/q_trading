@@ -1,0 +1,32 @@
+strong_rebound_strategy:
+  match:
+    # 过滤ttm市盈率阈值，市盈率不能超过设定值
+    pe_limit: 300
+    # 过滤利润率阈值
+    profit_limit: 10
+    # 判断趋势条件 7...15 短线..中长线
+    trend_days_limit: 7
+    # 最近连续交易日数：用于计算反弹、回撤等因子的时间窗口
+    consecutive_days: 5
+    # 向上趋势分数阈值：趋势因子得分需 >= 此值时认为趋势行情
+    up_trend_score: 6.0
+    # 连续反弹分值，趋势不达标时，需满足此分值，即为买入条件
+    rebound_score: 10.0
+  buy:
+    # 连续分钟数：用于成交量放大因子的时间窗口
+    consecutive_minutes: 10
+    # 分钟交易中，日内分钟趋势限制
+    trend_minutes_limit: 10
+    # 买入最小分数：当天累计加分需 >= 此值才触发买入
+    min_score: 6.0
+  sell:
+    # 分钟交易中，日内分钟趋势限制
+    trend_minutes_limit: 10
+    # vwap 均价连续分钟
+    vwap_minutes_limit: 10
+    # 回撤阈值（%）：从持仓最高点回撤超过此值触发卖出
+    drawdown_pct: -6.0
+    # 单日跌幅阈值（%）：当日跌幅超过此值触发卖出
+    daily_drop_pct: -5.0
+    # 卖出最大分数：当天累计减分 <= 此值触发卖出
+    max_score: -8.0

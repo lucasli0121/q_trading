@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>mdiArea</class>
+ <widget class="QMdiArea" name="mdiArea">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>993</width>
+    <height>669</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MdiArea</string>
+  </property>
+  <widget class="QWidget" name="mainSubWin">
+   <property name="windowTitle">
+    <string>子窗口</string>
+   </property>
+   <widget class="QListWidget" name="stockLists">
+    <property name="geometry">
+     <rect>
+      <x>0</x>
+      <y>0</y>
+      <width>991</width>
+      <height>651</height>
+     </rect>
+    </property>
+    <property name="spacing">
+     <number>5</number>
+    </property>
+    <property name="gridSize">
+     <size>
+      <width>10</width>
+      <height>10</height>
+     </size>
+    </property>
+    <property name="modelColumn">
+     <number>0</number>
+    </property>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,16 @@
+akshare>=1.18.60
+apscheduler>=3.10.1
+dbutils>=3.0.2
+exchange-calendars>=4.2.5
+pyyaml>=6.0
+pathlib2>=2.3.7.post1
+fastapi >= 0.63.0
+redis>=4.5.4
+dbutils>=3.0.2
+pymongo>=4.13.2
+uvicorn
+pytz
+tzdata
+paho-mqtt
+debugpy
+pandas

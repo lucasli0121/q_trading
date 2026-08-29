@@ -1,0 +1,9 @@
+#!/bin/bash
+
+sudo docker rm -vf mysql
+
+sleep 1s
+
+sudo docker run -d  -p 9306:9306 --restart unless-stopped  -v ~/mysql_data/db:/var/lib/mysql -v ~/mysql_data/my.cnf:/etc/mysql/my.cnf -v ~/mysql_data/logs:/var/log/mysql -v ~/mysql_data/mysql-files:/var/lib/mysql-files  -e MYSQL_ROOT_PASSWORD=root@123  --memory-swap -1  --name mysql mysql:latest
+
+sudo docker ps

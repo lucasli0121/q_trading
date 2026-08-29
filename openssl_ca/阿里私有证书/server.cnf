@@ -1,0 +1,21 @@
+[req]
+default_bits  = 4096
+distinguished_name = req_distinguished_name
+req_extensions = req_ext
+x509_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+countryName = CN
+stateOrProvinceName = Guangdong
+localityName = Shenzhen
+organizationName = DN
+commonName = mqttx Server certificate
+[req_ext]
+subjectAltName = @alt_names
+[v3_req]
+subjectAltName = @alt_names
+[alt_names]
+IP.1 = 112.74.56.53
+DNS.1 = dening-tech.cn
+IP.2 =120.79.139.90
+DNS.2=120.79.139.90

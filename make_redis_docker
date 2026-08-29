@@ -1,0 +1,8 @@
+
+sudo docker rm -vf redis
+
+sleep 1s
+
+sudo docker run -d  -p 16379:16379 --restart=always  -v /home/admin/redis_data/redis.conf:/etc/redis/redis.conf -v /home/admin/redis_data/data:/data  -v /home/admin/redis_data/certs:/etc/ssl/certs  --name redis redis:latest redis-server /etc/redis/redis.conf --appendonly yes
+
+sudo docker ps

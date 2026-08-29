@@ -1,0 +1,27 @@
+#!/bin/bash
+
+sudo docker rm -vf rabbitmq
+
+sleep 1s
+
+sudo docker run -d --restart=always -p 5672:5672 -p 5671:5671 -p 15672:15672 -p 15675:15675 -p 8883:8883  -p 1883:1883 -v ~/rabbitmq/data:/var/lib/rabbitmq -v ~/rabbitmq/etc:/etc/rabbitmq -e RABBITMQ_DEFAULT_USER=admin -e RABBITMQ_DEFAULT_PASS=admin@123 -m 1024m --memory-swap -1   --name rabbitmq  rabbitmq:management
+
+sleep 1s
+
+sudo docker exec rabbitmq rabbitmq-plugins enable rabbitmq_mqtt
+
+sleep 1s
+
+sudo docker exec rabbitmq rabbitmq-plugins enable rabbitmq_tracing
+
+sleep 3s
+
+sudo docker exec rabbitmq rabbitmqctl add_user rh rh123
+
+sleep 1s
+
+sudo docker exec rabbitmq rabbitmqctl set_permissions -p / rh ".*" ".*" ".*"
+
+sleep 1s
+
+sudo docker ps

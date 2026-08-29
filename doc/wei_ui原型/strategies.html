@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>策略管理 - 量化策略交易系统</title>
+    <script src="https://modao.cc/agent-py/static/source/js/tailwindcss.js">
+    </script>
+    <script src="https://modao.cc/agent-py/static/source/js/iconify-icon.min.js">
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f0f1a;
+            color: #e5e7eb;
+        }
+        .sidebar-active {
+            background-color: #1e293b !important;
+            color: #60a5fa !important;
+            border-right: 3px solid #3b82f6;
+        }
+        .sidebar-active iconify-icon {
+            color: #60a5fa !important;
+        }
+        .card-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .border-dark {
+            border-color: #334155;
+        }
+        .bg-dark-50 {
+            background-color: #1e293b;
+        }
+        .bg-dark-100 {
+            background-color: #111827;
+        }
+        .text-dark {
+            color: #e5e7eb;
+        }
+        .text-dark-muted {
+            color: #9ca3af;
+        }
+        .sidebar-dark {
+            background-color: #111827;
+            border-color: #1f2937;
+        }
+        .topbar-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+        .input-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        .input-dark:focus {
+            border-color: #3b82f6;
+        }
+        .select-dark {
+            background-color: #1e293b;
+            border-color: #334155;
+            color: #e5e7eb;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+        .step-badge {
+            background: #3b82f6;
+            color: white;
+        }
+        /* 模态框样式 */
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+        }
+        .modal-content {
+            background-color: #1e293b;
+            border-color: #334155;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        .modal-content::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        .modal-content::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        /* 详情面板样式（保留） */
+        .detail-panel {
+            background-color: #111827;
+            border-color: #334155;
+        }
+        .tab-active {
+            color: #60a5fa;
+            border-bottom: 2px solid #3b82f6;
+        }
+        .tab-inactive {
+            color: #9ca3af;
+            border-bottom: 2px solid transparent;
+        }
+        .tab-inactive:hover {
+            color: #e5e7eb;
+        }
+        .log-row:nth-child(even) {
+            background-color: #111827;
+        }
+    </style>
+</head>
+
+<body class="bg-[#0f0f1a] text-gray-200 flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-[#111827] border-r border-[#1f2937] flex flex-col fixed h-full transition-all duration-300">
+        <div class="p-6 flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
+                <iconify-icon icon="lucide:trending-up"></iconify-icon>
+            </div>
+            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+        </div>
+        <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="home.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layout-dashboard"></iconify-icon> 仪表盘
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">策略管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium rounded-lg sidebar-active" href="strategies.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:list"></iconify-icon> 策略列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="strategy-monitor.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:activity"></iconify-icon> 策略监控
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">股票池管理</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-pools.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:layers"></iconify-icon> 股票池列表
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="stock-quotes.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:candlestick-chart"></iconify-icon> 股票行情
+            </a>
+            <div class="pt-4 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider px-4">系统设置</div>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-preferences.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:settings"></iconify-icon> 个人喜好
+            </a>
+            <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="settings-blacklist.html">
+                <iconify-icon class="mr-3 text-lg" icon="lucide:shield-ban"></iconify-icon> 黑名单
+            </a>
+        </nav>
+        <div class="p-4 border-t border-[#1f2937] mt-auto">
+            <div class="flex items-center gap-3 px-2">
+                <div class="w-8 h-8 rounded-full bg-blue-900 flex items-center justify-center text-blue-300">
+                    <iconify-icon icon="lucide:user"></iconify-icon>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-sm font-medium text-gray-200 truncate">管理员</p>
+                    <p class="text-xs text-gray-500 truncate">admin@quant.com</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+    <!-- Main Content -->
+    <main class="ml-64 flex-1 flex flex-col min-w-0">
+        <!-- Topbar -->
+        <header class="h-16 bg-[#1e293b] border-b border-[#334155] flex items-center justify-between px-8 sticky top-0 z-10">
+            <h1 class="text-xl font-bold text-gray-100">策略列表</h1>
+            <div class="flex items-center gap-4">
+                <button id="openCreateStrategyModal" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium hover:bg-blue-700 transition-colors">
+                    <iconify-icon icon="lucide:plus"></iconify-icon>
+                    创建策略
+                </button>
+            </div>
+        </header>
+        <!-- Page Body -->
+        <div class="p-8 space-y-6">
+            <!-- Filter Bar -->
+            <div class="bg-[#1e293b] p-4 rounded-xl border border-[#334155] shadow-sm flex flex-wrap items-center gap-4">
+                <div class="relative flex-1 min-w-[200px]">
+                    <iconify-icon class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" icon="lucide:search"></iconify-icon>
+                    <input class="w-full pl-10 pr-4 py-2 border border-[#334155] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-[#111827] text-gray-200" placeholder="搜索策略名称或描述..." type="text" />
+                </div>
+                <select class="border border-[#334155] rounded-lg px-4 py-2 text-sm text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-[#111827]">
+                    <option value="">全部策略类型</option>
+                    <option value="trend">趋势追踪</option>
+                    <option value="mean">均值回归</option>
+                    <option value="factor">多因子选股</option>
+                    <option value="arb">无风险套利</option>
+                </select>
+                <select class="border border-[#334155] rounded-lg px-4 py-2 text-sm text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-[#111827]">
+                    <option value="">所有状态</option>
+                    <option value="running">运行中</option>
+                    <option value="stopped">已停止</option>
+                    <option value="error">异常</option>
+                </select>
+                <button class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 font-medium">重置</button>
+            </div>
+            <!-- Strategy Table -->
+            <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left" id="strategyTable">
+                        <thead class="bg-[#111827] border-b border-[#334155]">
+                            <tr>
+                                <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase">策略名称</th>
+                                <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase">类型</th>
+                                <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase">创建时间</th>
+                                <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase">状态</th>
+                                <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase">最近信号</th>
+                                <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[#2d3748]">
+                            <!-- Row 1 -->
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer" data-strategy="均线金叉策略 A">
+                                <td class="px-6 py-4 font-medium text-gray-200">
+                                    <div class="flex flex-col">
+                                        <span>均线金叉策略 A</span>
+                                        <span class="text-xs text-gray-500 font-normal mt-0.5 italic">短线追踪，MA5/MA20交叉</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-400">趋势追踪</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-06-15 10:30</td>
+                                <td class="px-6 py-4">
+                                    <span class="flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium bg-green-900/50 text-green-400 rounded-full w-fit">
+                                        <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                                        运行中
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-400">买入 600519</td>
+                                <td class="px-6 py-4 text-right">
+                                    <button class="text-blue-400 hover:text-blue-300 font-bold text-xs view-detail" data-strategy="均线金叉策略 A">查看详情</button>
+                                </td>
+                            </tr>
+                            <!-- Row 2 -->
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer" data-strategy="RSI超卖反弹策略">
+                                <td class="px-6 py-4 font-medium text-gray-200">
+                                    <div class="flex flex-col">
+                                        <span>RSI超卖反弹策略</span>
+                                        <span class="text-xs text-gray-500 font-normal mt-0.5 italic">针对超卖股票的短线博弈</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-400">反转策略</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-06-20 14:20</td>
+                                <td class="px-6 py-4">
+                                    <span class="flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium bg-gray-700 text-gray-300 rounded-full w-fit">
+                                        已停止
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-500">-</td>
+                                <td class="px-6 py-4 text-right">
+                                    <button class="text-blue-400 hover:text-blue-300 font-bold text-xs view-detail" data-strategy="RSI超卖反弹策略">查看详情</button>
+                                </td>
+                            </tr>
+                            <!-- Row 3 -->
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer" data-strategy="小盘绩优成长股">
+                                <td class="px-6 py-4 font-medium text-gray-200">
+                                    <div class="flex flex-col">
+                                        <span>小盘绩优成长股</span>
+                                        <span class="text-xs text-gray-500 font-normal mt-0.5 italic">多因子量化选股策略</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-400">多因子选股</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-06-28 09:00</td>
+                                <td class="px-6 py-4">
+                                    <span class="flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium bg-green-900/50 text-green-400 rounded-full w-fit">
+                                        <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                                        运行中
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-400">持仓中 (4只)</td>
+                                <td class="px-6 py-4 text-right">
+                                    <button class="text-blue-400 hover:text-blue-300 font-bold text-xs view-detail" data-strategy="小盘绩优成长股">查看详情</button>
+                                </td>
+                            </tr>
+                            <!-- Row 4 -->
+                            <tr class="hover:bg-[#2d3748] transition-colors cursor-pointer" data-strategy="高送转预期策略">
+                                <td class="px-6 py-4 font-medium text-gray-200">
+                                    <div class="flex flex-col">
+                                        <span>高送转预期策略</span>
+                                        <span class="text-xs text-gray-500 font-normal mt-0.5 italic">季节性逻辑套利</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-400">无风险套利</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">2026-07-02 16:45</td>
+                                <td class="px-6 py-4">
+                                    <span class="flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium bg-red-900/50 text-red-400 rounded-full w-fit">
+                                        异常
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 text-sm text-red-400 font-medium italic underline decoration-dotted">数据连接中断</td>
+                                <td class="px-6 py-4 text-right">
+                                    <button class="text-blue-400 hover:text-blue-300 font-bold text-xs view-detail" data-strategy="高送转预期策略">查看详情</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <!-- Pagination -->
+                <div class="px-6 py-4 bg-[#111827] border-t border-[#334155] flex items-center justify-between">
+                    <p class="text-sm text-gray-500 tracking-tight">显示第 1-4 条结果，共 12 条</p>
+                    <div class="flex gap-2">
+                        <button class="px-4 py-2 text-sm border border-[#334155] rounded-lg hover:bg-[#1e293b] text-gray-400 cursor-not-allowed" disabled>上一页</button>
+                        <button class="px-4 py-2 text-sm border border-[#334155] rounded-lg hover:bg-[#1e293b] text-gray-200 bg-[#1e293b] shadow-sm font-medium">1</button>
+                        <button class="px-4 py-2 text-sm border border-[#334155] rounded-lg hover:bg-[#1e293b] text-gray-400">2</button>
+                        <button class="px-4 py-2 text-sm border border-[#334155] rounded-lg hover:bg-[#1e293b] text-gray-400">下一页</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 详情面板（保留原有功能） -->
+            <div id="detailPanel" class="detail-panel rounded-xl border border-[#334155] shadow-sm overflow-hidden hidden">
+                <div class="px-6 py-4 border-b border-[#334155] flex items-center justify-between">
+                    <h3 class="text-lg font-bold text-gray-100" id="detailStrategyName">策略详情</h3>
+                    <button id="closeDetail" class="text-gray-400 hover:text-gray-200">
+                        <iconify-icon icon="lucide:x" class="text-xl"></iconify-icon>
+                    </button>
+                </div>
+                <!-- Tabs -->
+                <div class="flex border-b border-[#334155] px-6">
+                    <button class="py-3 px-4 text-sm font-medium tab-active" data-tab="holdings">持仓信息</button>
+                    <button class="py-3 px-4 text-sm font-medium tab-inactive" data-tab="trades">交易明细</button>
+                    <button class="py-3 px-4 text-sm font-medium tab-inactive" data-tab="logs">运行日志</button>
+                </div>
+                <!-- Tab Content -->
+                <div class="p-6">
+                    <div id="tab-holdings" class="tab-content">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-[#1e293b] border-b border-[#334155]">
+                                    <tr>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">股票代码</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">股票名称</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">持仓数量</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">成本价</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">现价</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">盈亏</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="holdingsBody" class="divide-y divide-[#2d3748]">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="tab-trades" class="tab-content hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-[#1e293b] border-b border-[#334155]">
+                                    <tr>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">日期</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">股票</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">方向</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">数量</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">价格</th>
+                                        <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">成交额</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tradesBody" class="divide-y divide-[#2d3748]">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="tab-logs" class="tab-content hidden">
+                        <div class="space-y-2 max-h-60 overflow-y-auto" id="logsBody">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ========== 创建策略模态框（已移除指标配置，增加类名和类路径） ========== -->
+    <div id="createStrategyModal" class="fixed inset-0 z-50 flex items-center justify-center modal-overlay hidden">
+        <div class="modal-content w-full max-w-4xl rounded-xl border shadow-sm p-6 relative mx-4">
+            <!-- 关闭按钮 -->
+            <button id="closeStrategyModal" class="absolute top-4 right-4 text-gray-400 hover:text-gray-200">
+                <iconify-icon icon="lucide:x" class="text-2xl"></iconify-icon>
+            </button>
+            <h2 class="text-2xl font-bold text-gray-100 mb-6">创建量化策略</h2>
+            <div class="space-y-6">
+                <!-- Step 1: Basic Info + 类配置 -->
+                <section class="space-y-4">
+                    <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-blue-600 text-white text-xs flex items-center justify-center">1</span>
+                        基本信息与类配置
+                    </h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">策略名称</label>
+                            <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="例如: 绩优股均线交叉" type="text" />
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">策略类型</label>
+                            <select class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200">
+                                <option>趋势追踪</option>
+                                <option>反转策略</option>
+                                <option>多因子选股</option>
+                                <option>统计套利</option>
+                            </select>
+                        </div>
+                        <div class="col-span-2 space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">策略描述</label>
+                            <textarea class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="简要说明该策略的逻辑和适用场景..." rows="2"></textarea>
+                        </div>
+                        <!-- 新增：策略类名 -->
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">策略类名</label>
+                            <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="例如: MyStrategy" type="text" />
+                            <p class="text-[10px] text-gray-500">Python策略类的名称，用于动态加载</p>
+                        </div>
+                        <!-- 新增：策略类路径 -->
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">类路径</label>
+                            <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-[#111827] text-gray-200" placeholder="例如: strategies.my_strategy" type="text" />
+                            <p class="text-[10px] text-gray-500">Python模块路径，例如 strategies.my_strategy</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Step 2: 选股配置（原步骤3） -->
+                <section class="space-y-4">
+                    <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-blue-600 text-white text-xs flex items-center justify-center">2</span>
+                        选股配置
+                    </h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">目标股票池</label>
+                            <select class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200">
+                                <option>沪深300</option>
+                                <option>中证500</option>
+                                <option>核心绩优成长股</option>
+                                <option>全市场 (排除风险股)</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-medium text-gray-300">最小市值 (亿)</label>
+                                <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" type="number" value="100" />
+                            </div>
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-medium text-gray-300">价格范围 (元)</label>
+                                <div class="flex items-center gap-1">
+                                    <input class="w-full px-2 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200 text-center" type="number" value="5" />
+                                    <span class="text-gray-500">-</span>
+                                    <input class="w-full px-2 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200 text-center" type="number" value="200" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Step 3: 回测参数（原步骤4） -->
+                <section class="space-y-4">
+                    <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-blue-600 text-white text-xs flex items-center justify-center">3</span>
+                        回测参数
+                    </h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">起始日期</label>
+                            <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" type="date" value="2024-01-01" />
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">结束日期</label>
+                            <input class="w-full px-4 py-2 border border-[#334155] rounded-lg text-sm bg-[#111827] text-gray-200" type="date" value="2026-07-01" />
+                        </div>
+                        <div class="col-span-2 space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">初始资金 (元)</label>
+                            <div class="relative">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm">¥</span>
+                                <input class="w-full pl-8 pr-4 py-2 border border-[#334155] rounded-lg text-sm font-bold text-blue-400 tracking-wider bg-[#111827]" type="number" value="1000000" />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            <!-- 底部按钮 -->
+            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-[#334155]">
+                <button id="closeStrategyModal2" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 font-medium">取消</button>
+                <button class="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">保存并回测</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== 模态框控制 ==========
+        const modal = document.getElementById('createStrategyModal');
+        const openBtn = document.getElementById('openCreateStrategyModal');
+        const closeBtns = document.querySelectorAll('#closeStrategyModal, #closeStrategyModal2');
+
+        function openModal() {
+            modal.classList.remove('hidden');
+        }
+
+        function closeModal() {
+            modal.classList.add('hidden');
+        }
+
+        openBtn.addEventListener('click', openModal);
+        closeBtns.forEach(btn => btn.addEventListener('click', closeModal));
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) closeModal();
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
+        });
+
+        // ========== 详情面板功能（保留） ==========
+        const strategyData = {
+            "均线金叉策略 A": {
+                holdings: [
+                    { code: '600519', name: '贵州茅台', qty: 200, cost: 1620.00, price: 1645.20, profit: '+5,040' },
+                    { code: '000001', name: '平安银行', qty: 5000, cost: 12.30, price: 12.45, profit: '+750' }
+                ],
+                trades: [
+                    { date: '2026-07-10 14:35', stock: '000001 平安银行', dir: '卖出', qty: 2000, price: 12.45, amount: '24,900' },
+                    { date: '2026-07-10 11:20', stock: '600519 贵州茅台', dir: '买入', qty: 100, price: 1645.00, amount: '164,500' },
+                    { date: '2026-07-09 09:45', stock: '000001 平安银行', dir: '买入', qty: 2000, price: 12.30, amount: '24,600' }
+                ],
+                logs: [
+                    '2026-07-10 14:35:01 [INFO] 信号触发: 卖出 000001 平安银行，价格 12.45',
+                    '2026-07-10 11:20:15 [INFO] 信号触发: 买入 600519 贵州茅台，价格 1645.00',
+                    '2026-07-10 09:30:00 [INFO] 系统自检完成，策略状态正常',
+                    '2026-07-09 15:00:00 [INFO] 日终结算完成，收益 +0.8%'
+                ]
+            },
+            "RSI超卖反弹策略": {
+                holdings: [
+                    { code: '002594', name: '比亚迪', qty: 300, cost: 240.00, price: 245.10, profit: '+1,530' }
+                ],
+                trades: [
+                    { date: '2026-07-08 10:00', stock: '002594 比亚迪', dir: '买入', qty: 300, price: 240.00, amount: '72,000' }
+                ],
+                logs: [
+                    '2026-07-10 08:00:00 [WARN] 策略已停止，无新信号',
+                    '2026-07-09 16:00:00 [INFO] 策略手动停止'
+                ]
+            },
+            "小盘绩优成长股": {
+                holdings: [
+                    { code: '600030', name: '中信证券', qty: 1000, cost: 21.50, price: 21.80, profit: '+300' },
+                    { code: '000333', name: '美的集团', qty: 500, cost: 64.80, price: 65.40, profit: '+300' },
+                    { code: '300750', name: '宁德时代', qty: 200, cost: 180.00, price: 182.45, profit: '+490' },
+                    { code: '002415', name: '海康威视', qty: 800, cost: 32.00, price: 32.88, profit: '+704' }
+                ],
+                trades: [
+                    { date: '2026-07-09 13:20', stock: '300750 宁德时代', dir: '买入', qty: 200, price: 180.00, amount: '36,000' },
+                    { date: '2026-07-08 10:15', stock: '600030 中信证券', dir: '买入', qty: 1000, price: 21.50, amount: '21,500' },
+                    { date: '2026-07-07 14:00', stock: '000333 美的集团', dir: '买入', qty: 500, price: 64.80, amount: '32,400' },
+                    { date: '2026-07-06 09:30', stock: '002415 海康威视', dir: '买入', qty: 800, price: 32.00, amount: '25,600' }
+                ],
+                logs: [
+                    '2026-07-10 14:00:00 [INFO] 持仓更新，当前持有4只股票',
+                    '2026-07-10 09:45:00 [INFO] 选股池更新完成，无新信号',
+                    '2026-07-09 15:30:00 [INFO] 日终结算，总收益 +2.1%'
+                ]
+            },
+            "高送转预期策略": {
+                holdings: [],
+                trades: [],
+                logs: [
+                    '2026-07-10 09:30:00 [ERROR] 数据源连接超时，策略暂停',
+                    '2026-07-10 08:00:00 [WARN] 策略异常，请检查网络'
+                ]
+            }
+        };
+
+        const detailPanel = document.getElementById('detailPanel');
+        const detailName = document.getElementById('detailStrategyName');
+        const closeDetail = document.getElementById('closeDetail');
+        const viewBtns = document.querySelectorAll('.view-detail');
+        const tabs = document.querySelectorAll('[data-tab]');
+        const tabContents = {
+            holdings: document.getElementById('tab-holdings'),
+            trades: document.getElementById('tab-trades'),
+            logs: document.getElementById('tab-logs')
+        };
+        const holdingsBody = document.getElementById('holdingsBody');
+        const tradesBody = document.getElementById('tradesBody');
+        const logsBody = document.getElementById('logsBody');
+
+        function showDetail(strategyName) {
+            const data = strategyData[strategyName];
+            if (!data) return;
+            detailName.textContent = strategyName;
+            detailPanel.classList.remove('hidden');
+
+            if (data.holdings.length === 0) {
+                holdingsBody.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">暂无持仓</td></tr>`;
+            } else {
+                holdingsBody.innerHTML = data.holdings.map(h => `
+                        <tr>
+                            <td class="px-4 py-3 text-sm font-medium text-gray-200">${h.code}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${h.name}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${h.qty}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${h.cost.toFixed(2)}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${h.price.toFixed(2)}</td>
+                            <td class="px-4 py-3 text-sm font-medium ${h.profit.startsWith('+') ? 'text-green-400' : 'text-red-400'}">${h.profit}</td>
+                        </tr>
+                    `).join('');
+            }
+
+            if (data.trades.length === 0) {
+                tradesBody.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">暂无交易记录</td></tr>`;
+            } else {
+                tradesBody.innerHTML = data.trades.map(t => `
+                        <tr>
+                            <td class="px-4 py-3 text-sm text-gray-300">${t.date}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${t.stock}</td>
+                            <td class="px-4 py-3 text-sm font-medium ${t.dir === '买入' ? 'text-green-400' : 'text-red-400'}">${t.dir}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${t.qty}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${t.price.toFixed(2)}</td>
+                            <td class="px-4 py-3 text-sm text-gray-300">${t.amount}</td>
+                        </tr>
+                    `).join('');
+            }
+
+            if (data.logs.length === 0) {
+                logsBody.innerHTML = `<p class="text-gray-500 text-sm">暂无日志</p>`;
+            } else {
+                logsBody.innerHTML = data.logs.map(log => `
+                        <div class="text-sm text-gray-300 border-b border-[#1e293b] py-1.5">${log}</div>
+                    `).join('');
+            }
+            activateTab('holdings');
+        }
+
+        function activateTab(tabId) {
+            tabs.forEach(tab => {
+                const id = tab.dataset.tab;
+                if (id === tabId) {
+                    tab.classList.add('tab-active');
+                    tab.classList.remove('tab-inactive');
+                } else {
+                    tab.classList.remove('tab-active');
+                    tab.classList.add('tab-inactive');
+                }
+            });
+            Object.keys(tabContents).forEach(key => {
+                if (key === tabId) {
+                    tabContents[key].classList.remove('hidden');
+                } else {
+                    tabContents[key].classList.add('hidden');
+                }
+            });
+        }
+
+        viewBtns.forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                const name = this.dataset.strategy;
+                showDetail(name);
+            });
+        });
+
+        document.querySelectorAll('#strategyTable tbody tr').forEach(row => {
+            row.addEventListener('click', function(e) {
+                if (e.target.closest('.view-detail')) return;
+                const name = this.dataset.strategy;
+                if (name) showDetail(name);
+            });
+        });
+
+        closeDetail.addEventListener('click', function() {
+            detailPanel.classList.add('hidden');
+        });
+
+        tabs.forEach(tab => {
+            tab.addEventListener('click', function() {
+                const tabId = this.dataset.tab;
+                activateTab(tabId);
+            });
+        });
+
+        // 默认显示第一条策略详情
+        const firstStrategy = document.querySelector('#strategyTable tbody tr');
+        if (firstStrategy) {
+            const name = firstStrategy.dataset.strategy;
+            if (name) showDetail(name);
+        }
+    </script>
+</body>
+
+</html>

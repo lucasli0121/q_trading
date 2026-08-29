@@ -1,0 +1,18 @@
+apscheduler>=3.10.1
+dbutils>=3.0.2
+exchange-calendars>=4.2.5
+pyyaml>=6.0
+pathlib2>=2.3.7.post1
+nicegui >= 3.12.0
+fastapi >= 0.63.0
+dbutils>=3.0.2
+uvicorn
+pytz
+tzdata
+pyqlib
+ta-lib
+paho-mqtt
+httpx>=0.24.0
+debugpy
+itchat-uos
+scipy>=1.10.0

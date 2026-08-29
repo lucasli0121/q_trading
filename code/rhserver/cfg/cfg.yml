@@ -1,0 +1,41 @@
+server:
+  host: 0.0.0.0:9080
+  out_url: https://dening-tech.cn:9080/
+  certFile: ./cert/server.crt
+  keyFile: ./cert/server.key
+  caFile: ./cert/ca.crt
+database:
+  #url: mongodb://192.168.1.63:27017
+  url: tcp(120.79.139.90:9306)
+  username: vplayer
+  #password: rh@123
+  password: vplayer@123
+  dbname: vplayer
+  driver: mysql
+  #driver: mongo
+redis:
+  host: dening-tech.cn:6379
+  password: redis@123
+  db: 0
+  certFile: ../../cert/client.crt
+  keyFile: ../../cert/client.key
+  caFile: ../../cert/ca.crt
+mq:
+  host: dening-tech.cn
+  port: 8883
+  client_id: rhserver_mqtt_client_0
+  username: rh
+  password: rh123
+  certFile: ./cert/client.crt
+  keyFile: ./cert/client.key
+  caFile: ./cert/ca.crt
+log:
+  level: debug
+  file: ./log/rhserver.log
+  maxsize: 100
+  maxage: 7
+  maxbackups: 10
+  console: true
+  format: text  
+
+staticPath: ./public

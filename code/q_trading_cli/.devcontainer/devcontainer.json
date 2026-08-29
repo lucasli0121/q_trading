@@ -1,0 +1,75 @@
+// This file defines how to build the container and what to install in it.
+// 这个文件禁止编译新的镜像，而是采用现有的容器
+// 所以去掉编译部分
+{
+    "name": "q_trading_cli",
+    // "build": {
+    //     "context": "..",
+    //     "dockerfile": "../Dockerfile",
+    //     "args": {
+    //         "VARIANT": "3.12.5"
+    //     }
+    // },
+    // 采用现有的镜像
+    // 这个镜像是通过 直接使用DockerFile编译的
+    "image": "q_trading_cli:latest",
+    "runArgs": [
+        "--memory=4g",
+        "--memory-swap=8g"
+    ],
+    "forwardPorts": [5000,8888],
+    // 注意：
+    // 1) 上面的 runArgs 会被传递给 `docker run`（由 VS Code Remote - Containers 使用），但只有在使用 Docker 引擎创建容器时才生效。
+    // 2) 修改本文件后，必须在 VS Code 中执行 "Dev Containers: Rebuild Container" 才会应用新的 runArgs（Reopen 不一定重建镜像/容器）。
+    // 3) 如果你是通过 docker-compose 启动 devcontainer（使用 "dockerComposeFile" 和 "service"），runArgs 可能不会被应用；此时请在 docker-compose.yml 中为服务设置内存限制（注意：compose v3 的 deploy 只有 swarm 下生效，非 swarm 下可使用 mem_limit（取决于 compose 版本）或直接使用 docker run）。
+    // 4) 如果宿主的 Docker/内核未启用 cgroup 或其他资源控制，--memory 参数可能会被忽略。在这种情况下需要在宿主或 Docker Desktop 中设置 VM/daemon 的内存。
+
+    // 示例：如果你更希望使用 docker-compose 管理容器，请在仓库根目录创建一个 docker-compose.yml（下面是示例片段，按需调整）：
+    // services:
+    //   app:
+    //     image: q_trading_cli:latest
+    //     # 对于某些 docker-compose 版本，可以使用 mem_limit
+    //     mem_limit: 4g
+    //     # 或者（注意：deploy.resources 只有在 swarm 模式下生效）
+    //     # deploy:
+    //     #   resources:
+    //     #     limits:
+    //     #       memory: 6g
+    //
+    // 若采用 compose，请在 devcontainer.json 中引用：
+    // 并移除或忽略 image/runArgs（根据需求）。
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "charliermarsh.ruff",
+                "cschleiden.vscode-github-actions",
+                "esbenp.prettier-vscode",
+                "littlefoxteam.vscode-python-test-adapter",
+                "ms-python.autopep8",
+                "ms-python.mypy-type-checker",
+                "ms-python.pylint",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "samuelcolvin.jinjahtml",
+                "Vue.volar"
+            ],
+            "settings": {
+                "ruff.enable": true,
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "terminal.integrated.shell.linux": "bash",
+                "terminal.integrated.profiles.linux": {
+                    "bash (container default)": {
+                        "path": "/usr/bin/bash",
+                        "overrideName": true
+                    }
+                },
+            }
+        }
+    },
+    "postCreateCommand": "pip install -r requirements.txt",
+    "remoteUser": "appuser",
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/q_trading_cli,type=bind,consistency=cached"
+    ],
+    "workspaceFolder": "/q_trading_cli"
+}
