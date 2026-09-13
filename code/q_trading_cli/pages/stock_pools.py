@@ -837,7 +837,6 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
 
     # 状态变量
     removed_codes: set[str] = set()
-    pending_add_codes: set[str] = set()
 
     # 预览面板状态（声明在函数顶层，供 nonlocal 引用）
     _cached_results: list[dict[str, Any]] = []
@@ -1045,10 +1044,16 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                         )
 
                         def _update_pending_count() -> None:
-                            """更新 pending_add_codes 计数显示。"""
-                            preview_count_label.set_text(f"已加入{len(pending_add_codes)}个股票")
-
-                        _update_pending_count()
+                            """更新追加股票计数显示（从 textarea 解析代码数）。"""
+                            text: str = (pool_stocks_input.value or "").strip()
+                            if text:
+                                codes: set[str] = {
+                                    s.strip() for s in text.replace("\n", ",").replace(";", ",").split(",") if s.strip()
+                                }
+                                count: int = len(codes)
+                            else:
+                                count = 0
+                            preview_count_label.set_text(f"已加入{count}个股票")
 
                     # 预览表格内搜索
                     with ui.row().classes("w-full").style("padding: 0 16px 8px; margin-top: 20px;"):
@@ -1359,6 +1364,10 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                     async def refresh_preview() -> None:
                         """刷新预览（带加载状态）。"""
                         nonlocal _preview_loading_ref
+                        # 校验：至少选中一个热门板块
+                        if not selected_industries:
+                            ui.notify("至少需要选中一个热门板块", color="warning")
+                            return
                         btn: Any = _preview_loading_ref.get("btn")
                         spinner: Any = _preview_loading_ref.get("spinner")
                         if btn:
@@ -1377,8 +1386,8 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                                 spinner.set_visibility(False)
 
                     def _append_selected_stocks() -> None:
-                        """将预览中选中的股票追加到待添加列表。"""
-                        nonlocal selected_preview_codes, pending_add_codes
+                        """将预览中选中的股票代码追加到追加股票 textarea。"""
+                        nonlocal selected_preview_codes
                         if not selected_preview_codes:
                             ui.notify("请先在预览表格中勾选股票", color="warning")
                             return
@@ -1391,46 +1400,30 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                         if not new_codes:
                             ui.notify("选中的股票已在当前股票池中", color="info")
                             return
-                        pending_add_codes.update(new_codes)
+                        # 追加到 textarea，与已有代码去重
+                        current_text: str = (pool_stocks_input.value or "").strip()
+                        text_codes: set[str] = {
+                            s.strip() for s in current_text.replace("\n", ",").replace(";", ",").split(",") if s.strip()
+                        } if current_text else set()
+                        text_codes.update(new_codes)
+                        pool_stocks_input.value = ", ".join(sorted(text_codes))
                         selected_preview_codes.clear()
-                        _render_pending_chips()
                         _update_pending_count()
-                        ui.notify(f"已添加 {len(new_codes)} 只股票到待添加列表", color="positive")
+                        ui.notify(f"已追加 {len(new_codes)} 只股票到追加股票输入框", color="positive")
 
-                    # 待添加股票标签展示
+                    # 追加股票输入框（手工输入 + 追加选中股票写入此处）
                     with ui.column().classes("w-full gap-2").style("padding: 0 16px 8px;"):
-                        ui.label("待添加股票:").classes("text-xs font-bold").style("color: #9ca3af;")
-                        pending_container: ui.column = ui.column().classes("w-full gap-1")
-
-                    def _render_pending_chips() -> None:
-                        """渲染待添加股票为可移除标签。"""
-                        pending_container.clear()
-                        if pending_add_codes:
-                            with pending_container:  # noqa: SIM117
-                                with ui.row().classes("w-full gap-2 flex-wrap"):
-                                    for code in sorted(pending_add_codes):
-                                        with ui.row().classes("items-center gap-1").style(
-                                            "background-color: rgba(59,130,246,0.15); border: 1px solid #3b82f6; "
-                                            "border-radius: 12px; padding: 2px 6px;"
-                                        ):
-                                            ui.label(code).classes("text-xs").style("color: #60a5fa;")
-
-                                            def _make_remove_pending(c: str) -> Any:
-                                                return lambda: _remove_pending_code(c)
-
-                                            ui.button(
-                                                icon="close",
-                                                on_click=_make_remove_pending(code),
-                                            ).props("flat round dense size=xs").style("color: #ef4444;")
-
-                    def _remove_pending_code(code: str) -> None:
-                        """从待添加列表中移除股票代码。"""
-                        nonlocal pending_add_codes
-                        pending_add_codes.discard(code)
-                        _render_pending_chips()
+                        ui.label("追加股票:").classes("text-xs font-bold").style("color: #9ca3af;")
+                        pool_stocks_input = (
+                            ui.textarea(placeholder="输入股票代码，以逗号、分号或换行分隔。例如: 600519, 000001")
+                            .props("outlined dense input-style='min-height:72px; height:72px'")
+                            .classes("w-full")
+                            .style(f"color: {font_color}; background-color: {input_bg};")
+                        )
+                        ui.label("追加的股票将无视筛选条件强行入池。").classes("text-xs").style("color: #6b7280;")
+                        # 监听 textarea 变更，实时更新计数
+                        pool_stocks_input.on("change", lambda e: _update_pending_count())
                         _update_pending_count()
-
-                    _render_pending_chips()
 
                     # 底部按钮行
                     with ui.row().classes("w-full gap-2").style(
@@ -1460,7 +1453,11 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
 
             def handle_save() -> None:
                 """保存编辑：执行股票添加和移除操作。"""
-                new_codes: list[str] = list(pending_add_codes)
+                # 从追加股票 textarea 解析代码（去重，兼容逗号/分号/换行分隔）
+                _stocks_text: str = (pool_stocks_input.value or "").strip()
+                new_codes: list[str] = list({
+                    s.strip() for s in _stocks_text.replace("\n", ",").replace(";", ",").split(",") if s.strip()
+                }) if _stocks_text else []
 
                 has_changes: bool = bool(new_codes) or bool(removed_codes)
                 if not has_changes:

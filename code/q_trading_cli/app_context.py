@@ -9,7 +9,7 @@ Description: 定义一个全局变量，用于存储全局变量
 """
 
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from api.blacklist import BlacklistApi
 from api.client import ApiClient
@@ -23,7 +23,9 @@ from api.user import UserApi
 from mq.mqtt_client import MqttClient
 
 if TYPE_CHECKING:
+    from api.order import OrderApi
     from api.strategy import StrategyApi
+    from api.strategy_select_stock import StrategySelectStockApi
     from api.system_message import SystemMessageApi
     from api.trade_signal import TradeSignalApi
     from api.user_strategy import UserStrategyApi
@@ -31,15 +33,15 @@ if TYPE_CHECKING:
 
 
 class AppContext:
-    _instance = None
+    _instance: "AppContext | None" = None
     _instance_lock = threading.Lock()
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
-        return cls._instance
+        return cast(Self, cls._instance)
 
     def __init__(self):
         if not hasattr(self, '_initialized'):
@@ -142,6 +144,18 @@ class AppContext:
         return self._user_strategy_api
 
     @property
+    def order_api(self) -> "OrderApi":
+        """获取订单管理 API 实例（懒加载）。
+
+        提供订单的创建、按策略/按用户查询、详情、更新、状态变更接口
+        （/api/order/*）。
+        """
+        if not hasattr(self, '_order_api'):
+            from api.order import OrderApi
+            self._order_api = OrderApi(self.api_client)
+        return self._order_api
+
+    @property
     def trade_signal_api(self) -> "TradeSignalApi":
         """获取交易信号 API 实例（懒加载）。
 
@@ -162,6 +176,18 @@ class AppContext:
             from api.system_message import SystemMessageApi
             self._system_message_api = SystemMessageApi(self.api_client)
         return self._system_message_api
+
+    @property
+    def strategy_select_stock_api(self) -> "StrategySelectStockApi":
+        """获取策略选股结果 API 实例（懒加载）。
+
+        提供策略选股结果的保存、按用户查询、按策略查询等接口
+        （/api/strategy_select_stocks/*）。
+        """
+        if not hasattr(self, '_strategy_select_stock_api'):
+            from api.strategy_select_stock import StrategySelectStockApi
+            self._strategy_select_stock_api = StrategySelectStockApi(self.api_client)
+        return self._strategy_select_stock_api
 
     @property
     def signal_manager(self) -> "SignalManager":

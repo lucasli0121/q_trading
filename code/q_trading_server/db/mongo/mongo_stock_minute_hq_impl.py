@@ -13,16 +13,16 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Hashable
-
+from utils import tools
 from pymongo import UpdateOne
 from app_context import AppContext
 
 
-def _minute_code_regex(code: str) -> dict[str, Any]:
-    """返回分频行情 code 字段的正则匹配条件。"""
-    m = re.search(r"\d+", code)
-    pure = m.group() if m else code
-    return {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}
+# def _minute_code_regex(code: str) -> dict[str, Any]:
+#     """返回分频行情 code 字段的正则匹配条件。"""
+#     m = re.search(r"\d+", code)
+#     pure = m.group() if m else code
+#     return {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}
 
 
 class MongoStockMinuteHqImpl:
@@ -47,14 +47,14 @@ class MongoStockMinuteHqImpl:
                 data = data.copy()
                 if "id" in data:
                     del data["id"]
-                code = data["code"]
+                code = tools.guess_stock_code_suffix(data["code"])
                 minute_time = data.get("minute_time", "")
                 if not minute_time:
                     continue
                 clean_data = {k: v for k, v in data.items() if k != "id"}
                 requests.append(
                     UpdateOne(
-                        {"code": _minute_code_regex(code), "minute_time": minute_time},
+                        {"code": code, "minute_time": minute_time},
                         {"$set": clean_data},
                         upsert=True,
                     )
@@ -89,7 +89,8 @@ class MongoStockMinuteHqImpl:
         :return: 成功返回 True 和记录列表，否则返回 False 和 None
         """
         try:
-            query: dict[str, Any] = {"code": _minute_code_regex(code)}
+            code = tools.guess_stock_code_suffix(code)
+            query: dict[str, Any] = {"code": code}
             if start_time:
                 query["minute_time"] = {"$gte": start_time}
             if end_time:
@@ -167,7 +168,7 @@ class MongoStockMinuteHqImpl:
         try:
             query: dict[str, Any] = {}
             if code:
-                query["code"] = _minute_code_regex(code)
+                query["code"] = tools.guess_stock_code_suffix(code)
             if start_time:
                 query["minute_time"] = {"$gte": start_time}
             if end_time:

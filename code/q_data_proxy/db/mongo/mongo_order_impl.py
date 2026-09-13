@@ -51,6 +51,33 @@ class MongoOrderImpl:
             self.logger.error(f"更新订单状态失败: {e}")
             return False
 
+    def update_order(self, order_id: str, data: dict[str, Any]) -> bool:
+        """更新订单字段（仅更新传入的非空字段）。
+
+        :param order_id: 订单 ID
+        :param data: 要更新的字段字典，仅更新值不为 None 的字段
+        :return: 成功返回 True，否则返回 False
+        """
+        try:
+            if not order_id:
+                return False
+            # 过滤掉值为 None 的字段，且不允许更新 _id 和 user_strategy_id
+            set_data = {
+                k: v
+                for k, v in data.items()
+                if v is not None and k not in ("id", "_id", "user_strategy_id")
+            }
+            if not set_data:
+                return False
+            result = self.order_table.update_one(
+                {"_id": ObjectId(order_id)},
+                {"$set": set_data},
+            )
+            return result.modified_count > 0 or result.matched_count > 0
+        except Exception as e:
+            self.logger.error(f"更新订单失败: {e}")
+            return False
+
     def query_order_by_id(self, order_id: str) -> tuple[bool, Any | None]:
         """按订单 ID 查询订单。"""
         try:
@@ -120,6 +147,49 @@ class MongoOrderImpl:
             )
         except Exception as e:
             self.logger.error(f"批量查询用户订单失败: {e}")
+            return False, None
+
+    def query_latest_order(
+        self,
+        stock_codes: list[str],
+        user_strategy_id: str,
+        action: str,
+        status: str,
+    ) -> tuple[bool, Any | None]:
+        """按股票代码列表、用户策略 ID、动作和状态查询每个股票最近的一条订单记录
+
+        通过聚合管道实现：先匹配过滤，再按 create_time 倒序，然后按 stock_code
+        分组取每组第一条，最终返回每个股票代码各自最近的一条记录。
+
+        :param stock_codes: 股票代码列表，可包含一个或多个股票代码
+        :param user_strategy_id: 用户策略 ID
+        :param action: 订单动作（买入/卖出）
+        :param status: 订单状态
+        :return: 成功返回 True 和记录列表（每只股票最多一条，无记录时为空列表），否则返回 False 和 None
+        """
+        try:
+            if not stock_codes or not user_strategy_id:
+                return False, None
+            condition: dict[str, Any] = {
+                "stock_code": {"$in": stock_codes},
+                "user_strategy_id": user_strategy_id,
+            }
+            if action:
+                condition["action"] = action
+            if status:
+                condition["status"] = status
+            pipeline: list[dict[str, Any]] = [
+                {"$match": condition},
+                {"$sort": {"create_time": -1}},
+                {"$group": {"_id": "$stock_code", "doc": {"$first": "$$ROOT"}}},
+                {"$replaceRoot": {"newRoot": "$doc"}},
+                # $group 不保证输出顺序，分组后需再次排序保证结果按 create_time 倒序
+                {"$sort": {"create_time": -1}},
+            ]
+            results = list(self.order_table.aggregate(pipeline))
+            return True, results
+        except Exception as e:
+            self.logger.error(f"查询最近订单失败: {e}")
             return False, None
 
     def delete_order(self, order_id: str) -> bool:

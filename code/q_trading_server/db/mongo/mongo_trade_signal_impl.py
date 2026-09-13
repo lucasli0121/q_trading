@@ -142,7 +142,9 @@ class MongoTradeSignalImpl:
 
     def query_signals(
         self,
+        stock_codes: list = [],
         strategy_id: str = "",
+        user_strategy_id: str = "",
         action: str = "",
         start_time: str = "",
         end_time: str = "",
@@ -152,6 +154,7 @@ class MongoTradeSignalImpl:
         """按条件查询交易信号记录
 
         :param strategy_id: 策略 ID（可选）
+        :param user_strategy_id: 用户策略 ID（可选）
         :param action: 买卖方向（可选）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
@@ -161,8 +164,12 @@ class MongoTradeSignalImpl:
         """
         try:
             query: dict[str, Any] = {}
+            if len(stock_codes) > 0:
+                query["stock_code"] = {"$in": stock_codes}
             if strategy_id:
                 query["strategy_id"] = strategy_id
+            if user_strategy_id:
+                query["user_strategy_id"] = user_strategy_id
             if action:
                 query["action"] = action
             self._build_time_filter(query, start_time, end_time)
@@ -180,6 +187,7 @@ class MongoTradeSignalImpl:
     def query_latest_signal(
         self,
         strategy_id: str,
+        user_strategy_id: str,
         stock_code: str,
         action: str = "",
     ) -> tuple[bool, Any | None]:
@@ -191,9 +199,12 @@ class MongoTradeSignalImpl:
         :return: (ok, record_or_None)
         """
         try:
-            query: dict[str, Any] = {
-                "strategy_id": strategy_id
-            }
+            query: dict[str, Any] = {}
+            if strategy_id:
+                query["strategy_id"] = strategy_id
+            if user_strategy_id:
+                query["user_strategy_id"] = user_strategy_id
+
             if stock_code:
                 query["stock_code"] = stock_code
             if action:
@@ -209,18 +220,19 @@ class MongoTradeSignalImpl:
             self.logger.error(f"查询最近交易信号失败: {e}")
             return False, None
 
-    def query_signals_by_strategy_ids(
+    def query_signals_by_user_strategy_ids(
         self,
-        strategy_ids: list[str],
+        stock_codes: list[str] = [],
+        user_strategy_ids: list[str] = [],
         action: str = "",
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
         limit: int = 0,
     ) -> tuple[bool, Any | None]:
-        """按策略 ID 列表查询交易信号记录
+        """按用户策略 ID 列表查询交易信号记录
 
-        :param strategy_ids: 策略 ID 列表
+        :param user_strategy_ids: 用户策略 ID 列表
         :param action: 买卖方向（可选）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
@@ -230,8 +242,10 @@ class MongoTradeSignalImpl:
         """
         try:
             query: dict[str, Any] = {}
-            if len(strategy_ids) > 0:
-                query = {"strategy_id": {"$in": strategy_ids}}
+            if len(stock_codes) > 0:
+                query["stock_code"] = {"$in": stock_codes}
+            if len(user_strategy_ids) > 0:
+                query["user_strategy_id"] = {"$in": user_strategy_ids}
             if action:
                 query["action"] = action
             self._build_time_filter(query, start_time, end_time)

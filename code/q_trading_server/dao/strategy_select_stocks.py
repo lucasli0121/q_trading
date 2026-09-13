@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StrategySelectStockDao:
-    """策略选股数据对象 — 记录策略选中的股票"""
+    """用户策略选股数据对象 — 记录策略选中的股票"""
 
     id: str
-    strategy_id: str
+    user_strategy_id: str
     code: str
     score: float
     create_time: str
@@ -26,7 +26,7 @@ class StrategySelectStockDao:
     def __init__(
         self,
         id: str = "",
-        strategy_id: str = "",
+        user_strategy_id: str = "",
         code: str = "",
         score: float = 0.0,
         create_time: str = "",
@@ -34,12 +34,12 @@ class StrategySelectStockDao:
         """初始化策略选股对象
 
         :param id: 记录 ID（MongoDB _id）
-        :param strategy_id: 策略 ID（关联 UserStrategyDao.strategy_id）
+        :param user_strategy_id: 用户策略 ID
         :param code: 股票代码
         :param create_time: 创建时间
         """
         self.id = id
-        self.strategy_id = strategy_id
+        self.user_strategy_id = user_strategy_id
         self.code = code
         self.score = score
         self.create_time = create_time
@@ -50,7 +50,7 @@ class StrategySelectStockDao:
         :param data: MongoDB 文档字典
         """
         self.id = str(data.get("_id", ""))
-        self.strategy_id = str(data.get("strategy_id", ""))
+        self.user_strategy_id = str(data.get("user_strategy_id", ""))
         self.code = data.get("code", "")
         self.score = float(data.get("score", 0.0))
         self.create_time = data.get("create_time", "")
@@ -61,7 +61,7 @@ class StrategySelectStockDao:
         :return: 数据库文档字典
         """
         return {
-            "strategy_id": self.strategy_id,
+            "user_strategy_id": self.user_strategy_id,
             "code": self.code,
             "score": self.score,
             "create_time": self.create_time,

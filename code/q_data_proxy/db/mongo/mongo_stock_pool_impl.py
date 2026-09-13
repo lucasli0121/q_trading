@@ -5,21 +5,11 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Hashable
 
+from bson import ObjectId
+from utils import tools
 from pymongo import UpdateOne
 from app_context import AppContext
 from db.mongo.mongo_stock_info_impl import MongoStockInfoImpl
-
-
-def _pool_code_regex(code: str) -> dict[str, Any]:
-    """返回股票池 code 字段的正则匹配条件。"""
-    m = re.search(r"\d+", code)
-    pure = m.group() if m else code
-    return {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}
-
-
-def _pool_codes_or(codes: list[str]) -> dict[str, Any]:
-    """返回多个 code 的 $or 正则匹配条件。"""
-    return {"$or": [{"code": _pool_code_regex(c)} for c in codes]}
 
 
 class MongoStockPoolImpl:
@@ -49,8 +39,16 @@ class MongoStockPoolImpl:
             data = data.copy()
             name = data.get("name", "")
             if not name:
-                self.logger.error("name is empty.")
-                return False, None
+                self.logger.error("股票池 name is empty.")
+                return False, "股票池名称不能为空"
+            user_id = data.get("user_id", "")
+            if not user_id:
+                self.logger.error("新增股票池user_id不能为空")
+                return False, "用户id不能为空"
+            res, values = self.query_stock_pools_by_user(user_id)
+            if res and values and len(values) > 0:
+                self.logger.info("股票池已经存在，不能重复创建")
+                return False, "重复的股票池名称已经存在，不能重复创建"
             if "id" in data:
                 del data["id"]
             filter = {"name": name}
@@ -127,26 +125,15 @@ class MongoStockPoolImpl:
             self.logger.error(f"查询所有股票池失败: {e}")
             return False, None
 
-    def delete_stock_pool(self, name: str) -> bool:
-        """按名称删除股票池及其关联的股票记录。
-
-        会同步删除 stock_pool_stock_tbl 中所有 pool_name 为该名称的记录，避免孤儿数据。
-
-        :param name: 股票池名称
-        :return: 成功返回 True，否则返回 False
-        """
-        try:
-            pool_query: dict[str, Any] = {"name": name}
-            result = self.mongo_exec.delete(table=self.pool_table, condition=pool_query)
-            # 级联删除关联记录
-            self.mongo_exec.delete(
-                table=self.pool_stock_table,
-                condition={"pool_name": name},
-            )
-            return result
-        except Exception as e:
-            self.logger.error(f"删除股票池失败: {e}")
+    def delete_stock_pool_by_id(self, pool_id: str) -> bool:
+        if pool_id == "":
             return False
+        return self.mongo_exec.delete(table=self.pool_table, condition={"_id": ObjectId(pool_id)})
+
+
+
+
+
 
     # ==================== 用户维度查询 ====================
 
@@ -193,7 +180,7 @@ class MongoStockPoolImpl:
 
     # ==================== 股票池-股票关联操作 ====================
 
-    def add_stocks_to_pool(self, records: Sequence[Mapping[Hashable, Any]]) -> bool:
+    def add_stocks_to_pool(self, records: list[dict[str, Any]]) -> bool:
         """批量向股票池添加股票。
 
         :param records: 股票关联记录列表，每项应包含 pool_name、code、add_time
@@ -202,17 +189,13 @@ class MongoStockPoolImpl:
         try:
             requests = []
             for data in records:
-                pool_name = data.get("pool_name", "")
+                pool_id = data.get("pool_id", "")
                 code = data.get("code", "")
-                if not pool_name or not code:
+                if not pool_id or not code:
                     continue
-                stock_db = MongoStockInfoImpl()
-                res, values = stock_db.query_by_codes([code])
-                if res and values and len(values) > 0:
-                    code = values[0].get("code", code)  # 使用数据库中标准化的 code
                 requests.append(
                     UpdateOne(
-                        {"pool_name": pool_name, "code": _pool_code_regex(code)},
+                        {"pool_id": pool_id, "code": code},
                         {"$set": {k: v for k, v in data.items() if k != "id"}},
                         upsert=True,
                     )
@@ -229,17 +212,17 @@ class MongoStockPoolImpl:
             self.logger.error(f"添加股票到股票池失败: {e}")
             return False
 
-    def remove_stocks_from_pool(self, pool_name: str, codes: Sequence[str]) -> bool:
+    def remove_stocks_from_pool(self, pool_id: str, codes: Sequence[str]) -> bool:
         """从股票池中移除指定股票。
 
-        :param pool_name: 股票池名称
+        :param pool_id: 股票池id
         :param codes: 要移除的股票代码列表
         :return: 成功返回 True，否则返回 False
         """
         try:
             query: dict[str, Any] = {
-                "pool_name": pool_name,
-                **_pool_codes_or(list(codes)),
+                "pool_id": pool_id,
+                "code": {"$in": codes}
             }
             result = self.mongo_exec.delete(table=self.pool_stock_table, condition=query)
             return result
@@ -247,14 +230,14 @@ class MongoStockPoolImpl:
             self.logger.error(f"从股票池移除股票失败: {e}")
             return False
 
-    def query_stocks_by_pool_name(self, pool_name: str) -> tuple[bool, Any | None]:
+    def query_stocks_by_pool_ids(self, pool_ids: list) -> tuple[bool, Any | None]:
         """查询指定股票池中的所有股票。
 
         :param pool_name: 股票池名称
         :return: 成功返回 True 和记录列表，否则返回 False 和 None
         """
         try:
-            query: dict[str, Any] = {"pool_name": pool_name}
+            query: dict[str, Any] = {"pool_id": {"$in": pool_ids}}
             return self.mongo_exec.query_by_condition(
                 table=self.pool_stock_table,
                 condition=query,
@@ -267,18 +250,19 @@ class MongoStockPoolImpl:
             return False, None
 
     def query_stocks_by_pool_and_codes(
-        self, pool_name: str, codes: Sequence[str]
+        self, pool_id: str, codes: Sequence[str]
     ) -> tuple[bool, Any | None]:
         """查询股票池中是否包含指定股票（用于去重或验证）。
 
-        :param pool_name: 股票池名称
+        :param pool_id: 股票池id
         :param codes: 要查询的股票代码列表
         :return: 成功返回 True 和记录列表，否则返回 False 和 None
         """
         try:
+            real_codes = [tools.guess_stock_code_suffix(c) for c in codes]
             query: dict[str, Any] = {
-                "pool_name": pool_name,
-                **_pool_codes_or(list(codes)),
+                "pool_id": pool_id,
+                "code": {"$in": real_codes},
             }
             return self.mongo_exec.query_by_condition(
                 table=self.pool_stock_table,
@@ -293,22 +277,12 @@ class MongoStockPoolImpl:
 
     def get_all_pool_stocks_count(self) -> tuple[bool, int]:
         """获取所有股票池中的去重股票代码总数。
-
-        code 可能包含不同格式（sh000001、000001.SH），通过提取纯数字归一化后去重统计。
-
         :return: 成功返回 True 和总数，否则返回 False 和 0
         """
         try:
             pipeline: list[dict[str, Any]] = [
-                {
-                    "$addFields": {
-                        "pure_code": {
-                            "$regexFind": {"input": "$code", "regex": "\\d+"}
-                        }
-                    }
-                },
-                {"$addFields": {"pure_code": "$pure_code.match"}},
-                {"$group": {"_id": "$pure_code"}},
+                {"$match": {"code": {"$exists": True, "$ne": None}}},
+                {"$group": {"_id": "$code"}},
                 {"$count": "total"},
             ]
             result = list(self.pool_stock_table.aggregate(pipeline))
@@ -322,29 +296,19 @@ class MongoStockPoolImpl:
     ) -> tuple[bool, Any | None]:
         """查询所有股票池中的去重股票代码（分页）。
 
-        使用聚合管道提取 code 纯数字部分归一化后去重，保证 sh000001、000001.SH、000001
-        等不同格式的同一只股票只返回一次。
+        等不同格式的同一只股票只返回一次。返回结果中，code 会与 pool_id 列表形成一对多映射。
 
         :param skip: 跳过的记录数
         :param limit: 返回的记录数上限
-        :return: 成功返回 True 和记录列表（每项含 code 字段），否则返回 False 和 None
+        :return: 成功返回 True 和记录列表（每项含 code 和 pool_id 列表），否则返回 False 和 None
         """
         try:
             pipeline: list[dict[str, Any]] = [
-                # 归一化 code：提取纯数字部分
-                {
-                    "$addFields": {
-                        "pure_code": {
-                            "$regexFind": {"input": "$code", "regex": "\\d+"}
-                        }
-                    }
-                },
-                {"$addFields": {"pure_code": "$pure_code.match"}},
-                # 按归一化 code 去重，保留第一条的原始 code
                 {
                     "$group": {
-                        "_id": "$pure_code",
+                        "_id": "$code",
                         "code": {"$first": "$code"},
+                        "pool_id": {"$addToSet": "$pool_id"},
                     }
                 },
                 {"$sort": {"code": 1}},

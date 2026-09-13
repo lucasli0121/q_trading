@@ -89,15 +89,15 @@ class MongoDataAgentPoolStocksImpl:
             self.logger.error(f"根据 agent_name 删除数据代理股票分配记录失败: {e}")
             return False
 
-    def delete_data_agent_pool_stocks_by_pool_name(self, pool_name: str) -> bool:
+    def delete_data_agent_pool_stocks_by_pool_id(self, pool_id: str) -> bool:
         """根据股票池名称删除数据代理股票分配记录。"""
         try:
-            if not pool_name:
-                self.logger.error("pool_name 为空，无法删除")
+            if not pool_id:
+                self.logger.error("pool_id 为空，无法删除")
                 return False
             # 匹配 stock_codes_pool 中包含该股票池名称的记录
             condition: dict[str, Any] = {
-                "stock_codes_pool.pool_name": {"$regex": pool_name}
+                "stock_codes_pool.pool_ids": pool_id
             }
             res, result_list = self.mongo_exec.query_by_condition(
                 table=self.data_agent_pool_stocks_table,
@@ -109,18 +109,18 @@ class MongoDataAgentPoolStocksImpl:
             if res and result_list and len(result_list) > 0:
                 for record in result_list:
                     agent_name = record.get("agent_name", "")
-                    stock_codes_pool = record.get("stock_codes_pool", [])
-                    if not agent_name or not isinstance(stock_codes_pool, list):
+                    stock_codes_pools = record.get("stock_codes_pool", [])
+                    if not agent_name or not isinstance(stock_codes_pools, list):
                         continue
                     # 过滤掉包含该池名称的股票代码
                     new_stock_codes_pool = []
-                    for item in stock_codes_pool:
+                    for item in stock_codes_pools:
                         if isinstance(item, dict):
                             code = item.get("code", "")
-                            pools = item.get("pool_name", [])
-                            new_pools = [name for name in pools if pool_name != name]
+                            pool_ids = item.get("pool_ids", [])
+                            new_pools = [id for id in pool_ids if id != pool_id]
                             if new_pools and len(new_pools) > 0:
-                                new_item = {"code": code, "pool_name": new_pools}
+                                new_item = {"code": code, "pool_ids": new_pools}
                                 new_stock_codes_pool.append(new_item)
                     # 更新记录
                     update_data = {"stock_codes_pool": new_stock_codes_pool}

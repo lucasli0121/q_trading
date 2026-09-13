@@ -28,6 +28,7 @@ class UserStrategyDao:
     """用户策略关联数据对象，通过 strategy_id 关联 StrategyDao"""
 
     id: str
+    name: str # 自定义名称
     strategy_id: str  # 关联策略 ID（StrategyDao._id）
     status: str  # 策略状态: running / stopped / paused
     user_id: str  # 所属用户 ID（关联 UserDao.id）
@@ -41,6 +42,7 @@ class UserStrategyDao:
     def __init__(
         self,
         id: str = "",
+        name: str = "",
         strategy_id: str = "",
         status: str = StrategyStatus.STOPPED.value,
         user_id: str = "",
@@ -54,6 +56,7 @@ class UserStrategyDao:
         """初始化用户策略关联对象
 
         :param id: 记录 ID（MongoDB _id）
+        :param name: 个人策略自定义名称
         :param strategy_id: 关联的全局策略 ID
         :param status: 策略状态
         :param user_id: 所属用户 ID
@@ -63,6 +66,7 @@ class UserStrategyDao:
         :param create_time: 创建时间
         """
         self.id = id
+        self.name = name
         self.strategy_id = strategy_id
         self.status = status
         self.user_id = user_id
@@ -79,6 +83,7 @@ class UserStrategyDao:
         :param data: MongoDB 文档字典
         """
         self.id = str(data.get("_id", ""))
+        self.name = data.get("name", "")
         self.strategy_id = data.get("strategy_id", "")
         self.status = data.get("status", StrategyStatus.STOPPED.value)
         self.user_id = data.get("user_id", "")
@@ -95,6 +100,7 @@ class UserStrategyDao:
         :return: 数据库文档字典
         """
         return {
+            "name": self.name,
             "strategy_id": self.strategy_id,
             "status": self.status,
             "user_id": self.user_id,

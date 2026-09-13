@@ -17,7 +17,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import yaml
 
 from app_context import AppContext
 from factor.low_rebound_factor import LowReboundFactor
@@ -70,56 +69,60 @@ class StrongReboundStrategy(BaseStrategy):
     SELL_TREND_MINUTES_LIMIT: int = 7 # 卖出交易分钟趋势限制
     SELL_DRAWDOWN_PCT: float = -8.0  # 回撤阈值（%）
     SELL_VWAP_LIMIT: int = 7 # vwap 均价的分钟数
-    SELL_DAILY_DROP_PCT: float = -5.0  # 单日跌幅阈值（%）
     SELL_MAX_SCORE: float = -15.0 # 卖出的最大分数
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        user_strategy_id: str = "",
+        strategy_id: str = "",
+        strategy_type: str = "",
+        user_strategy_params: dict[str, Any] | None = None,
+        default_params: dict[str, Any] | None = None,
+    ) -> None:
         """初始化强势反弹策略。"""
-        # 必须调用基类初始化：设置 logger/factor_manager，并创建选股列表缓存字段
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
-        # 从配置文件加载参数
-        self._load_config()
-
-    def _load_config(self) -> None:
-        """从配置文件加载策略参数。"""
-        import os
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "cfg", "strategy.yaml"
+        # 必须调用基类初始化：设置 logger/factor_manager、加载策略参数并创建选股列表缓存字段
+        super().__init__(
+            user_strategy_id=user_strategy_id,
+            strategy_id=strategy_id,
+            strategy_type=strategy_type,
+            user_strategy_params=user_strategy_params,
+            default_params=default_params,
         )
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            strategy_config = config.get("strong_rebound_strategy", {})
-            match_config = strategy_config.get("match", {})
-            buy_config = strategy_config.get("buy", {})
-            sell_config = strategy_config.get("sell", {})
+        self.logger = logging.getLogger(__name__)
 
-            # 适配参数
-            self.PE_LIMIT = int(match_config.get("pe_limit", self.PE_LIMIT))
-            self.PROFIT_LIMIT = int(match_config.get("profit_limit", self.PROFIT_LIMIT))
-            self.TREND_DAYS_LIMIT = int(match_config.get("trend_days_limit", self.TREND_DAYS_LIMIT))
-            self.CONSECUTIVE_DAYS = int(match_config.get("consecutive_days", self.CONSECUTIVE_DAYS))
-            self.REBOUND_DAY_SCORE = float(match_config.get("rebound_score", self.REBOUND_DAY_SCORE))
-            self.UP_TREND_SCORE = float(match_config.get("up_trend_score", self.UP_TREND_SCORE))
-            
-            # 买入参数
-            self.BUY_CONSECUTIVE_MINUTES = int(buy_config.get("consecutive_minutes", self.BUY_CONSECUTIVE_MINUTES))
-            self.BUY_MIN_SCORE = float(buy_config.get("min_score", self.BUY_MIN_SCORE))
-            self.BUY_TREND_MINUTES_LIMIT = int(buy_config.get("trend_minutes_limit", self.BUY_TREND_MINUTES_LIMIT))
-            
-            # 卖出参数
-            self.SELL_DRAWDOWN_PCT = float(sell_config.get("drawdown_pct", self.SELL_DRAWDOWN_PCT))
-            self.SELL_DAILY_DROP_PCT = float(sell_config.get("daily_drop_pct", self.SELL_DAILY_DROP_PCT))
-            self.SELL_VWAP_LIMIT = int(sell_config.get("vwap_minutes_limit", self.SELL_VWAP_LIMIT))
-            self.SELL_MAX_SCORE = float(sell_config.get("max_score", self.SELL_MAX_SCORE))
-            self.SELL_TREND_MINUTES_LIMIT = int(sell_config.get("trend_minutes_limit", self.SELL_TREND_MINUTES_LIMIT))
-            
-            self.logger.info("强势反弹策略配置加载成功: %s", strategy_config)
-        except FileNotFoundError:
-            self.logger.warning("配置文件 %s 未找到，使用默认参数", config_path)
-        except Exception as e:
-            self.logger.error("加载配置文件失败: %s", e)
+    def apply_params(self, params: dict[str, Any]) -> None:
+        """将参数字典映射到策略属性。
+
+        参数字典结构与 cfg/strategy.yaml 的 strong_rebound_strategy 节一致：
+            {match: {...}, buy: {...}, sell: {...}}
+        缺失的字段保留类属性默认值。
+
+        :param params: 策略参数字典
+        """
+        if not isinstance(params, dict) or not params:
+            return
+        match_config: dict[str, Any] = params.get("match", {}) or {}
+        buy_config: dict[str, Any] = params.get("buy", {}) or {}
+        sell_config: dict[str, Any] = params.get("sell", {}) or {}
+
+        # 适配参数（match）
+        self.PE_LIMIT = int(match_config.get("pe_limit", self.PE_LIMIT))
+        self.PROFIT_LIMIT = int(match_config.get("profit_limit", self.PROFIT_LIMIT))
+        self.TREND_DAYS_LIMIT = int(match_config.get("trend_days_limit", self.TREND_DAYS_LIMIT))
+        self.CONSECUTIVE_DAYS = int(match_config.get("consecutive_days", self.CONSECUTIVE_DAYS))
+        self.REBOUND_DAY_SCORE = float(match_config.get("rebound_score", self.REBOUND_DAY_SCORE))
+        self.UP_TREND_SCORE = float(match_config.get("up_trend_score", self.UP_TREND_SCORE))
+
+        # 买入参数
+        self.BUY_CONSECUTIVE_MINUTES = int(buy_config.get("consecutive_minutes", self.BUY_CONSECUTIVE_MINUTES))
+        self.BUY_MIN_SCORE = float(buy_config.get("min_score", self.BUY_MIN_SCORE))
+        self.BUY_TREND_MINUTES_LIMIT = int(buy_config.get("trend_minutes_limit", self.BUY_TREND_MINUTES_LIMIT))
+
+        # 卖出参数
+        self.SELL_DRAWDOWN_PCT = float(sell_config.get("drawdown_pct", self.SELL_DRAWDOWN_PCT))
+        self.SELL_VWAP_LIMIT = int(sell_config.get("vwap_minutes_limit", self.SELL_VWAP_LIMIT))
+        self.SELL_MAX_SCORE = float(sell_config.get("max_score", self.SELL_MAX_SCORE))
+        self.SELL_TREND_MINUTES_LIMIT = int(sell_config.get("trend_minutes_limit", self.SELL_TREND_MINUTES_LIMIT))
 
     # ---- 基类抽象方法实现 ----
 
@@ -431,7 +434,7 @@ class StrongReboundStrategy(BaseStrategy):
     ) -> tuple[bool, dict[str, Any]]:
         """
         条件：
-        1. 卖点1: 相比持仓到目前最高点回撤超过8%（相对持仓最高点），如果没有持仓就判断最近3天
+        1. 卖点1: 相比持仓到目前最高点回撤超过8%（相对持仓最高点），如果没有持仓就判断最近2天
         2. 卖点2: 跳空低开
         3 卖点3： 股价低于平均价
         4 卖点4: 当天股价超出当天最大阻力位
@@ -446,10 +449,17 @@ class StrongReboundStrategy(BaseStrategy):
         buy_time: str = str(position.get("buy_time", ""))
         create_time: str = str(stock_data.get("create_time", ""))
         if buy_time == "":
+            # 设计约定：实时链路以「尽可能产出买卖信号」为目标，不依赖持仓信息，
+            # 因此 position 常为空字典，此时 buy_time 不会有值。
+            # 兜底规则：没有持仓信息时，以「最近 2 个交易日」作为买入基准来计算最高价。
             today_str: str = self.get_recent_trading_day()
             if create_time and len(create_time) > 10:
                 today_str = create_time
-            buy_time = (datetime.datetime.strptime(today_str, "%Y-%m-%d %H:%M:%S") - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            buy_time = self.get_previous_trading_day(today_str=today_str, days=2)
+            self.logger.debug(
+                "[%s] code=%s 无持仓信息，按最近2个交易日回溯买入基准: %s",
+                self.strategy_name, code, buy_time,
+            )
         extra: dict[str, Any] = {"code": code, "cost_price": cost_price}
         score: float = 0.0
         cache_score = self._get_score_cache(code, "SELL", create_time)
@@ -503,9 +513,10 @@ class StrongReboundStrategy(BaseStrategy):
                 open_gap = self._check_sell_gap_open(open_price, preclose, extra)
                 # print(f"开盘低开得分,action=SELL, code:{code}, time:{create_time}, open_gap:{open_gap}")
                 score += open_gap
-            # 相比持仓到目前最高点回撤超过8%（相对持仓最高点），如果没有持仓就判断最近3天
-            # 计算截至目前的当天历史最高价位,
-            # 
+            # 相比持仓最高点回撤超过 8%（SELL_DRAWDOWN_PCT）。
+            # 最高价的口径：buy_time 有值（有持仓信息）→ 取买入至今的日K最高价；
+            #                buy_time 无值（实时链路不传持仓）→ 取最近 2 个交易日的最高价，
+            #                并由 _resolve_highest_price 叠加当日最高价兜底。
             highest_price: float = self._resolve_highest_price(
                 code, buy_time, create_time, day_high, cost_price
             )
@@ -552,28 +563,35 @@ class StrongReboundStrategy(BaseStrategy):
     def _get_highest_since_buy(
             self, code: str, buy_time: str, today_str: str, today_high: float = 0,
         ) -> float:
-        """查询买入至今的日K线最高价。
+        """查询 buy_time 至昨日的日K线最高价。
 
-        通过 MarketApi 拉取 buy_time 至今的日K线数据，计算区间最高价。
-        若当日现价已高于历史日K线最高价，以当日现价为准。
+        通过 MarketApi 拉取 [buy_time[:10], 上一交易日] 区间的日K线，计算区间最高价；
+        再与当日最高价 today_high 取较大值，即「区间最高价 ∪ 当日最高价」。
+
+        buy_time 的取值约定（见 _check_sell_conditions）：
+        - 有持仓信息时为其真实 buy_time，得到「建仓以来」最高价；
+        - 无持仓信息（实时链路设计上不传持仓）时为「最近 2 个交易日」，
+          得到「最近 2 个交易日 + 当日」最高价。
 
         :param code: 股票代码
-        :param buy_time: 买入时间字符串（YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS）
-        :param today_high: 当日最高价
-        :return: 持仓期间最高价，查询失败返回 0
+        :param buy_time: 买入时间字符串（YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS）；为空直接返回 today_high
+        :param today_str: 当前行情时间（YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS），
+            用于推算区间结束日（其上一交易日，即不包含当日未完成的K线）
+        :param today_high: 当日最高价，与区间最高价取较大值
+        :return: 持仓期间最高价，查询失败返回 today_high
         """
         if not buy_time:
-            return 0.0
+            return today_high
 
         try:
-            end_day: str = (datetime.datetime.strptime(today_str, "%Y-%m-%d %H:%M:%S") - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            end_day = today_str
             buy_date: str = buy_time[:10]  # 截取日期部分
             klines: list[dict[str, Any]] = AppContext().market_api.get_day_kline(
                 code=code, start=buy_date, end=end_day,
             )
             if not klines:
                 self.logger.warning("未查到 %s 的日K线数据 (%s ~ %s)", code, buy_date, end_day)
-                return 0.0
+                return today_high
 
             db_highest: float = max(float(k.get("high", 0)) for k in klines)
             highest: float = max(db_highest, today_high)
@@ -581,14 +599,21 @@ class StrongReboundStrategy(BaseStrategy):
 
         except Exception as exc:
             self.logger.warning("[%s] 查询持仓最高价失败(%s): %s", self.strategy_name, code, exc)
-            return 0.0
+            return today_high
             
     def _resolve_highest_price(
         self, code: str, buy_time: str, today_str, day_high: float, cost_price: float
     ) -> float:
-        """持仓期间最高价：优先从日K线查询，失败回退内存追踪。"""
+        """持仓期间最高价：以日K线查询结果为准，查询失败时回退到内存追踪。
+
+        降级链：
+        1. `_get_highest_since_buy` 返回 > 0 → 直接采用（买入至今 / 最近 2 个交易日）；
+        2. 查询失败或区间无数据（返回 0）→ 用 `_highest_prices` 记录当日起的盘中最高价，
+           初值 max(cost_price, day_high)；实时链路 cost_price 为 0，等价于「当日最高价」，
+           回撤口径退化为日内回撤（仅在日K接口异常时发生）。
+        """
         db_highest: float = self._get_highest_since_buy(code, buy_time, today_str, day_high)
-        if db_highest > 0:
+        if db_highest > day_high:
             return db_highest
         if code not in self._highest_prices:
             self._highest_prices[code] = max(cost_price, day_high)
@@ -630,45 +655,3 @@ class StrongReboundStrategy(BaseStrategy):
             f"开盘价{open_price:.2f} 相比 昨收价{preclose:.2f} 跌幅{pct_chg}"
         )
         return pct_chg
-
-    def _check_hl_price(
-        self,
-        code: str,
-        day_high: float,
-        day_low: float,
-        create_time: str,
-        extra: dict[str, Any],
-    ) -> float:
-        """最低价低于昨日最低价，最高价低于昨日最高价。检测3个时间点 10:00, 11:20, 14:00"""
-        minute_dt: datetime.datetime | None = self._parse_time(create_time)
-        score: float = 0.0
-        # 最低价低于昨日最低价，最高价低于昨日最高价
-        if minute_dt is None:
-            return 0.0
-        if (minute_dt.hour == 10 and minute_dt.minute == 0) \
-            or (minute_dt.hour == 11 and minute_dt.minute >= 0 and minute_dt.minute <= 30) \
-            or (minute_dt.hour == 14 and minute_dt.minute >= 20 and minute_dt.minute <= 40):
-            df = self.load_his_daily_data(code, create_time, 1)
-            if df.empty:
-                extra["reason"] = (
-                    f"{self.strategy_name}, func:check_sell_conditions,"
-                    "无法获取昨日日线数据，不操作"
-                )
-                return 0.0
-            yesterday_low: float = float(df.iloc[-1]["low"])
-            yesterday_high: float = float(df.iloc[-1]["high"])
-            if yesterday_low <= 0 or yesterday_high <= 0:
-                extra["reason"] = (
-                    f"{self.strategy_name}, "
-                    "昨日日线数据异常，跳出不操作"
-                )
-                return 0.0
-            score += (day_high - yesterday_high) / yesterday_high * 100
-            score += (day_low - yesterday_low) / yesterday_low * 100
-            if day_high < yesterday_high and day_low < yesterday_low:
-                extra["reason"] = (
-                    f"{self.strategy_name},"
-                    f"最低价{day_low:.2f} < 昨日最低价{yesterday_low:.2f}"
-                    f" 且 最高价{day_high:.2f} < 昨日最高价{yesterday_high:.2f}"
-                )
-        return score

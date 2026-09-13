@@ -6,8 +6,8 @@ LastEditTime: 2026-07-13 00:00:00
 Description: 用户策略关联数据对象 — 将全局策略与用户关联，记录用户维度的策略状态和股票池
 """
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -48,7 +48,7 @@ class UserStrategyDao:
         initial_amount: float = 0.0,
         total_profit: float = 0.0,
         max_stock_count: int = 0,
-        strategy_params: dict = {},
+        strategy_params: dict | None = None,
         create_time: str = "",
     ) -> None:
         """初始化用户策略关联对象
@@ -70,7 +70,7 @@ class UserStrategyDao:
         self.initial_amount = initial_amount
         self.total_profit = total_profit
         self.max_stock_count = max_stock_count
-        self.strategy_params = strategy_params
+        self.strategy_params = strategy_params or {}
         self.create_time = create_time
 
     def from_db(self, data: dict[str, Any]) -> None:

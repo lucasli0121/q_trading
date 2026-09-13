@@ -3,32 +3,38 @@ Author: liguoqiang
 Date: 2026-06-29
 LastEditors: liguoqiang
 LastEditTime: 2026-07-26
-Description: 波段交易策略
-    低频依照支撑位和阻力位提供交易策略
-    买入条件（全部满足）：
-        历史行情条件（is_match_strategy 中判断）
-            1. 昨日股价>支撑位并接近支撑位(3%的误差)
-            2. 昨日股价<任何一个阻力位
-            3. 如果有多个支撑价位，靠近任何一个即可
+Description: 波段交易策略，适合震荡行情
+    低频依照支撑位和阻力位提供交易策略，日K线数据用于计算支撑位和阻力位，分钟线数据用于判断当天买入卖出条件。
+    选股条件：（is_match_strategy 适配）
+        1. 昨日股价>支撑位并在支撑位(3%的误差)
+        2. 昨日股价<任何一个阻力位
+        3. 如果有多个支撑价位，靠近任何一个即可
 
-        当天条件（_check_buy_conditions 中判断）
-            1. 今日股价接近支撑位上下(0.05%的误差)
+    当天买入条件（全部满足）：
+        1. 今日股价接近当天任何一个支撑位上下(0.05%的误差)
+        2. 根据KlineSRFactor因子返回的分值判断
 
     卖出条件（满足其一）：
-        1. 今日股价接近阻力位(1%的误差)或者大于阻力位
-        2. 今日14:40以后股价<支撑位并且相比支撑位跌幅>3%
+        1. 今日股价接近任何一个阻力位(0.05%的误差)
+        2. 跌停不卖出
+        3. 今日股价跌穿日行情的支撑位并且相比支撑位跌幅 > 2%
 """
 
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any
 
 import pandas as pd
 
 from app_context import AppContext
 from factor.kline_support_resistance import KlineSRFactor
+from factor.in_day_support_resistance import InDaySRFactor
+from factor.boll_support_resistance import BollSRFactor
 from strategy.base_strategy import BaseStrategy
+from redis_db.redis_exec import RedisExec
+
 
 
 class SwingTradingStrategy(BaseStrategy):
@@ -36,47 +42,69 @@ class SwingTradingStrategy(BaseStrategy):
 
     买入条件（全部满足）：
         历史行情条件（is_match_strategy 中判断）
-            1. 市盈率和利润增长率不能太低(市盈率<300, 利润增长率>10%，所属行业金融业，非银金融除外)
-            2. 10日内最低点到最高点反弹超过8%,10内最高点到昨日收跌，但是昨日最低价和支撑位上下(3%的误差)
-            3. 昨日收盘价>支撑位
+            1. KlineSRFactor 因子返回的分值 > 0.0，买入
 
         当天条件（_check_buy_conditions 中判断）
-            1. 买入1：开盘价相比昨日收盘价不能过低，当天开盘价 - 昨日收盘价 > -3%
-            2. 买入2：分时段检查，股价未跌穿支撑位(跌幅>-2%)且从最低点反弹：
-               - 11:00-11:30: 股价 > 最低价
-               - 13:30-14:00: 股价相比最低价涨幅 > 1%
-               - 14:30-14:50: 股价相比最低价涨幅 > 2%
-            3. 涨停不买入
+            2. 涨停不买入
+            3. InDaySRFactor 因子返回的分值 > 0.0，买入
 
     卖出条件（满足其一）：
-        1. 今日股价上涨在阻力位上下附近(1%的误差)
-        2. 今日14:40以后股价<支撑位并且相比支撑位跌幅>3%，如果股价涨停则不卖出
+        1. InDaySRFactor 因子返回的分值 < 0.0，卖出
+        2. 跌停不卖出
+        3. KlineSRFactor 因子返回的分值 < 0.0，卖出
     """
 
     strategy_name: str = "低频波段交易策略"
     description: str = (
-        "是用于网格交易模式，通过支撑价位和阻力价位来回交易，产生收益"
+        "是用于网格交易模式，通过支撑价位和阻力价位来回交易，适合震荡行情"
     )
 
     # ---- 买入参数 ----
-    SUPPORT_NEAR_PCT: float = 3.0  # 历史行情中接近支撑位的误差（%）
-    BUY_SUPPORT_TOLERANCE: float = 0.5  # 当天买入接近支撑位的误差（%）
+    BUY_SR_WINDOW: int = 5  # 寻找局部极值点的窗口大小
 
     # ---- 卖出参数 ----
-    SELL_RESISTANCE_TOLERANCE: float = 1.0  # 接近阻力位的误差（%）
-    SELL_SUPPORT_DROP_PCT: float = 3.0  # 跌破支撑位幅度（%）
+    SELL_SR_WINDOW: int = 5  # 寻找局部极值点的窗口大小
 
     # ---- 支撑/阻力位计算参数 ----
     SR_WINDOW: int = 5  # 寻找局部极值点的窗口大小
     SR_TOLERANCE: float = 0.02  # 相近价位聚类合并的容差
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        user_strategy_id: str = "",
+        strategy_id: str = "",
+        strategy_type: str = "",
+        user_strategy_params: dict[str, Any] | None = None,
+        default_params: dict[str, Any] | None = None,
+    ) -> None:
         """初始化波段交易策略。"""
-        # 必须调用基类初始化：设置 logger/factor_manager，并创建选股列表缓存字段
-        super().__init__()
-        # 缓存每只股票匹配到的支撑位和阻力位列表（is_match_strategy 填充）
-        self._matched_support: dict[str, float] = {}
-        self._matched_resistances: dict[str, list[float]] = {}
+        # 必须调用基类初始化：设置 logger/factor_manager、加载策略参数并创建选股列表缓存字段
+        super().__init__(
+            user_strategy_id=user_strategy_id,
+            strategy_id=strategy_id,
+            strategy_type=strategy_type,
+            user_strategy_params=user_strategy_params,
+            default_params=default_params,
+        )
+        self._break_max_r: dict[str, bool] = {} # 是否突破最大阻力位,对应每个股票代码
+        self._inday_sr_points: dict[str, pd.DataFrame] = {}  # 当天支撑位和阻力位缓存，key=code, value={"s1":xx,"s2":xx,"r1":xx,"r2":xx}
+
+    def apply_params(self, params: dict[str, Any]) -> None:
+        """将参数字典映射到策略属性（扁平结构，key 与类属性名对应）。
+
+        缺失的字段保留类属性默认值。
+
+        :param params: 策略参数字典
+        """
+        if not isinstance(params, dict) or not params:
+            return
+        match_config: dict[str, Any] = params.get("match", {}) or {}
+        buy_config: dict[str, Any] = params.get("buy", {}) or {}
+        sell_config: dict[str, Any] = params.get("sell", {}) or {}
+        self.BUY_SR_WINDOW = int(buy_config.get("buy_sr_window", self.BUY_SR_WINDOW))
+        self.SELL_SR_WINDOW = int(sell_config.get("sell_sr_window", self.SELL_SR_WINDOW))
+        self.SR_WINDOW = int(match_config.get("sr_window", self.SR_WINDOW))
+        self.SR_TOLERANCE = float(match_config.get("sr_tolerance", self.SR_TOLERANCE))
 
     # ---- 基类抽象方法实现 ----
 
@@ -85,10 +113,7 @@ class SwingTradingStrategy(BaseStrategy):
 
         本策略使用 KlineSRFactor 基于历史K线数据计算支撑位和阻力位。
         """
-        self.factor_manager.register(
-            KlineSRFactor.factor_name,
-            KlineSRFactor(days=15),
-        )
+        pass
 
     def is_match_strategy(
         self, stock_data: list[dict[str, Any]]
@@ -96,11 +121,6 @@ class SwingTradingStrategy(BaseStrategy):
         """判断历史日线数据是否满足策略买入信号（用于回测/选股）。
 
         stock_data 是历史行情，不含当天行情。
-
-        条件：
-        1. 市盈率和利润增长率不能太低(市盈率<300, 利润增长率>10%，所属行业金融业，非银金融除外)
-        2. 昨日最低价 > 其中一个支撑位并接近支撑位(3%的误差) 并且下影线比较长
-
         :param stock_data: 股票日线行情数据列表，每项含 close/open/high/low 等字段
         :return: (是否匹配, 详细信息字典)
         """
@@ -113,14 +133,19 @@ class SwingTradingStrategy(BaseStrategy):
         # ---- 条件1：市盈率<300, 利润增长率>10%, 此项检查不包含：金融业和非银金融行业 ----
         if not code:
             return False, {"reason": "条件1不满足: 无法获取股票代码"}
-        passed, reason = self._check_industry_pe(code)
-        if not passed:
+        match, reason = self._check_industry_pe(code)
+        if not match:
             return False, reason
-
-        return self._check_support_resistance(stock_df, code)
+        ksr_factor = KlineSRFactor(self.SR_WINDOW, self.SR_TOLERANCE)  # 确保因子已注册
+        score: float = ksr_factor.score(stock_df)
+        if score > 0.0:
+            return True, {"reason": "条件满足: KlineSRFactor 因子返回的分值满足买入条件", "score": score}
+        if score == -10.0:
+            self._break_max_r[code] = True
+        return False, {"reason": "条件不满足: KlineSRFactor 因子返回的分值不满足买入条件"}
 
     def _check_industry_pe(self, code: str) -> tuple[bool, dict[str, Any]]:
-        """条件1：非金融行业需要满足市盈率与利润增长率要求。"""
+        """只满足市盈率不要超过200, 不要亏损就行"""
         try:
             stock_info_list: list[dict[str, Any]] = AppContext().stock_info_api.get_by_codes(codes=code)
             industry: str = ""
@@ -129,171 +154,79 @@ class SwingTradingStrategy(BaseStrategy):
                 industry = str(info.get("industry", info.get("industry_name", "")))
             # 不属于金融或者非银金融时才检查市盈率和利润率
             if "金融" not in industry and "非银金融" not in industry:
-                passed, reason = self._match_pe_profit(code, 300, 10)
+                passed, reason = self._match_pe_profit(code, 200, 0)
                 if not passed:
                     return False, reason
         except Exception as exc:
             self.logger.warning("查询行业信息失败 code=%s: %s", code, exc, exc_info=True)
         return True, {}
 
-    def _check_support_resistance(
-        self, stock_df: pd.DataFrame, code: str
-    ) -> tuple[bool, dict[str, Any]]:
-        """条件2: 10日内最低点到最高点反弹超过8%,10日内最高点到昨日收跌，昨日最低价在支撑位上下3%误差内
-        条件3: 昨日收盘价>支撑位
-
-        :param stock_df: 历史日线DataFrame，含 high/low/close 字段，按时间升序
-        :param code: 股票代码
-        :return: (是否匹配, 详细信息)
+    def handle_minute_bar(self, code: str, position: dict[str, Any], stock_data: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         """
-        # ---- 计算支撑位和阻力位 ----
-        sr_factor = self.factor_manager.get(KlineSRFactor.factor_name)
-        if sr_factor is None:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    "支撑阻力因子未注册"
-                )
-            }
-
-        sr_result: dict[str, list[float]] = sr_factor.calculate(stock_df)
-        support_levels: list[float] = sr_result.get("support", [])
-        resistance_levels: list[float] = sr_result.get("resistance", [])
-
-        if not support_levels:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    "未找到有效支撑位"
-                )
-            }
-
-        # ---- 昨日数据（DataFrame 最后一行） ----
-        yesterday = stock_df.iloc[-1]
-        yesterday_low: float = float(yesterday["low"])
-        yesterday_close: float = float(yesterday["close"])
-        yesterday_idx = stock_df.index[-1]
-
-        # ---- 最近10个交易日 ----
-        recent_10: pd.DataFrame = stock_df.iloc[-10:]
-        low_10: float = float(recent_10["low"].min())
-        high_10: float = float(recent_10["high"].max())
-
-        if low_10 <= 0:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    "10日内最低价异常"
-                )
-            }
-
-        # ---- 条件2a: 10日内最低点到最高点反弹超过8% ----
-        rebound_pct: float = (high_10 - low_10) / low_10 * 100
-        if rebound_pct <= 8.0:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    f"条件2a不满足: 10日内反弹{rebound_pct:.2f}% <= 8%"
-                ),
-                "low_10": low_10,
-                "high_10": high_10,
-                "rebound_pct": round(rebound_pct, 2),
-            }
-
-        # 最低点必须出现在最高点之前（先见底、后反弹）
-        low_10_idx = int(recent_10["low"].idxmin())
-        high_10_idx = int(recent_10["high"].idxmax())
-        if low_10_idx >= high_10_idx:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    "条件2a不满足: 10日内最低点未出现在最高点之前"
-                ),
-            }
-
-        # ---- 条件2b: 10日内最高点到昨日收跌 ----
-        # 最高点必须出现在昨日之前，且昨日收盘价 < 最高价
-        if high_10_idx >= yesterday_idx:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    "条件2b不满足: 10日内最高点即昨日，未发生回调"
-                ),
-            }
-        if yesterday_close >= high_10:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    f"条件2b不满足: 昨日收盘{yesterday_close:.2f} >= 10日最高{high_10:.2f}，未收跌"
-                ),
-                "yesterday_close": yesterday_close,
-                "high_10": high_10,
-            }
-
-        # ---- 条件2c: 昨日最低价在支撑位上下3%误差内 ----
-        supports_near_low: list[float] = [
-            s
-            for s in support_levels
-            if abs((yesterday_low - s) / s * 100) <= self.SUPPORT_NEAR_PCT
-        ]
-        if not supports_near_low:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    f"条件2c不满足: 昨日最低价{yesterday_low:.2f}"
-                    f" 不在任一支撑位 {support_levels} 的{self.SUPPORT_NEAR_PCT}%范围内"
-                ),
-                "yesterday_low": yesterday_low,
-                "support_levels": support_levels,
-            }
-
-        # 取最接近昨日最低价的支撑位（最高的那个）
-        nearest_support: float = max(supports_near_low)
-
-        # ---- 条件3: 昨日收盘价 > 支撑位 ----
-        if yesterday_close <= nearest_support:
-            return False, {
-                "reason": (
-                    f"{self.strategy_name},func:is_match_strategy,"
-                    f"条件3不满足: 昨日收盘价{yesterday_close:.2f} <= 支撑位{nearest_support:.2f}"
-                ),
-                "yesterday_close": yesterday_close,
-                "nearest_support": nearest_support,
-            }
-
-        # ---- 全部条件满足：缓存匹配结果 ----
-        if code:
-            self._matched_support[code] = nearest_support
-            self._matched_resistances[code] = resistance_levels
-
-        return True, {
-            "code": code,
-            "close": yesterday_close,
-            "matched_support": nearest_support,
-            "resistance_levels": resistance_levels,
-            "support_levels": support_levels,
-            "signal": "BUY",
-        }
-
-    def before_trading(
-        self, trade_date: str, stock_codes: list[str], **kwargs: Any
-    ) -> None:
-        """每天开盘前准备工作。
-
-        清理缓存，确保新一天以干净状态开始。
-
-        :param trade_date: 交易日日期字符串 YYYY-MM-DD
-        :param stock_codes: 当日关注的股票代码列表
-        :param kwargs: 扩展参数
+        重载父类的此函数
+        先执行买入判断，再执行卖出判断，目的是为了做T
         """
+        self._before_minute_route(code, stock_data)
+        # 如果昨日股价突破最大阻力位，今天则不进行买入，只判断卖出
+        break_max = self._break_max_r.get(code, False)
+        if not break_max:
+            # 如果买入条件成立就直接返回
+            match, extra = self._check_buy_conditions(code, stock_data)
+            if match:
+                return match, extra
+        # 如果买入条件不成立，就判断卖出条件
+        return self._check_sell_conditions(code, position, stock_data)
+
+    def _before_minute_route(self, code: str, stock_data: dict[str, Any]) -> None:
+        """分钟路由前保存分钟行情缓存。"""
+        self._save_minute_cache(code, stock_data)
+
+    def before_trading(self, trade_date: str, stock_codes: list[str], **kwargs: Any) -> None:
+        """
+        每天交易前的准备工作，清理分钟行情缓存。
+        此处做前一天的经典枢轴点计算（采用IndaySRFactor)，供当天交易使用。
+        """
+        #先调用父类进行每天的清理工作
         super().before_trading(trade_date, stock_codes, **kwargs)
-        self._matched_support.clear()
-        self._matched_resistances.clear()
-        self.logger.info(
-            "[%s] before_trading(trade_date=%s, codes=%d)",
-            self.strategy_name, trade_date, len(stock_codes),
-        )
+        self._break_max_r.clear()
+        self._inday_sr_points.clear()
+        #计算买入点的支撑位和阻力位，供当天交易使用
+        for code in stock_codes:
+            sr_df: pd.DataFrame = self._get_code_prev_sr_point(code, trade_date)
+            self._save_sr_points(code, sr_df)
 
+    def _get_code_prev_sr_point(self, code: str, trade_date: str) -> pd.DataFrame:
+        inday_sr_factor = InDaySRFactor()  # 确保因子已注册
+        stock_df = self.load_his_daily_data(code, trade_date, inday_sr_factor.days)  # 计算当天支撑位和阻力位，确保因子已注册
+        return inday_sr_factor.calculate(stock_df)
+    
+    def _save_sr_points(self, code: str, sr_df: pd.DataFrame) -> None:
+        if sr_df.empty:
+            return
+        if self._redis_enabled:
+            redis_exec: RedisExec = AppContext().redis_exec
+            key: str = f"{self.strategy_name}:sr_points:{code}"
+            value: str = sr_df.to_json(orient="records", date_format="iso")
+            if redis_exec.set_key_string(key, value, ex=self.MINUTE_CACHE_TTL):
+                return
+        self._inday_sr_points[code] = sr_df
+
+    def _get_sr_points(self, code: str) -> pd.DataFrame:
+        df: pd.DataFrame = pd.DataFrame()
+        if self._redis_enabled:
+            redis_exec: RedisExec = AppContext().redis_exec
+            key: str = f"{self.strategy_name}:sr_points:{code}"
+            value: str|None = redis_exec.get_key_string(key)
+            if value:
+                df = pd.DataFrame.from_records(json.loads(value))
+                if not df.empty:
+                    return df
+        df = self._inday_sr_points.get(code, pd.DataFrame())
+        if df.empty:
+            trade_day = self.get_recent_trading_day()
+            df = self._get_code_prev_sr_point(code, trade_day)
+            self._save_sr_points(code, df)
+        return df
     # ---- 内部方法 ----
 
     def _check_buy_conditions(
@@ -302,12 +235,8 @@ class SwingTradingStrategy(BaseStrategy):
         """检查当天买入条件。
 
         条件：
-            1. 买入1：开盘价相比昨日收盘价不能过低，当天开盘价 - 昨日收盘价 > -3%
-            2. 买入2：分时段检查，股价未跌穿支撑位(跌幅>-2%)且从最低点反弹：
-               - 11:00-11:30: 股价 > 最低价
-               - 13:30-14:00: 股价相比最低价涨幅 > 1%
-               - 14:30-14:50: 股价相比最低价涨幅 > 2%
-            3. 涨停不买入
+            根据InDaySRFactor因子返回的分值判断，分值>0.0买入
+            同时增加KlineSRFactor因子返回的分值判断，分值>0.0买入
 
         :param code: 股票代码
         :param stock_data: 实时/分钟行情数据
@@ -341,62 +270,53 @@ class SwingTradingStrategy(BaseStrategy):
             current_hour: int = minute_dt.hour
             current_minute: int = minute_dt.minute
                 
-            # ---- 条件1：当天开盘价 - 昨日收盘价 > -3% ----
-            # 只在开盘时检查，避免开盘后股价波动导致误判
-            if current_hour == 9 and current_minute < 50:
-                if preclose > 0:
-                    chg = (open_price - preclose) / preclose * 100
-                    if chg < -3.0:
-                        return False, {
-                            "reason": (
-                                f"{self.strategy_name}, func:check_buy_conditions,"
-                                f"买点1不符合: 低开过大,开盘价{open_price}相比昨收价{preclose}涨幅{chg} < -3%: "
-                            ),
-                            "code": code,
-                            "open": open_price,
-                            "preclose": preclose,
-                        }
+            # ---- 条件1：9:40 前不判断，避免干扰 ----
+            if current_hour == 9 and current_minute < 40:
+                return False, {
+                    "reason": (
+                        f"{self.strategy_name}, 9:40前不判断买入条件，当前时间{create_time}"
+                    ),
+                    "code": code,
+                    "open": open_price,
+                    "preclose": preclose,
+                }
 
             # 如果涨停或跌停则不买入（距离涨停价 0.5% 以内视为涨停）
             if preclose > 0 and abs((current_price - preclose) / preclose * 100) >= 9.5:
                 return False, {
                     "reason": (
-                        f"{self.strategy_name},func:_check_buy_conditions,"
+                        f"{self.strategy_name}"
                         f"买入条件不满足: 当前价{current_price:.2f}"
                         f" 接近涨停或跌停s（昨收{preclose:.2f}），不买入"
                     ),
                     "code": code,
                     "current_price": current_price,
                 }
-            
-            # 当前时间小于9:50不检查
-            if current_hour == 9 and current_minute < 50:
-                return False, {
-                    "reason": (
-                        f"{self.strategy_name},func:is_match_strategy,"
-                        f"当前时间{create_time}小于9:50，不检查买入条件2"
-                    ),
-                    "code": code,
-                }
-            # ---- 获取该股票的匹配支撑位 ----
-            matched_support: float | None = self._matched_support.get(code)
-            if matched_support is None:
-                return False, {
-                    "reason": (
-                        f"{self.strategy_name},func:is_match_strategy,"
-                        f"未找到股票 {code} 的匹配支撑位，请先执行盘前筛选"
-                    ),
-                    "code": code,
-                }
-            
-            # --- 条件2：分时段检查（跌穿支撑位 + 从最低点反弹） ---
-            result = self._check_buy_time_windows(
-                code, current_price, low_price, matched_support, current_hour, current_minute
-            )
-            if result is not None:
-                return result
 
-            # 不在任何买入窗口内或条件未满足，继续等待
+            
+            minute_cache: list[dict[str, Any]] = self._get_minute_cache(code)
+            stock_df = pd.DataFrame(minute_cache)
+            inday_sr_factor = InDaySRFactor()  # 确保因子已注册
+            sr_df: pd.DataFrame = self._get_sr_points(code)
+            inday_score: float = inday_sr_factor.score_with_sr(sr_df, stock_df)  # 计算当天支撑位和阻力位
+            boll_sr_factor = BollSRFactor(timeperiod=self.BUY_SR_WINDOW)  # 确保因子已注册
+            boll_score: float = boll_sr_factor.score(stock_df)  # 计算布林带支撑位和阻力位
+            raise_score: int = 0
+            if inday_score > 0.0:
+                raise_score += 1
+            if boll_score > 0.0:
+                raise_score += 1
+            if raise_score >= 2:
+                return True, {
+                    "reason": (
+                        f"条件满足: 因子返回的分值满足买入条件, 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}"
+                    ),
+                    "signal": "BUY",
+                    "code": code,
+                    "score": inday_score + boll_score,
+                    "current_price": current_price,
+                    "create_time": create_time,
+                }
             return False, {
                 "reason": (
                     f"{self.strategy_name},func:_check_buy_conditions,"
@@ -414,87 +334,16 @@ class SwingTradingStrategy(BaseStrategy):
             )
             return False, {"reason": f"检查异常: {exc}", "code": code}
 
-    def _check_buy_time_windows(
-        self,
-        code: str,
-        current_price: float,
-        low_price: float,
-        matched_support: float,
-        current_hour: int,
-        current_minute: int,
-    ) -> tuple[bool, dict[str, Any]] | None:
-        """分时段检查买入条件：股价未跌穿支撑位且从最低点反弹。
-
-        三个检查窗口：
-        - 11:00-11:30: 跌幅 < -2% 且 股价 > 最低价
-        - 13:30-14:00: 跌幅 < -2% 且 股价相比最低价涨幅 > 1%
-        - 14:30-14:50: 跌幅 < -2% 且 股价相比最低价涨幅 > 2%
-
-        :param code: 股票代码
-        :param current_price: 当前价格
-        :param low_price: 全天最低价
-        :param matched_support: 匹配的支撑位
-        :param current_hour: 当前小时
-        :param current_minute: 当前分钟
-        :return: (True, 详情) 触发买入; None 不在窗口或条件未满足
-        """
-        # 判断当前所属窗口及对应的反弹阈值
-        in_window: bool = False
-        rebound_threshold: float = 0.0
-        window_label: str = ""
-
-        if current_hour == 11 and 0 <= current_minute <= 30:
-            in_window = True
-            rebound_threshold = 0.0
-            window_label = "11:00-11:30"
-        elif current_hour == 13 and current_minute >= 30:
-            in_window = True
-            rebound_threshold = 1.0
-            window_label = "13:30-14:00"
-        elif current_hour == 14 and 30 <= current_minute <= 50:
-            in_window = True
-            rebound_threshold = 2.0
-            window_label = "14:30-14:50"
-
-        if not in_window:
-            return None
-
-        # 条件A: 股价未跌穿支撑位（相比支撑位跌幅 > -2%）
-        gap_support_pct: float = (current_price - matched_support) / matched_support * 100
-        if gap_support_pct <= -2.0:
-            return None  # 已跌穿，不买入
-
-        # 条件B: 股价相比最低价反弹超过阈值
-        gap_low_pct: float = (current_price - low_price) / low_price * 100 if low_price > 0 else 0.0
-        if gap_low_pct <= rebound_threshold:
-            return None  # 反弹幅度不够，继续等待
-
-        # 两条件同时满足 → 触发买入
-        buy_reason: str = (
-            f"买入: 窗口{window_label} 当前价{current_price:.2f}"
-            f" 未跌穿支撑位{matched_support:.2f}(距支撑位{gap_support_pct:.2f}%)"
-            f" 相比最低价{low_price:.2f}反弹{gap_low_pct:.2f}%"
-        )
-        return True, {
-            "code": code,
-            "current_price": current_price,
-            "matched_support": matched_support,
-            "low_price": low_price,
-            "gap_support_pct": round(gap_support_pct, 2),
-            "gap_low_pct": round(gap_low_pct, 2),
-            "window": window_label,
-            "reason": buy_reason,
-            "signal": "BUY",
-        }
 
     def _check_sell_conditions(
         self, code: str, position: dict[str, Any], stock_data: dict[str, Any],
     ) -> tuple[bool, dict[str, Any]]:
         """检查卖出条件是否满足（满足其一即触发）。
 
-        条件：
-        1. 今日股价突破阻力位：在阻力位附近，上下(1%的误差)
-        2. 股价下跌跌穿支撑位: 股价 < 支撑位,并且相比支撑位跌幅 > 2%
+        卖出条件：
+        1. InDaySRFactor 因子返回的分值 < 0.0，卖出
+        2. 跌停不卖出
+        3. 布林带辅助
 
         :param code: 股票代码
         :param position: 持仓信息，含 cost_price / buy_time / quantity 等字段
@@ -502,7 +351,6 @@ class SwingTradingStrategy(BaseStrategy):
         :return: (是否触发卖出, 详细信息)
         """
         cost_price: float = float(position.get("cost_price", 0))
-        triggered: list[str] = []
         extra: dict[str, Any] = {"code": code, "cost_price": cost_price}
 
         try:
@@ -532,47 +380,27 @@ class SwingTradingStrategy(BaseStrategy):
                     "code": code,
                     "current_price": current_price,
                 }
-            
-            # ---- 获取该股票的支撑位和阻力位 ----
-            matched_support: float | None = self._matched_support.get(code)
-            resistances: list[float] = self._matched_resistances.get(code, [])
-
-            # ---- 条件1：今日股价突破阻力位：在阻力位附近，上下(1%的误差) ----
-            if resistances:
-                for res in resistances:
-                    # 大于阻力位 或 接近阻力位(1%误差内)
-                    gap_from_res = abs(current_price - res) / res * 100
-                    if gap_from_res <= self.SELL_RESISTANCE_TOLERANCE:
-                        triggered.append(
-                            f"条件1: 当前价{current_price:.2f}"
-                            f" 接近阻力位{res:.2f}"
-                            f" (差距{gap_from_res:.2f}% <= {self.SELL_RESISTANCE_TOLERANCE}%)"
-                        )
-                        break
-            else:
-                self.logger.debug(
-                    "[%s] 股票 %s 无阻力位数据，跳过条件1",
-                    self.strategy_name, code,
-                )
-
-            # ---- 条件2：股价下跌，跌穿支撑位: 股价 < 支撑位,并且相比支撑位跌幅 > 3%----
-            if matched_support is not None and matched_support > 0:
-                drop_pct: float = (
-                    (matched_support - current_price) / matched_support * 100
-                )
-                if drop_pct >= self.SELL_SUPPORT_DROP_PCT:
-                    triggered.append(
-                        f"条件2: 当前价{current_price:.2f}"
-                        f" < 支撑位{matched_support:.2f}"
-                        f" 且跌幅{drop_pct:.2f}% 过大"
-                    )
-
-            if triggered:
+            # 
+            minute_cache: list[dict[str, Any]] = self._get_minute_cache(code)
+            stock_df = pd.DataFrame(minute_cache)
+            inday_sr_factor = InDaySRFactor()  # 确保因子已注册
+            sr_df: pd.DataFrame = self._get_sr_points(code)
+            inday_score: float = inday_sr_factor.score_with_sr(sr_df, stock_df)  # 计算当天支撑位和阻力位
+            boll_sr_factor = BollSRFactor(timeperiod=self.SELL_SR_WINDOW)  # 确保因子已注册
+            boll_score: float = boll_sr_factor.score(stock_df)  # 计算布林带支撑位和阻力位
+            raise_score: int = 0
+            if inday_score < 0.0:
+                raise_score += 1
+            if boll_score < 0.0:
+                raise_score += 1
+            if raise_score >= 2.0:
                 extra["signal"] = "SELL"
-                extra["reason"] = f"卖出: {'; '.join(triggered)}"
-                extra["reasons"] = triggered
-                extra["matched_support"] = matched_support
-                extra["resistances"] = resistances
+                extra["reason"] = (
+                    f"条件满足: 因子返回的分值满足卖出条件, 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}"
+                ),
+                extra["current_price"] = current_price
+                extra["score"] = inday_score + boll_score
+                extra["create_time"] = create_time
                 return True, extra
 
             return False, extra
@@ -583,3 +411,4 @@ class SwingTradingStrategy(BaseStrategy):
                 self.strategy_name, code, exc,
             )
             return False, {"reason": f"检查异常: {exc}", "code": code}
+

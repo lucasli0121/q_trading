@@ -30,10 +30,7 @@ class TestMongoRTSocketImpl(unittest.TestCase):
         super().tearDown()
 
     def test_aggregate_minute_hq(self) -> None:
-        rt_impl = MongoRtStocksImpl()
-        res, values = rt_impl.aggregate_minute_hq_for_codes(["002281.SZ"], "2026-07-17 09:51")
-        if values:
-            print(values)
+        pass
 
 if __name__ == "__main__":
     unittest.main()

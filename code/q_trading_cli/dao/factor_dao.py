@@ -31,7 +31,7 @@ class FactorDao:
         description: str = "",
         class_path: str = "",
         class_name: str = "",
-        default_params: dict = {}
+        default_params: dict | None = None
     ) -> None:
         """初始化因子定义对象
 
@@ -47,7 +47,7 @@ class FactorDao:
         self.description = description
         self.class_path = class_path
         self.class_name = class_name
-        self.default_params = default_params
+        self.default_params = default_params or {}
 
     def from_db(self, data: dict[str, Any]) -> None:
         """从数据库记录填充对象字段

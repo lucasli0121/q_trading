@@ -10,16 +10,16 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Hashable
-
+from utils import tools
 from pymongo import UpdateOne
 from app_context import AppContext
 
 
-def _his_code_regex(code: str) -> dict[str, Any]:
-    """返回历史K线 code 字段的正则匹配条件。"""
-    m = re.search(r"\d+", code)
-    pure = m.group() if m else code
-    return {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}
+# def _his_code_regex(code: str) -> dict[str, Any]:
+#     """返回历史K线 code 字段的正则匹配条件。"""
+#     m = re.search(r"\d+", code)
+#     pure = m.group() if m else code
+#     return {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}
 
 
 class MongoStockHisHqImpl:
@@ -134,7 +134,7 @@ class MongoStockHisHqImpl:
                 data = data.copy()
                 if "id" in data:
                     del data["id"]
-                code = data.get("code", "")
+                code = tools.guess_stock_code_suffix(data.get("code", ""))
                 create_time = data.get("create_time", "")
                 if not code or not create_time:
                     continue
@@ -142,7 +142,7 @@ class MongoStockHisHqImpl:
                 requests.append(
                     UpdateOne(
                         {
-                            "code": _his_code_regex(code),
+                            "code": code,
                             "create_time": create_time,
                         },
                         {"$set": clean_data},
@@ -211,8 +211,8 @@ class MongoStockHisHqImpl:
                 return True, None
             # 归一化 code：提取纯数字，构建 $or 条件
             code_conditions: list[dict[str, Any]] = []
-            for c in codes:
-                code_conditions.append({"code": _his_code_regex(c)})
+            full_codes = [tools.guess_stock_code_suffix(c) for c in codes]
+            code_conditions.append({"code": {"$in": full_codes}})
             query: dict[str, Any] = {"$or": code_conditions} if len(code_conditions) > 1 else code_conditions[0]
             # 归一化时间格式，使 YYYY-MM-DD 能与 DB 中 YYYY-MM-DD HH:MM:SS 格式匹配
             start_normalized: str = self._normalize_query_time(start_time, is_start=True)

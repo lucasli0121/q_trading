@@ -7,6 +7,7 @@ Description: 行情管理路由 - 实时行情、日K/周K/月K/分钟K线
 """
 
 from datetime import datetime
+from typing import cast
 
 import pandas as pd
 
@@ -43,7 +44,6 @@ async def get_real_time(
         raise HTTPException(status_code=400, detail="请提供 code 或 codes 参数")
 
     rt_impl = MongoRtStocksImpl()
-    rlist: list[dict] = []
 
     if start_time or end_time:
         # 按时间范围查询：传入代码列表一次查询
@@ -51,7 +51,6 @@ async def get_real_time(
         if res and records:
             for r in records:
                 r["_id"] = str(r.get("_id", ""))
-                rlist.append(r)
     else:
         # 无时间范围：取每只股票的最新一条
         res, records = rt_impl.query_latest_rt_stocks_for_codes(code_list, use_default_time=use_default_time)
@@ -59,9 +58,8 @@ async def get_real_time(
             raise HTTPException(status_code=500, detail="查询实时行情失败")
         for r in (records or []):
             r["_id"] = str(r.get("_id", ""))
-            rlist.append(r)
 
-    return ApiResponse(data=rlist)
+    return ApiResponse(data=records)
 
 
 @router.get("/kline/day", response_model=ApiResponse[list])

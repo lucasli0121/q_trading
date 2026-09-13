@@ -77,9 +77,7 @@ class MongoDataAgentIndustryStocksImpl:
 
     def query_by_agent_name(self, agent_name: str) -> tuple[bool, Any | None]:
         try:
-            query: dict[str, Any] = {}
-            if agent_name != "":
-                query = {"agent_name": agent_name}
+            query: dict[str, Any] = {"agent_name": agent_name}
             return self.mongo_exec.query_by_condition(
                 table=self.table,
                 condition=query,
@@ -163,10 +161,13 @@ class MongoDataAgentIndustryStocksImpl:
                             new_industrys = [name for name in industrys if industry != name]
                             if new_industrys and len(new_industrys) > 0:
                                 new_item = {"code": code, "industry": new_industrys}
-                                new_stock_codes_industry.extend(new_item)
+                                new_stock_codes_industry.append(new_item)
                     # 更新记录
-                    update_data = {"stock_codes_industry": new_stock_codes_industry}
-                    self.update(str(record.get("_id", "")), update_data)
+                    if len(new_stock_codes_industry) > 0:
+                        update_data = {"stock_codes_industry": new_stock_codes_industry}
+                        self.update(str(record.get("_id", "")), update_data)
+                    else:
+                        self.delete(str(record.get("_id", "")))
             return True
             # return self.mongo_exec.delete(table=self.table, condition=condition)
         except Exception as e:

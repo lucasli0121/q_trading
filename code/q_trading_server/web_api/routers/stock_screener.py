@@ -6,8 +6,10 @@ LastEditTime: 2026-06-25 13:30:00
 Description: 股票筛选路由 - 按 TTM 市盈率、总市值、利润率范围筛选股票
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import cast
 
+from fastapi import APIRouter, HTTPException, Query
+from utils import tools
 from db.mongo.mongo_company_finance_impl import MongoCompanyFinanceImpl
 from db.mongo.mongo_company_valuation_impl import MongoCompanyValuationImpl
 from web_api.models import ApiResponse, StockScreenerItem
@@ -40,29 +42,23 @@ async def search_stocks(
         ttm_max=ttm_max,
         cap_min=cap_min * 1e8 if cap_min > 0 else 0,
         cap_max=cap_max * 1e8 if cap_max > 0 else 0,
+        skip=skip,
+        limit=limit
     )
     if not val_ok:
         raise HTTPException(status_code=500, detail="查询估值数据失败")
     if not val_records:
         return ApiResponse(data=[])
 
-    # 2. 提取股票代码列表（去重取纯数字部分）
-    val_codes: list[str] = []
-    seen: set[str] = set()
-    for r in val_records:
-        code = r.get("code", "")
-        pure = val_impl.normalize_code(code)
-        if pure and pure not in seen:
-            seen.add(pure)
-            val_codes.append(code)
-
-    # 建立 code → valuation 映射（用纯数字 key）
+    
+    # 建立 code → valuation 映射
     val_map: dict[str, dict] = {}
     for r in val_records:
-        key = val_impl.normalize_code(r.get("code", ""))
+        key = r.get("code", "")
         if key:
             val_map[key] = r
 
+    val_codes: list[str] = list(val_map.keys())
     # 3. 批量查询最新财务数据
     fin_impl = MongoCompanyFinanceImpl()
     fin_ok, fin_records = fin_impl.query_latest_finance_by_codes(val_codes)
@@ -75,7 +71,7 @@ async def search_stocks(
     rlist: list[StockScreenerItem] = []
     for f in fin_records:
         code = f.get("code", "")
-        key = fin_impl.normalize_code(code)
+        key = tools.guess_stock_code_suffix(code)
         val = val_map.get(key)
         if val is None:
             continue

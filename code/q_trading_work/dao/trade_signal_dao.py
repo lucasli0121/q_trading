@@ -28,6 +28,7 @@ class TradeSignalDao:
 
     id: str
     strategy_id: str
+    user_strategy_id: str
     stock_code: str
     trade_price: float
     profit_rate: float
@@ -40,6 +41,7 @@ class TradeSignalDao:
         self,
         id: str = "",
         strategy_id: str = "",
+        user_strategy_id: str = "",
         stock_code: str = "",
         trade_price: float = 0.0,
         profit_rate: float = 0.0,
@@ -51,6 +53,7 @@ class TradeSignalDao:
         """初始化信号对象。"""
         self.id = id
         self.strategy_id = strategy_id
+        self.user_strategy_id = user_strategy_id
         self.stock_code = stock_code
         self.trade_price = trade_price
         self.profit_rate = profit_rate
@@ -63,6 +66,7 @@ class TradeSignalDao:
         """从数据库字典填充对象字段。"""
         self.id = str(data.get("_id", ""))
         self.strategy_id = str(data.get("strategy_id", ""))
+        self.user_strategy_id = str(data.get("user_strategy_id", ""))
         self.stock_code = str(data.get("stock_code", ""))
         self.trade_price = float(data.get("trade_price", 0.0) or 0.0)
         self.profit_rate = float(data.get("profit_rate", 0.0) or 0.0)
@@ -75,6 +79,7 @@ class TradeSignalDao:
         """转换为 MongoDB 存储字典。"""
         return {
             "strategy_id": self.strategy_id,
+            "user_strategy_id": self.user_strategy_id,
             "stock_code": self.stock_code,
             "trade_price": self.trade_price,
             "profit_rate": self.profit_rate,

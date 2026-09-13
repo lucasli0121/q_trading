@@ -56,9 +56,9 @@ def handle_http_error(e: httpx.HTTPStatusError | UnauthorizedError) -> None:
 
     :param e: httpx.HTTPStatusError 或 UnauthorizedError 异常
     """
-    # UnauthorizedError 表示 ApiClient 已自动拦截 401 并弹出确认框跳转登录页
+    # UnauthorizedError 表示 ApiClient 已自动拦截 401 并清除会话、跳转登录页
     if isinstance(e, UnauthorizedError):
-        logger.warning("API 请求未授权 (401)，登录对话框已弹出")
+        logger.warning("API 请求未授权 (401)，已清除会话并跳转登录页")
         return
 
     status_code: int = e.response.status_code
@@ -120,25 +120,20 @@ def _has_client_context() -> bool:
 
 
 def show_relogin_confirm() -> None:
-    """弹出浏览器原生确认框提示用户需要登录，确认后跳转 /login 页面。
+    """登录过期处理：清除会话并跳转登录页。
 
-    仅在浏览器上下文中执行 UI 操作；后台任务中静默跳过。
+    UI 线程（有客户端上下文）直接调用 ui.navigate.to("/login") 跳转；
+    后台线程（无客户端上下文，如 run_in_executor / MQTT 回调）仅记录日志，
+    会话已在 ApiClient._on_401 中清除（authenticated=False），由主页面心跳定时器
+    （main_page._check_auth_heartbeat）检测到未登录后跳转登录页。
     """
     if _has_client_context():
         try:
-            ui.run_javascript("""
-                if (confirm("登录已过期，请重新登录。\\n\\n点击「确定」前往登录页面。")) {
-                    window.location.href = "/login";
-                }
-            """)
+            ui.navigate.to("/login")
         except Exception:
-            logger.debug("无法弹出重新登录确认框", exc_info=True)
-            try:
-                ui.navigate.to("/login")
-            except Exception:  # noqa: BLE001, S110
-                pass
+            logger.debug("无法跳转登录页", exc_info=True)
     else:
-        logger.info("401 发生在后台任务中，跳过 UI 弹窗")
+        logger.info("401 发生在后台任务中，会话已清除，等待心跳跳转登录页")
 
     # 触发外部注册的 401 回调
     for cb in _on_401_callbacks:

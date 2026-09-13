@@ -58,10 +58,11 @@ def _verify_ownership(impl: MongoUserStrategyImpl, user_strategy_id: str, user_i
 async def create_user_strategy(
     req: UserStrategyCreateRequest, user_id: str = Depends(get_current_user)
 ):
-    """创建用户策略关联（同一用户不能重复关联同一全局策略）"""
+    """创建用户策略关联（允许重复新增，不做重复检测）"""
     impl = MongoUserStrategyImpl()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ok, record_id, error = impl.insert_or_update_user_strategy({
+    ok, record_id, error = impl.insert_user_strategy({
+        "name": req.name,
         "strategy_id": req.strategy_id,
         "user_id": user_id,
         "pool_id": req.pool_id,
@@ -71,15 +72,16 @@ async def create_user_strategy(
         "max_stock_count": req.max_stock_count,
         "strategy_params": req.strategy_params,
         "create_time": now,
-    }, insert_only=True)
-    if error == "duplicate_user_strategy":
-        raise HTTPException(status_code=409, detail="已关联该策略，请勿重复创建")
-    if not ok:
+    })
+    if error == "duplicate_name":
+        raise HTTPException(status_code=409, detail="已存在同名策略，请更换名称")
+    if error or not ok or not record_id:
         raise HTTPException(status_code=500, detail="创建用户策略失败")
     await AppContext().stock_fetch.distribute_user_strategy_to_workflow()
     return ApiResponse(
         data=UserStrategyItem(
             id=record_id or "",
+            name=req.name,
             strategy_id=req.strategy_id,
             status=req.status,
             user_id=user_id,
@@ -112,11 +114,13 @@ async def delete_user_strategy(id: str, user_info: tuple[str, int] = Depends(get
 async def update_user_strategy(
     id: str, req: UserStrategyUpdateRequest, user_info: tuple[str, int] = Depends(get_current_user_with_role)
 ):
-    """更新用户策略关联（状态、股票池、初始金额）"""
+    """更新用户策略关联（名称、状态、股票池、初始金额）"""
     user_id, role = user_info
     impl = MongoUserStrategyImpl()
     _verify_ownership(impl, id, user_id, role)
     update_data: dict[str, Any] = {}
+    if req.name is not None:
+        update_data["name"] = req.name
     if req.status is not None:
         update_data["status"] = req.status
     if req.pool_id is not None:
@@ -131,7 +135,9 @@ async def update_user_strategy(
         update_data["strategy_params"] = req.strategy_params
     if not update_data:
         raise HTTPException(status_code=400, detail="没有需要更新的字段")
-    ok = impl.update_user_strategy(id, update_data)
+    ok, error = impl.update_user_strategy(id, update_data)
+    if error == "duplicate_name":
+        raise HTTPException(status_code=409, detail="已存在同名策略，请更换名称")
     if not ok:
         raise HTTPException(status_code=500, detail="更新失败")
     return ApiResponse(data=id, message="更新成功")
@@ -147,6 +153,7 @@ async def list_user_strategies(user_id: str = Depends(get_current_user)):
     result = [
         UserStrategyItem(
             id=str(r.get("_id", "")),
+            name=r.get("name", ""),
             strategy_id=r.get("strategy_id", ""),
             status=r.get("status", ""),
             user_id=r.get("user_id", ""),
@@ -172,6 +179,7 @@ async def list_all_user_strategies():
     result = [
         UserStrategyItem(
             id=str(r.get("_id", "")),
+            name=r.get("name", ""),
             strategy_id=r.get("strategy_id", ""),
             status=r.get("status", ""),
             user_id=r.get("user_id", ""),
@@ -235,6 +243,7 @@ async def get_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_cu
     return ApiResponse(
         data=UserStrategyItem(
             id=str(record.get("_id", "")),
+            name=record.get("name", ""),
             strategy_id=record.get("strategy_id", ""),
             status=record.get("status", ""),
             user_id=record.get("user_id", ""),

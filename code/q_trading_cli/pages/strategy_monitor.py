@@ -16,6 +16,7 @@ from typing import Any
 from nicegui import ui
 
 from app_context import AppContext
+from core.user_strategy_manager import UserStrategyManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,8 @@ def show_strategy_monitor_page() -> None:
     bg_color: str = current_theme.get("background", "#0f0f1a")
     font_color: str = current_theme.get("font_color", "#e5e7eb")
     border_color: str = current_theme.get("widget_border_color", "#334155")
-    positive_color: str = current_theme.get("positive", "#34d399")
-    negative_color: str = current_theme.get("negative", "#f87171")
+    positive_color: str = current_theme.get("positive", "#f87171")
+    negative_color: str = current_theme.get("negative", "#34d399")
     card_bg: str = "#1e293b"
     input_bg: str = "#111827"
 
@@ -69,8 +70,8 @@ def show_strategy_monitor_page() -> None:
                 with ui.row().classes("gap-2"):
                     for lbl, style_color in [
                         ("全部", "#60a5fa"),
-                        ("买入", "#34d399"),
-                        ("卖出", "#f87171"),
+                        ("买入", positive_color),
+                        ("卖出", negative_color),
                     ]:
                         _filter_tag(lbl, style_color, filter_state)
 
@@ -82,7 +83,8 @@ def show_strategy_monitor_page() -> None:
                 table_container.clear()
                 with table_container:
                     # 获取信号并筛选
-                    signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals(limit=200)
+                    user_strategy_ids: list[str] = UserStrategyManager().get_user_strategy_ids()
+                    signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals_by_user_strategy(user_strategy_ids=list(user_strategy_ids), limit=200)
                     action_filter: str = filter_state["action"]
                     if action_filter != "全部":
                         action_map: dict[str, str] = {"买入": "买入", "卖出": "卖出"}
@@ -96,11 +98,11 @@ def show_strategy_monitor_page() -> None:
                         f"padding: 12px 24px;"
                     ):
                         for hdr, flex in [
-                            ("时间", 2), ("策略ID", 1), ("股票代码", 1),
+                            ("时间", 1.5), ("策略", 1), ("股票代码", 1),
                             ("信号类型", 1), ("成交价格", 1),
                             ("盈亏率", 1), ("盈亏额", 1), ("原因", 2),
                         ]:
-                            ui.label(hdr).classes("text-xs font-semibold uppercase tracking-wider").style(
+                            ui.label(hdr).classes("text-xs font-semibold uppercase tracking-wider item-center").style(
                                 f"color: #9ca3af; flex: {flex};"
                             )
 
@@ -115,6 +117,8 @@ def show_strategy_monitor_page() -> None:
                             action_color: str = positive_color if is_buy else (negative_color if action else font_color)
                             time_str: str = str(sig.get("create_time", ""))[:19]
                             sid: str = str(sig.get("strategy_id", ""))
+                            strategy_dao = AppContext().strategy_api.get_by_id(sid)  # 预加载策略名称
+                            sname: str = strategy_dao.get("name", "") if strategy_dao else ""
                             code: str = str(sig.get("stock_code", ""))
                             price: str = _fmt_price(sig.get("trade_price", ""))
                             profit_rate: float = float(sig.get("profit_rate", 0) or 0)
@@ -122,20 +126,20 @@ def show_strategy_monitor_page() -> None:
                             reason: str = str(sig.get("reason", "") or "")
 
                             # 盈亏率/盈亏额颜色（中国股市：红涨绿跌）
-                            pr_color: str = negative_color if profit_rate > 0 else (positive_color if profit_rate < 0 else font_color)
-                            pa_color: str = negative_color if profit_amount > 0 else (positive_color if profit_amount < 0 else font_color)
+                            pr_color: str = positive_color if profit_rate > 0 else (negative_color if profit_rate < 0 else font_color)
+                            pa_color: str = positive_color if profit_amount > 0 else (negative_color if profit_amount < 0 else font_color)
 
                             row_bg: str = input_bg if i % 2 == 0 else card_bg
                             with ui.row().classes("w-full items-center log-row").style(
                                 f"padding: 12px 24px; background-color: {row_bg};"
                             ):
-                                ui.label(time_str or "--").classes("text-sm").style("color: #9ca3af; flex: 2;")
-                                ui.label(sid or "--").classes("text-sm").style("color: #9ca3af; flex: 1;")
-                                ui.label(code or "--").classes("text-sm font-medium").style(f"color: {font_color}; flex: 1;")
-                                ui.label(action or "--").classes("text-sm font-bold uppercase").style(f"color: {action_color}; flex: 1;")
-                                ui.label(price).classes("text-sm").style(f"color: {font_color}; flex: 1;")
-                                ui.label(f"{profit_rate:+.2f}%").classes("text-sm font-medium").style(f"color: {pr_color}; flex: 1;")
-                                ui.label(f"{profit_amount:+.2f}").classes("text-sm").style(f"color: {pa_color}; flex: 1;")
+                                ui.label(time_str or "--").classes("text-sm item-center").style("color: #9ca3af; flex: 1.5;")
+                                ui.label(sname or sid or "--").classes("text-sm item-center").style("color: #9ca3af; flex: 1;")
+                                ui.label(code or "--").classes("text-sm font-medium item-center").style(f"color: {font_color}; flex: 1;")
+                                ui.label(action or "--").classes("text-sm font-bold uppercase item-center").style(f"color: {action_color}; flex: 1;")
+                                ui.label(price).classes("text-sm item-center").style(f"color: {font_color}; flex: 1;")
+                                ui.label(f"{profit_rate:+.2f}%").classes("text-sm font-medium item-center").style(f"color: {pr_color}; flex: 1;")
+                                ui.label(f"{profit_amount:+.2f}").classes("text-sm item-center").style(f"color: {pa_color}; flex: 1;")
                                 ui.label(reason or "-").classes("text-sm truncate").style("color: #6b7280; flex: 2;")
 
             _render_table()
@@ -159,8 +163,9 @@ def _build_signal_stats_row(
     :param positive_color: 正向色
     :param negative_color: 负向色
     """
+    user_strategy_ids: list[str] = UserStrategyManager().get_user_strategy_ids()
     mgr = AppContext().signal_manager
-    signals: list[dict[str, Any]] = mgr.get_signals(limit=500)
+    signals: list[dict[str, Any]] = mgr.get_signals_by_user_strategy(user_strategy_ids=list(user_strategy_ids), limit=500)
     total: int = len(signals)
     buy_count: int = sum(1 for s in signals if s.get("action") == "买入")
     sell_count: int = sum(1 for s in signals if s.get("action") == "卖出")

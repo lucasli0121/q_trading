@@ -54,6 +54,7 @@ class StockFetch(FetchBase):
         self.tickflow_real_time_sync_interval = cp.get("tickflow", "real_time_sync_interval", fallback=6)
         self.tickflow_industry_hq_sync_interval = cp.get("tickflow", "industry_hq_sync_interval", fallback=6)
         self.sync_workers = cp.getint("stock_fetch", "sync_workers", fallback=5)
+        self.minute_sync_interval = cp.getint("stock_fetch", "minute_sync_interval", fallback=1)
         start_date = cp.get("stock", "start_date", fallback="2024-01-01")
         self.real_time_skip = 0
         self.real_time_limit = int(cp.get("tickflow", "real_time_stock_limit", fallback=5))
@@ -96,12 +97,16 @@ class StockFetch(FetchBase):
             )
 
             # 每分钟行情快照任务：开盘期间每分钟整点执行
+            interval = int(self.minute_sync_interval)
+            minute_interval = "*"
+            if interval > 1:
+                minute_interval = "*/" + str(interval)
             self.stock_scheduler.add_job(
                 self.minute_hq_sync_task,
                 trigger="cron",
                 day_of_week="mon-fri",
                 hour="9-15",
-                minute="*",
+                minute=minute_interval,
                 second="0",
                 id="minute_hq_sync_task",
             )
@@ -271,17 +276,7 @@ class StockFetch(FetchBase):
                 stock_codes_pool_list = agent_pool_stock_item.get("stock_codes_pool", [])
                 if len(stock_codes_pool_list) == 0:
                     continue
-                for stock_code_pool in stock_codes_pool_list:
-                    code = stock_code_pool.get("code", "")
-                    pool_ids_list = []
-                    pool_list = stock_code_pool.get("pool_name", [])
-                    for name in pool_list:
-                        res, pool_records = pool_impl.query_stock_pool_by_name(name=name)
-                        if res and pool_records and len(pool_records) > 0:
-                            pool_dao = pool_records[0]
-                            pool_id = str(pool_dao.get("_id", pool_dao.get("id", "")))
-                            pool_ids_list.append(pool_id)
-                    real_time_stocks.append({"code": code, "pool_id": pool_ids_list})
+                real_time_stocks.extend(stock_codes_pool_list)
         return real_time_stocks
     """
     function: find_pool_id_in_sync_stocks
@@ -296,14 +291,29 @@ class StockFetch(FetchBase):
             stock_code = stocks.get("code", "")
             if stock_code != code:
                 continue
-            pool_id_list = stocks.get("pool_id", [])
+            pool_id_list = stocks.get("pool_ids", [])
             if not isinstance(pool_id_list, list):
                 if isinstance(pool_id_list, str):
                     return [pool_id_list]
                 continue
             return pool_id_list
         return None
-    
+
+    def get_real_time_stocks(self) -> list:
+        real_time_stocks = self.load_agent_pool_stocks()
+        res, industry_stocks_list = self.load_agent_hot_industry_stocks()
+        if not res or not industry_stocks_list:
+            return real_time_stocks
+        # 已存在的 code（来自 pool_stocks），后续 extend 不覆盖，避免 pool_id 被默认值 [] 覆盖
+        existing_codes = {item.get("code") for item in real_time_stocks if item.get("code")}
+        for industry_stocks in industry_stocks_list:
+            codes_industry_list = industry_stocks.get("stock_codes_industry", [])
+            real_time_stocks.extend(
+                {"code": s.get("code"), "pool_ids": []}
+                for s in codes_industry_list
+                if s.get("code") and s.get("code") not in existing_codes
+            )
+        return real_time_stocks
     """
     function: real_time_hq_sync_task
     description: 实时行情同步任务 — 获取实时行情数据，保存到 MongoDB 并通过 MQTT 推送通知
@@ -322,8 +332,9 @@ class StockFetch(FetchBase):
             or now.hour > 15:
             return
         if len(self.real_time_sync_stocks) == 0:
-            self.real_time_sync_stocks = self.load_agent_pool_stocks()
+            self.real_time_sync_stocks = self.get_real_time_stocks()
         stocks_count = len(self.real_time_sync_stocks)
+        self.logger.info(f"real_time_sync_stocks length:{stocks_count}")
         if stocks_count == 0:
             return
         limit_count = min(self.real_time_skip + self.real_time_limit, stocks_count)
@@ -390,15 +401,22 @@ class StockFetch(FetchBase):
     def minute_hq_sync_task(self):
         self.logger.info("开始执行每分钟行情快照任务...")
         # 1. 计算当前分钟时间
-        now = datetime.now() - timedelta(minutes=1)
+        start_time = datetime.now() - timedelta(minutes=self.minute_sync_interval)
+        end_time = datetime.now() - timedelta(minutes=1)
+        start_time_str = start_time.strftime("%Y-%m-%d %H:%M:00")
+        end_time_str = end_time.strftime("%Y-%m-%d %H:%M:59")
         real_time_stocks = self.load_agent_pool_stocks()
+        stocks_count = len(real_time_stocks)
+        if stocks_count == 0:
+            return
+        self.logger.info(f"分时行情，需要处理股票数:{stocks_count}")
         codes_list = [s.get("code") for s in real_time_stocks if s.get("code", "") != ""]
-        res, minute_records = self.do_minute_hq_sync_with_time(codes_list, now)
+        res, minute_records = self.do_minute_hq_sync_with_time(codes_list, start_time_str, end_time_str)
         if res and minute_records is not None:
             # 7. 通过 MQTT 推送分频行情
             self._publish_minute_hq(real_time_stocks, minute_records)
 
-    def do_minute_hq_sync_with_time(self, codes: list, now: datetime) -> tuple[bool, list|None]:
+    def do_minute_hq_sync_with_time(self, codes: list, start_time: str, end_time: str) -> tuple[bool, list|None]:
         """执行分钟行情快照同步（按指定时间）
 
         通过 query_rt_stocks 查询当前分钟内的实时行情记录，按 code 分组后
@@ -410,9 +428,9 @@ class StockFetch(FetchBase):
         :param now: 当前时间（分钟整点）
         :return: (是否成功, 分钟行情记录列表或 None)
         """
-        minute_time = now.strftime("%Y-%m-%d %H:%M:00")
-        minute_start = now.strftime("%Y-%m-%d %H:%M:00")
-        minute_end = now.strftime("%Y-%m-%d %H:%M:59")
+        minute_time = start_time
+        minute_start = start_time
+        minute_end = end_time
 
         rt_impl = MongoRtStocksImpl()
 
@@ -433,12 +451,12 @@ class StockFetch(FetchBase):
         # 按 code 分组：通过提取纯数字归一化 key
         grouped: dict[str, list[dict]] = {}
         for r in all_rt_records:
-            raw_code = r.get("code", "")
-            m = re.search(r"\d+", raw_code)
-            key = m.group() if m else raw_code
-            if key not in grouped:
-                grouped[key] = []
-            grouped[key].append(r)
+            code = r.get("code", "")
+            if code == "":
+                continue
+            if code not in grouped:
+                grouped[code] = []
+            grouped[code].append(r)
 
         # 每组内按 create_time 排序
         for key in grouped:
@@ -446,7 +464,6 @@ class StockFetch(FetchBase):
 
         # 组装分频行情记录
         minute_records: list[dict] = []
-        prev_day = now - timedelta(days=1)
 
         for pure_code, rt_records in grouped.items():
             count = len(rt_records)
@@ -500,7 +517,7 @@ class StockFetch(FetchBase):
                 "qrr": qrr_avg,
                 "turnover": turnover_avg,
                 "minute_time": minute_time,
-                "create_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "create_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             minute_records.append(minute_rec)
 
@@ -712,27 +729,37 @@ class StockFetch(FetchBase):
             self.do_his_hq_sync_task(start_day, end_day)
         self.logger.info("历史K线同步任务完成")
 
-    def do_his_hq_sync_task(self, start_day: str, end_day: str):
+    def get_hot_industry_stocks(self) -> list:
         # 先获取热门板块所有去重代码
         res, industry_stocks_list = self.load_agent_hot_industry_stocks()
         if not res or not industry_stocks_list:
-            return
+            return []
         hot_codes = []
         for industry_stocks in industry_stocks_list:
             codes_industry_list = industry_stocks.get("stock_codes_industry", [])
             hot_codes = [s["code"] for s in codes_industry_list if s.get("code")]
+        return hot_codes
+
+    def get_industry_and_pool_stocks(self) -> list:
+        # 先获取热门板块所有去重代码
+        all_codes = self.get_hot_industry_stocks()
         pool_stocks_list = self.load_agent_pool_stocks()
         if pool_stocks_list and len(pool_stocks_list) > 0:
-            hot_codes.extend([s["code"] for s in pool_stocks_list if s.get("code")])
+            all_codes.extend([s["code"] for s in pool_stocks_list if s.get("code")])
         # 再获取股票池中的去重代码
         # 去重
-        hot_codes = list(set(hot_codes))     
-        if not hot_codes:
+        all_codes = list(set(all_codes))
+        return all_codes
+    
+    def do_his_hq_sync_task(self, start_day: str, end_day: str):
+        # 先获取热门板块所有去重代码
+        all_codes = self.get_industry_and_pool_stocks()  
+        if len(all_codes) == 0:
             self.logger.info("股票中无有效代码，跳过历史K线同步")
             return
         self.logger.info(
             "历史K线同步: %d 只股票, 开始日期=%s， 结束日期=%s",
-            len(hot_codes), start_day, end_day,
+            len(all_codes), start_day, end_day,
         )
         cp = ConfigParser()
         cp.read("cfg/stock.cfg")
@@ -740,10 +767,10 @@ class StockFetch(FetchBase):
         work_interval = int(cp.get("tickflow", "history_hq_sync_interval", fallback=5))
         # 分批提交到线程池，批次间 sleep 控制 API 请求频率
         completed = 0
-        total = len(hot_codes)
+        total = len(all_codes)
         total_batches = (total + number_of_once - 1) // number_of_once
         for i in range(0, total, number_of_once):
-            batch_codes = hot_codes[i : i + number_of_once]
+            batch_codes = all_codes[i : i + number_of_once]
             batch_idx = i // number_of_once + 1
             self.logger.info(
                 "历史K线同步: 批次 %d/%d, 股票数=%d, 代码=%s",
@@ -766,11 +793,6 @@ class StockFetch(FetchBase):
             # 批次间休眠，控制 API 请求频率，最后一轮不需要 sleep
             if batch_idx < total_batches:
                 time.sleep(work_interval)
-
-    def _extract_pure_code(self, code: str) -> str:
-        """从股票代码中提取纯数字部分，用于代码匹配"""
-        m = re.search(r"\d+", code)
-        return m.group() if m else code
 
     def _fetch_and_save_his_hq(
             self,
@@ -851,14 +873,14 @@ class StockFetch(FetchBase):
         if res and db_records:
             all_records.extend(db_records)
             for rec in db_records:
-                pure = self._extract_pure_code(rec.get("code", ""))
-                if pure:
-                    db_codes.add(pure)
+                code = rec.get("code", "")
+                if code:
+                    db_codes.add(code)
 
         # 找出数据库中缺失的代码
         missing_codes: list[str] = [
             code for code in codes
-            if self._extract_pure_code(code) not in db_codes
+            if code not in db_codes
         ]
 
         if missing_codes:
@@ -896,14 +918,12 @@ class StockFetch(FetchBase):
         db_codes: set[str] = set()
         if res and db_records:
             all_records.extend(db_records)
-            for rec in db_records:
-                pure = self._extract_pure_code(rec.get("code", ""))
-                if pure:
-                    db_codes.add(pure)
+            have_codes: list = [rec.get("code") for rec in db_records]
+            db_codes = set(have_codes)
 
         missing_codes: list[str] = [
             code for code in codes
-            if self._extract_pure_code(code) not in db_codes
+            if code not in db_codes
         ]
 
         if missing_codes:
@@ -941,14 +961,12 @@ class StockFetch(FetchBase):
         db_codes: set[str] = set()
         if res and db_records:
             all_records.extend(db_records)
-            for rec in db_records:
-                pure = self._extract_pure_code(rec.get("code", ""))
-                if pure:
-                    db_codes.add(pure)
+            have_codes: list = [rec.get("code") for rec in db_records]
+            db_codes = set(have_codes)
 
         missing_codes: list[str] = [
             code for code in codes
-            if self._extract_pure_code(code) not in db_codes
+            if code not in db_codes
         ]
 
         if missing_codes:
@@ -980,14 +998,13 @@ class StockFetch(FetchBase):
     ) -> pd.DataFrame:
         db_impl = MongoRtStocksImpl()
         all_records: list[dict] = []
-        for code in codes:
-            res, records = db_impl.query_rt_stocks(
-                code=code,
-                start_time=start_time,
-                end_time=end_time
-            )
-            if res and records:
-                all_records.extend(records)
+        res, records = db_impl.query_rt_stocks(
+            code=codes,
+            start_time=start_time,
+            end_time=end_time
+        )
+        if res and records:
+            all_records = list(records)
 
         if all_records:
             self.logger.info(

@@ -140,6 +140,12 @@ def init_app():
         from pages.strategies import show_strategies_page as _show
         main_page.main_page_with_content(_show, page_key="strategies")
 
+    @ui.page('/strategy-select')
+    def strategy_select_page_view():
+        """策略选股独立页面。"""
+        from pages.strategy_select import show_strategy_select_page as _show
+        main_page.main_page_with_content(_show, page_key="strategy_select")
+
 '''
 function app_startup
 description: 应用启动时执行的函数，启动管理器

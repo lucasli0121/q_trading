@@ -11,7 +11,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
-from web_api.auth import get_current_user, security
+from web_api.auth import get_current_user, security, require_admin
 from web_api.models import (
     ApiResponse,
     UserPreferenceRequest,
@@ -27,6 +27,38 @@ async def get_preference(
     user_id: str = Depends(get_current_user),
 ):
     """查询当前用户的偏好设置，若未设置则返回默认值"""
+    impl = MongoUserPreferenceImpl()
+    ok, results = impl.query_preference_by_user_id(user_id)
+    if ok and results and len(results) > 0:
+        pref = results[0]
+        return ApiResponse(
+            data=UserPreferenceResponse(
+                id=str(pref.get("_id", "")),
+                user_id=pref.get("user_id", user_id),
+                theme_mode=pref.get("theme_mode", "light"),
+                enable_wx_push=pref.get("enable_wx_push", False),
+                wx_push_url=pref.get("wx_push_url", ""),
+                enable_phone_text=pref.get("enable_phone_text", False),
+                phone=pref.get("phone", ""),
+                update_time=pref.get("update_time", ""),
+            ),
+            message="查询成功",
+        )
+    # 未设置时返回默认值
+    return ApiResponse(
+        data=UserPreferenceResponse(user_id=user_id),
+        message="未设置偏好，返回默认值",
+    )
+
+@router.get("/{user_id}", response_model=ApiResponse[UserPreferenceResponse])
+async def get_preference_by_user(
+    user_id: str,  admin_id = Depends(require_admin),
+):
+    """
+    查询指定用户的偏好设置，若未设置则返回默认值
+    需要admin权限
+    """
+    
     impl = MongoUserPreferenceImpl()
     ok, results = impl.query_preference_by_user_id(user_id)
     if ok and results and len(results) > 0:

@@ -159,6 +159,7 @@ class UserFactorItem(BaseModel):
 
 class UserStrategyCreateRequest(BaseModel):
     """创建用户策略关联请求"""
+    name: str = Field(default="", description="个人策略自定义名称")
     strategy_id: str = Field(..., description="全局策略 ID（StrategyDao 的 ID）")
     pool_id: str = Field(default="", description="关联股票池 ID")
     status: str = Field(default="stopped", description="策略状态: running(运行中) / stopped(已停止) / paused(已暂停)")
@@ -170,6 +171,7 @@ class UserStrategyCreateRequest(BaseModel):
 
 class UserStrategyUpdateRequest(BaseModel):
     """更新用户策略关联请求"""
+    name: Optional[str] = Field(default=None, description="个人策略自定义名称")
     pool_id: Optional[str] = Field(default=None, description="关联股票池 ID")
     status: Optional[str] = Field(default=None, description="策略状态: running(运行中) / stopped(已停止) / paused(已暂停)")
     initial_amount: Optional[float] = Field(default=None, description="初始金额")
@@ -181,6 +183,7 @@ class UserStrategyUpdateRequest(BaseModel):
 class UserStrategyItem(BaseModel):
     """用户策略关联响应"""
     id: str = Field(default="", description="记录 ID")
+    name: str = Field(default="", description="个人策略自定义名称")
     strategy_id: str = Field(default="", description="全局策略 ID")
     status: str = Field(default="", description="策略状态")
     user_id: str = Field(default="", description="用户 ID")
@@ -356,14 +359,14 @@ class HotIndustryCreateRequest(BaseModel):
 
 class StrategySelectStockCreateRequest(BaseModel):
     """添加策略选股记录请求"""
-    strategy_id: str = Field(..., description="策略 ID")
+    user_strategy_id: str = Field(..., description="用户策略 ID")
     codes: list[str] = Field(..., description="股票代码列表")
 
 
 class StrategySelectStockItem(BaseModel):
     """策略选股记录响应"""
     id: str = Field(default="", description="记录 ID")
-    strategy_id: str = Field(default="", description="策略 ID")
+    user_strategy_id: str = Field(default="", description="用户策略 ID")
     code: str = Field(default="", description="股票代码")
     create_time: str = Field(default="", description="创建时间")
 
@@ -371,7 +374,7 @@ class StrategySelectStockItem(BaseModel):
 class StrategySelectStockWithRtItem(BaseModel):
     """策略选股记录 + 最新实时行情组合响应"""
     id: str = Field(default="", description="记录 ID")
-    strategy_id: str = Field(default="", description="策略 ID")
+    user_strategy_id: str = Field(default="", description="用户策略 ID")
     code: str = Field(default="", description="股票代码")
     create_time: str = Field(default="", description="策略选股创建时间")
     # 实时行情字段
@@ -397,6 +400,7 @@ class StrategySelectStockWithRtItem(BaseModel):
 class TradeSignalCreateRequest(BaseModel):
     """添加交易信号请求"""
     strategy_id: str = Field(..., description="策略 ID")
+    user_strategy_id: str = Field(default="", description="用户策略 ID")
     stock_code: str = Field(..., description="股票代码")
     trade_price: float = Field(default=0.0, description="交易价格")
     profit_rate: float = Field(default=0.0, description="收益率")
@@ -409,6 +413,7 @@ class TradeSignalItem(BaseModel):
     """交易信号记录响应"""
     id: str = Field(default="", description="记录 ID")
     strategy_id: str = Field(default="", description="策略 ID")
+    user_strategy_id: str = Field(default="", description="用户策略 ID")
     stock_code: str = Field(default="", description="股票代码")
     trade_price: float = Field(default=0.0, description="交易价格")
     profit_rate: float = Field(default=0.0, description="收益率")

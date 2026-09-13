@@ -312,29 +312,6 @@ class StockFetch(FetchBase):
                 self.logger.error("MQTT 实时行情推送失败")
         except Exception as err:
             self.logger.error("MQTT 实时行情推送异常: %s", err)
-
-    """
-    function: minute_hq_sync_task
-    description: 每分钟行情快照任务
-        1. 从股票池获取所有待监控的股票代码
-        2. 从 rt_stocks_tbl 聚合当前分钟内所有实时行情记录，计算分钟OHLC
-        3. 查询前一分钟分频行情收盘价作为 preclose，重算涨跌幅/涨跌额
-        4. 组装 StockMinuteHqDao 记录，minute_time 取当前分钟整点
-        5. 保存到 minute_hq_tbl
-        6. 通过 MQTT 推送到分频行情 topic（q_share/stock/minute）
-    param {*} self
-    return {*}
-    """
-    def minute_hq_sync_task(self):
-        self.logger.info("开始执行每分钟行情快照任务...")
-        
-        # 1. 计算当前分钟时间
-        now = datetime.now() - timedelta(minutes=1)
-        
-        res, minute_records = self.do_minute_hq_sync_with_time([], now)
-        if res and minute_records is not None:
-            # 7. 通过 MQTT 推送分频行情
-            self._publish_minute_hq(minute_records)
     
     def do_minute_hq_sync_with_time(self, codes: list, now: datetime) -> tuple[bool, list|None]:
         """执行分钟行情快照同步（按指定时间）
@@ -455,30 +432,6 @@ class StockFetch(FetchBase):
         return True, minute_records
 
     """
-    function: _publish_minute_hq
-    description: 通过 MQTT 推送分钟行情快照到分频行情 topic
-    param {list} minute_records: 分钟行情记录列表
-    return {*}
-    """
-    def _publish_minute_hq(self, minute_records: list[dict]) -> None:
-        mqtt_client = AppContext().mqtt
-        if not mqtt_client.is_connected:
-            self.logger.warning("MQTT 未连接，跳过分钟行情推送")
-            return
-        try:
-            payload = json.dumps(minute_records, ensure_ascii=False)
-            if mqtt_client.publish(MqttTopic.STOCK_MINUTE, payload):
-                self.logger.info(
-                    "MQTT 分钟行情推送成功, topic: %s, 股票数: %d",
-                    MqttTopic.STOCK_MINUTE,
-                    len(minute_records),
-                )
-            else:
-                self.logger.error("MQTT 分钟行情推送失败")
-        except Exception as err:
-            self.logger.error("MQTT 分钟行情推送异常: %s", err)
-
-    """
     function: remove_over_time_task
     description: 删除超过60天的实时股票数据,mongo中不保留过久的实时股票数据，避免数据过多，占用存储空间
     param {*} self
@@ -501,7 +454,7 @@ class StockFetch(FetchBase):
         valuation_impl.delete_company_valuation_by_date(report_date=thirty_days_ago)
         # 删除30日前的选股记录
         select_impl = MongoStrategySelectStocksImpl()
-        select_impl.delete_select_stocks_by_strategy_ids(strategy_ids=[], end_time = thirty_days_ago)
+        select_impl.delete_select_stocks_by_user_strategy_ids(user_strategy_ids=[], end_time = thirty_days_ago)
         
         # 删除超过90天的分钟行情数据
         self.logger.info("开始执行删除超过90天的分钟行情数据任务...")
@@ -943,13 +896,13 @@ class StockFetch(FetchBase):
         return pd.DataFrame() if result is None or result.empty else result
 
 
-    async def distribute_pool_stocks_to_data_agents(self, pool_name: str = "") -> bool:
+    async def distribute_pool_stocks_to_data_agents(self, pool_id: str = "") -> bool:
 
         """查询所有股票池股票并将其平均分配给所有数据代理。"""
         self.logger.info("开始将池内股票平均分配给所有数据代理")
         pool_impl = MongoStockPoolImpl()
-        if pool_name and len(pool_name) > 0:
-            res, pool_records = pool_impl.query_stocks_by_pool_name(pool_name)
+        if pool_id and len(pool_id) > 0:
+            res, pool_records = pool_impl.query_stocks_by_pool_ids([pool_id])
         else:
             res, pool_records = pool_impl.query_all_pool_stocks()
         if not res or not pool_records:
@@ -978,17 +931,17 @@ class StockFetch(FetchBase):
         skip = 0
         stocks_impl = MongoDataAgentPoolStocksImpl()
         # 清空数据代理股票分配表
-        if pool_name == "":
+        if pool_id == "":
             stocks_impl.delete_data_agent_pool_stocks()
         else:
-            stocks_impl.delete_data_agent_pool_stocks_by_pool_name(pool_name=pool_name)
+            stocks_impl.delete_data_agent_pool_stocks_by_pool_id(pool_id=pool_id)
         for skip in range(0, pool_records_len, assignment_count):
             agent_name = agent_names[(skip // assignment_count) % agent_names_len]
             batch_codes: list[dict[str, Any]] = []
             end = min(skip + assignment_count, pool_records_len)
             batch_records = pool_records[skip:end]
             batch_codes = [
-                {"code": r.get("code", ""), "pool_name": [r.get("pool_name", "")] if not isinstance(r.get("pool_name", ""), list) else r.get("pool_name", [])}
+                {"code": r.get("code", ""), "pool_ids": [r.get("pool_id", "")] if not isinstance(r.get("pool_id", ""), list) else r.get("pool_id", [])}
                 for r in batch_records if r.get("code", "")
             ]
             res, existing_records = stocks_impl.query_data_agent_pool_stock_by_agent_name(agent_name)

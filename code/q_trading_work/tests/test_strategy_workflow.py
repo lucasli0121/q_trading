@@ -34,6 +34,7 @@ def make_state(
     status: str = "running",
     cash: float = 100000.0,
     pool: list[str] | None = None,
+    instance: MagicMock | None = None,
 ) -> StrategyState:
     return StrategyState(
         strategy_id="sid",
@@ -46,7 +47,7 @@ def make_state(
         initial_amount=cash,
         available_cash=cash,
         max_stock_count=4,
-        instance=MagicMock(),
+        instance=instance if instance is not None else MagicMock(),
     )
 
 
@@ -345,23 +346,23 @@ class TestStrategyWorkflow(unittest.TestCase):
 
     def test_process_bar_buy_creates_order_once(self) -> None:
         instance = self._fake_instance("BUY")
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._load_positions = MagicMock(return_value={})
         self.wf._save_trade_signal = MagicMock()
         self.wf._create_buy_order = MagicMock()
 
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_buy_order.assert_called_once()
 
         # 已有在途订单时不再下单
         state.pending_codes.add("000001")
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_buy_order.assert_called_once()
 
     def test_process_bar_skips_buy_when_holding(self) -> None:
         instance = self._fake_instance("BUY")
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._load_positions = MagicMock(
             return_value={"000001": {"quantity": 100}}
@@ -369,12 +370,12 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._save_trade_signal = MagicMock()
         self.wf._create_buy_order = MagicMock()
 
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_buy_order.assert_not_called()
 
     def test_process_bar_sell_respects_pending(self) -> None:
         instance = self._fake_instance("SELL")
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._load_positions = MagicMock(
             return_value={"000001": {"cost_price": 10.0, "quantity": 100}}
@@ -382,41 +383,41 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._save_trade_signal = MagicMock()
         self.wf._create_sell_order = MagicMock()
 
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_sell_order.assert_called_once()
 
         state.pending_codes.add("000001")
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_sell_order.assert_called_once()
 
     def test_process_bar_not_running_skipped(self) -> None:
         instance = self._fake_instance("BUY")
-        state = make_state(status="stopped")
+        state = make_state(status="stopped", instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._save_trade_signal = MagicMock()
         self.wf._create_buy_order = MagicMock()
 
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_buy_order.assert_not_called()
 
     def test_process_tick_buy(self) -> None:
         instance = self._fake_instance("BUY")
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._load_positions = MagicMock(return_value={})
         self.wf._save_trade_signal = MagicMock()
         self.wf._create_buy_order = MagicMock()
 
-        self.wf._process_tick("sid", instance, "000001", {})
+        self.wf._process_tick(state, "000001", {})
         self.wf._create_buy_order.assert_called_once()
 
         state.pending_codes.add("000001")
-        self.wf._process_tick("sid", instance, "000001", {})
+        self.wf._process_tick(state, "000001", {})
         self.wf._create_buy_order.assert_called_once()
 
     def test_process_bar_max_stock_count(self) -> None:
         instance = self._fake_instance("BUY")
-        state = make_state()
+        state = make_state(instance=instance)
         state.max_stock_count = 1
         self.wf._user_strategies["sid"] = [state]
         self.wf._load_positions = MagicMock(
@@ -425,7 +426,7 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._save_trade_signal = MagicMock()
         self.wf._create_buy_order = MagicMock()
 
-        self.wf._process_bar("sid", instance, "000001", {})
+        self.wf._process_bar(state, "000001", {})
         self.wf._create_buy_order.assert_not_called()
 
     # ---- 订单创建与回滚 ----
@@ -623,7 +624,7 @@ class TestStrategyWorkflow(unittest.TestCase):
         instance.strategy_name = "强势反弹策略"
         instance.before_trading.return_value = None
         instance.select.return_value = [{"code": "000001", "matched": True}]
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._strategy_instances = {"sid": instance}
         self.wf._user_strategies = {"sid": [state]}
         self.wf._stock_info_api.get_hot_industries.return_value = [{"name": "科技"}]
@@ -832,41 +833,41 @@ class TestStrategyWorkflow(unittest.TestCase):
         instance = MagicMock()
         instance.strategy_name = "强势反弹策略"
         instance.handle_minute_bar.return_value = (False, {"reason": "no signal"})
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
-        self.wf._process_bar("sid", instance, "000001", {})  # 未匹配
+        self.wf._process_bar(state, "000001", {})  # 未匹配
 
         instance.handle_minute_bar.return_value = (True, {"signal": "UNKNOWN"})
         self.wf._save_trade_signal = MagicMock()
         self.wf._load_positions = MagicMock(return_value={})
-        self.wf._process_bar("sid", instance, "000001", {})  # 未知信号
+        self.wf._process_bar(state, "000001", {})  # 未知信号
 
     def test_process_bar_stock_pool_filter_and_sell_no_position(self) -> None:
         instance = self._fake_instance("SELL")
-        state = make_state(pool=["600519"])
+        state = make_state(pool=["600519"], instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._save_trade_signal = MagicMock()
         self.wf._load_positions = MagicMock(return_value={})
         self.wf._create_sell_order = MagicMock()
-        self.wf._process_bar("sid", instance, "000001", {})  # 不在股票池
+        self.wf._process_bar(state, "000001", {})  # 不在股票池
         self.wf._create_sell_order.assert_not_called()
 
         state.stock_pool = []
-        self.wf._process_bar("sid", instance, "000001", {})  # 无持仓跳过卖出
+        self.wf._process_bar(state, "000001", {})  # 无持仓跳过卖出
         self.wf._create_sell_order.assert_not_called()
 
     def test_process_tick_not_matched_and_pool_filter(self) -> None:
         instance = self._fake_instance("BUY")
-        state = make_state(pool=["600519"])
+        state = make_state(pool=["600519"], instance=instance)
         self.wf._user_strategies["sid"] = [state]
         self.wf._save_trade_signal = MagicMock()
         self.wf._load_positions = MagicMock(return_value={})
         self.wf._create_buy_order = MagicMock()
-        self.wf._process_tick("sid", instance, "000001", {})  # 不在股票池
+        self.wf._process_tick(state, "000001", {})  # 不在股票池
         self.wf._create_buy_order.assert_not_called()
 
         instance.handle_tick_bar.return_value = (False, {"reason": "no"})
-        self.wf._process_tick("sid", instance, "000001", {})  # 未匹配
+        self.wf._process_tick(state, "000001", {})  # 未匹配
 
     def test_save_trade_signal_latest_missing_and_errors(self) -> None:
         self.wf._trade_signal_api = MagicMock()
@@ -1001,7 +1002,7 @@ class TestStrategyWorkflow(unittest.TestCase):
         instance = MagicMock()
         instance.strategy_name = "强势反弹策略"
         instance.select.return_value = [{"code": "000001", "matched": True}]
-        state = make_state()
+        state = make_state(instance=instance)
         self.wf._strategy_instances = {"sid": instance}
         self.wf._user_strategies = {"sid": [state]}
         self.wf._admin_client.post.return_value = {"code": 0}

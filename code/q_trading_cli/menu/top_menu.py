@@ -17,6 +17,12 @@ def _do_logout() -> None:
         AppContext().user_api.logout()
     except Exception:  # noqa: BLE001, S110
         pass
+    # 清除后台线程使用的 fallback token
+    try:
+        AppContext().api_client.clear_fallback_token()
+        AppContext().api_client.clear_token()
+    except Exception:  # noqa: BLE001, S110
+        pass
     try:
         app.storage.user.clear()
         app.storage.browser.clear()

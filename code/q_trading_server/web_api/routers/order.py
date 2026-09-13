@@ -182,6 +182,48 @@ async def list_orders_by_user(
     return ApiResponse(data=result)
 
 
+@router.get("/latest", response_model=ApiResponse[list[OrderInfo]])
+async def query_latest_order(
+    stock_codes: str = Query(description="股票代码，多个用英文逗号分隔，如: 600519,000001"),
+    user_strategy_id: str = Query(description="用户策略 ID"),
+    action: str = Query(default="", description="订单动作（买入/卖出），为空则不限制"),
+    status: str = Query(default="", description="订单状态，为空则不限制"),
+    user_id: str = Depends(get_current_user),
+):
+    """按股票代码（支持多个）、用户策略 ID、动作和状态查询每个股票最近的一条订单记录。"""
+    code_list = [c.strip() for c in stock_codes.split(",") if c.strip()] if stock_codes else []
+    if not code_list or not user_strategy_id:
+        raise HTTPException(status_code=400, detail="stock_codes 和 user_strategy_id 不能为空")
+    impl = MongoOrderImpl()
+    ok, orders = impl.query_latest_order(
+        stock_codes=code_list,
+        user_strategy_id=user_strategy_id,
+        action=action,
+        status=status,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="查询最近订单失败")
+    result = [
+        OrderInfo(
+            id=str(o.get("_id", "")),
+            user_strategy_id=o.get("user_strategy_id", ""),
+            stock_code=o.get("stock_code", ""),
+            entrust_quantity=int(o.get("entrust_quantity", 0) or 0),
+            trade_price=float(o.get("trade_price", 0.0) or 0.0),
+            trade_quantity=int(o.get("trade_quantity", 0) or 0),
+            position_price=float(o.get("position_price", 0.0) or 0.0),
+            profit_rate=float(o.get("profit_rate", 0.0) or 0.0),
+            profit_amount=float(o.get("profit_amount", 0.0) or 0.0),
+            commission_fee=float(o.get("commission_fee", 0.0) or 0.0),
+            status=o.get("status", "委托"),
+            create_time=o.get("create_time", ""),
+            action=o.get("action", "买入"),
+        )
+        for o in (orders or [])
+    ]
+    return ApiResponse(data=result)
+
+
 @router.get("/{order_id}", response_model=ApiResponse[OrderInfo])
 async def get_order(order_id: str, user_id: str = Depends(get_current_user)):
     """查询单个订单。"""

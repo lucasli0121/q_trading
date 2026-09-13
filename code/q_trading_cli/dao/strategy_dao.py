@@ -6,8 +6,8 @@ LastEditTime: 2026-07-13 00:00:00
 Description: 全局策略定义数据对象 — 策略模板/类元数据，管理员管理
 """
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class StrategyDao:
         description: str = "",
         class_path: str = "",
         class_name: str = "",
-        default_params: dict = {}
+        default_params: dict | None = None
     ) -> None:
         """初始化策略定义对象
 
@@ -51,7 +51,7 @@ class StrategyDao:
         self.description = description
         self.class_path = class_path
         self.class_name = class_name
-        self.default_params = default_params
+        self.default_params = default_params or {}
 
     def from_db(self, data: dict[str, Any]) -> None:
         """从数据库记录填充对象字段

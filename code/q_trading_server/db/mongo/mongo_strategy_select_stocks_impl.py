@@ -45,17 +45,17 @@ class MongoStrategySelectStocksImpl:
     def add_select_stock(self, data: dict[str, Any]) -> tuple[bool, str | None]:
         """添加一条策略选股记录
 
-        :param data: 选股数据字典，需包含 strategy_id、code、create_time
+        :param data: 选股数据字典，需包含 user_strategy_id、code、create_time
         :return: (ok, record_id_or_None)
         """
         try:
             data = data.copy()
             if "id" in data:
                 del data["id"]
-            strategy_id = data.get("strategy_id", "")
+            user_strategy_id = data.get("user_strategy_id", "")
             code = data.get("code", "")
-            if not strategy_id or not code:
-                self.logger.error("strategy_id or code is empty.")
+            if not user_strategy_id or not code:
+                self.logger.error("user_strategy_id or code is empty.")
                 return False, None
             result = self.strategy_select_stocks_table.insert_one(data)
             return True, str(result.inserted_id)
@@ -66,7 +66,7 @@ class MongoStrategySelectStocksImpl:
     def bulk_add_select_stocks(self, records: list[dict[str, Any]]) -> tuple[bool, list[str]]:
         """批量添加策略选股记录
 
-        :param records: 选股数据字典列表，每条需包含 strategy_id、code、create_time
+        :param records: 选股数据字典列表，每条需包含 user_strategy_id、code、create_time
         :return: (ok, record_id_list)
         """
         try:
@@ -77,8 +77,8 @@ class MongoStrategySelectStocksImpl:
                 data = data.copy()
                 if "id" in data:
                     del data["id"]
-                if not data.get("strategy_id") or not data.get("code"):
-                    self.logger.error("strategy_id or code is empty in bulk add.")
+                if not data.get("user_strategy_id") or not data.get("code"):
+                    self.logger.error("user_strategy_id or code is empty in bulk add.")
                     continue
                 docs.append(data)
             if not docs:
@@ -114,35 +114,35 @@ class MongoStrategySelectStocksImpl:
             self.logger.error(f"删除策略选股记录失败: {e}")
             return False
 
-    def delete_select_stocks_by_strategy_ids(
+    def delete_select_stocks_by_user_strategy_ids(
         self,
-        strategy_ids: list[str],
+        user_strategy_ids: list[str],
         start_time: str = "",
         end_time: str = "",
     ) -> bool:
-        """按策略 ID 列表批量删除选股记录
+        """按用户策略 ID 列表批量删除选股记录
 
-        :param strategy_ids: 策略 ID 列表
+        :param user_strategy_ids: 用户策略 ID 列表，为空则不按该维度过滤（即全部）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
         :return: 成功返回 True，否则返回 False
         """
         try:
             condition: dict[str, Any] = {}
-            if len(strategy_ids) > 0:
-                condition = {"strategy_id": {"$in": strategy_ids}}
+            if len(user_strategy_ids) > 0:
+                condition = {"user_strategy_id": {"$in": user_strategy_ids}}
             self._build_time_filter(condition, start_time, end_time)
             return self.mongo_exec.delete(
                 table=self.strategy_select_stocks_table,
                 condition=condition,
             )
         except Exception as e:
-            self.logger.error(f"按策略 ID 列表删除选股记录失败: {e}")
+            self.logger.error(f"按用户策略 ID 列表删除选股记录失败: {e}")
             return False
 
     def query_select_stocks(
         self,
-        strategy_id: str = "",
+        user_strategy_id: str = "",
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
@@ -150,7 +150,7 @@ class MongoStrategySelectStocksImpl:
     ) -> tuple[bool, Any | None]:
         """按条件查询策略选股记录
 
-        :param strategy_id: 策略 ID（可选）
+        :param user_strategy_id: 用户策略 ID（可选）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
         :param skip: 分页跳过条数
@@ -159,8 +159,8 @@ class MongoStrategySelectStocksImpl:
         """
         try:
             query: dict[str, Any] = {}
-            if strategy_id and len(strategy_id) > 0:
-                query["strategy_id"] = strategy_id
+            if user_strategy_id and len(user_strategy_id) > 0:
+                query["user_strategy_id"] = user_strategy_id
             self._build_time_filter(query, start_time, end_time)
             return self.mongo_exec.query_by_condition(
                 table=self.strategy_select_stocks_table,
@@ -173,17 +173,17 @@ class MongoStrategySelectStocksImpl:
             self.logger.error(f"查询策略选股记录失败: {e}")
             return False, None
 
-    def query_select_stocks_by_strategy_ids(
+    def query_select_stocks_by_user_strategy_ids(
         self,
-        strategy_ids: list[str],
+        user_strategy_ids: list[str],
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
         limit: int = 0,
     ) -> tuple[bool, Any | None]:
-        """按策略 ID 列表查询选股记录
+        """按用户策略 ID 列表查询选股记录
 
-        :param strategy_ids: 策略 ID 列表
+        :param user_strategy_ids: 用户策略 ID 列表
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
         :param skip: 分页跳过条数
@@ -192,8 +192,8 @@ class MongoStrategySelectStocksImpl:
         """
         try:
             query: dict[str, Any] = {}
-            if len(strategy_ids) > 0:
-                query = {"strategy_id": {"$in": strategy_ids}}
+            if len(user_strategy_ids) > 0:
+                query = {"user_strategy_id": {"$in": user_strategy_ids}}
             self._build_time_filter(query, start_time, end_time)
             return self.mongo_exec.query_by_condition(
                 table=self.strategy_select_stocks_table,
@@ -203,5 +203,5 @@ class MongoStrategySelectStocksImpl:
                 limit=limit,
             )
         except Exception as e:
-            self.logger.error(f"按策略 ID 列表查询选股记录失败: {e}")
+            self.logger.error(f"按用户策略 ID 列表查询选股记录失败: {e}")
             return False, None

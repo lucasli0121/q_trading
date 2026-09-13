@@ -12,8 +12,9 @@ class KlineSRFactor(BaseFactor):
     """
     factor_name: str = "KlineSRFactor"
 
-    def __init__(self, days: int = 5) -> None:
+    def __init__(self, days: int = 5, tolerance: float = 0.02) -> None:
         self.days: int = days
+        self.tolerance: float = tolerance
 
     def find_support_resistance(self, df: pd.DataFrame, window: int = 5, tolerance: float = 0.02) -> dict[str, list[float]]:
         """
@@ -54,7 +55,7 @@ class KlineSRFactor(BaseFactor):
         if len(stock_array) < self.days:
             return {"support": [], "resistance": []}  # 数据不足，返回空结果（与正常返回类型一致）
 
-        return self.find_support_resistance(pd.DataFrame(stock_array))
+        return self.find_support_resistance(pd.DataFrame(stock_array), window=self.days, tolerance=self.tolerance)
 
     def score(self, stock_array: pd.DataFrame) -> float:
         """
@@ -71,18 +72,23 @@ class KlineSRFactor(BaseFactor):
             price = recent_stock.get("close", 0.0)
 
         score: float = 0.0
-        # s[1] 最小支撑，超卖可做多
-        if len(s) >= 1 and price <= s[0]:
-            score = 10.0
-        elif len(s) >= 2 and price <= s[1]:
-            score = 5.0
-        elif len(s) >= 3 and price <= s[2]:
-            score = 1.0
-        if len(r) >= 1 and price >= r[0]:
-            score = -1.0
-        elif len(r) >= 2 and price >= r[1]:
-            score = -5.0
-        elif len(r) >= 3 and price >= r[2]:
-            score = -10.0
+        # s[0] 最小支撑，超卖可做多
+        len_s: int = len(s)
+        if len_s > 0:
+            if len_s >= 1 and price <= s[0]:
+                score = 10.0
+            elif len_s >= 2 and price <= s[-1]:
+                score = 5.0
+            elif len_s >= 3 and price <= s[1]:
+                score = 7.5
+
+        len_r: int = len(r)
+        if len_r > 0:
+            if len_r >= 1 and price >= r[-1]:
+                score = -10.0
+            elif len_r >= 2 and price >= r[0]:
+                score = -5.0
+            elif len_r >= 3 and price >= r[1]:
+                score = -7.5
 
         return score

@@ -9,8 +9,9 @@ Description: 策略工作流
     调用策略的 handle_minute_bar 获取买卖信号，记录信号后按用户策略生成交易订单。
 
     架构：
-    - _strategy_instances: 策略实例（按 strategy_id 唯一，去重）
-    - _user_strategies: 用户策略配置（按 strategy_id 分组）
+    - _strategy_templates: 策略模板元数据（按 strategy_id 缓存）
+    - _strategy_instances: 策略模板代表实例（按 strategy_id，用于模板级选股）
+    - _user_strategies: 用户策略配置（按 strategy_id 分组，每个 state 持有独立策略实例）
     - 策略决定信号 → 记录 /api/trade_signal/add → 对应用户股票池下单
 """
 from __future__ import annotations
@@ -98,8 +99,10 @@ class StrategyWorkflow(BaseWorkflow):
         super().__init__(pool_size=pool_size)
         self.logger: logging.Logger = logging.getLogger(__name__)
 
-        # 策略实例（按 strategy_id 唯一，去重）
+        # 策略实例（按 strategy_id 保留代表实例，用于模板级选股）
         self._strategy_instances: dict[str, BaseStrategy] = {}
+        # 策略模板元数据（按 strategy_id 缓存 class_path/class_name/default_params 等）
+        self._strategy_templates: dict[str, dict[str, Any]] = {}
         # 用户策略配置（按 strategy_id 分组）
         self._user_strategies: dict[str, list[StrategyState]] = {}
 
@@ -184,11 +187,23 @@ class StrategyWorkflow(BaseWorkflow):
             return None
 
     def _instantiate_strategy(
-        self, strategy_cls: type[BaseStrategy]
+        self,
+        strategy_cls: type[BaseStrategy],
+        user_strategy_id: str = "",
+        strategy_id: str = "",
+        strategy_type: str = "",
+        user_strategy_params: dict[str, Any] | None = None,
+        default_params: dict[str, Any] | None = None,
     ) -> BaseStrategy | None:
-        """实例化策略对象。"""
+        """实例化策略对象，并传入 user_strategy_id / strategy_id 及参数用于初始化。"""
         try:
-            instance: BaseStrategy = strategy_cls()
+            instance: BaseStrategy = strategy_cls(
+                user_strategy_id=user_strategy_id,
+                strategy_id=strategy_id,
+                strategy_type=strategy_type,
+                user_strategy_params=user_strategy_params,
+                default_params=default_params,
+            )
             return instance
         except Exception as exc:
             self.logger.error("实例化策略 %s 失败: %s", strategy_cls.__name__, exc, exc_info=True)
@@ -295,24 +310,6 @@ class StrategyWorkflow(BaseWorkflow):
             return True
         return False
 
-    def _is_code_blacklisted_for_all(self, strategy_id: str, code: str) -> bool:
-        """检查某股票代码是否被该策略模板下所有运行中的用户策略列入黑名单。
-
-        用于 handle_bar / handle_tick 的早期过滤：仅当所有运行中用户策略
-        都将该 code 列入黑名单时才返回 True（此时可跳过整个 _process_bar 调度）。
-
-        :param strategy_id: 策略模板 ID
-        :param code: 股票代码
-        :return: 所有运行中用户策略均将 code 列入黑名单时返回 True
-        """
-        running_states: list[StrategyState] = [
-            s for s in self._user_strategies.get(strategy_id, [])
-            if s.status == "running"
-        ]
-        if not running_states:
-            return False
-        return all(code in s.blacklist_codes for s in running_states)
-
     def update_strategy_stock_pool(self, state: StrategyState, pool_id: str) -> None:
         """根据 pool_id 解析股票池，填充 state.stock_pool。"""
         if not pool_id:
@@ -365,16 +362,24 @@ class StrategyWorkflow(BaseWorkflow):
 
     # ---- 新架构：加载策略实例 + 用户策略配置 ----
 
-    def _build_strategy_instance(self, template: dict[str, Any]) -> BaseStrategy | None:
-        """根据策略模板构建唯一的策略实例。
+    def _build_strategy_instance(
+        self,
+        template: dict[str, Any],
+        user_strategy_id: str = "",
+        user_strategy_params: dict[str, Any] | None = None,
+    ) -> BaseStrategy | None:
+        """根据策略模板构建策略实例。
 
         :param template: 策略模板字典
+        :param user_strategy_id: 用户策略关联 ID，传入后绑定到策略实例
+        :param user_strategy_params: 用户策略参数（UserStrategyDao.strategy_params）
         :return: 策略实例，失败返回 None
         """
         name: str = template.get("name", "")
         class_path: str = template.get("class_path", "")
         class_name: str = template.get("class_name", "")
         strategy_id: str = str(template.get("id") or template.get("_id") or "")
+        strategy_type: str = template.get("strategy_type", "")
 
         if not class_path or not class_name or not strategy_id:
             self.logger.warning("策略 %s 缺少必要字段，跳过", name)
@@ -384,17 +389,25 @@ class StrategyWorkflow(BaseWorkflow):
         if strategy_cls is None:
             return None
 
-        instance = self._instantiate_strategy(strategy_cls)
+        instance = self._instantiate_strategy(
+            strategy_cls,
+            user_strategy_id=user_strategy_id,
+            strategy_id=strategy_id,
+            strategy_type=strategy_type,
+            user_strategy_params=user_strategy_params if user_strategy_params is not None else {},
+            default_params=template.get("default_params"),
+        )
         if instance is not None:
             instance.strategy_id = strategy_id
         return instance
 
     def load_strategies_from_db(self) -> list[StrategyState]:
-        """加载策略：模板实例化一次 + 用户配置分组。
+        """加载策略：按用户策略逐个实例化（每个 user_strategy 一个独立实例）。
 
-        1. 从 /api/strategy/list 获取策略模板，每模板实例化一次
+        1. 从 /api/strategy/list 获取策略模板元数据
         2. 从 /api/user_strategy/all 获取用户策略关联，按 strategy_id 分组
-        3. 加载每个用户策略的股票池和持仓数据
+        3. 为每个用户策略实例化独立策略实例（传入 user_strategy_id 与参数），
+           并加载股票池和持仓数据
 
         :return: 所有加载成功的 StrategyState 列表
         """
@@ -403,7 +416,11 @@ class StrategyWorkflow(BaseWorkflow):
         return self._build_user_strategy_states()
 
     def _load_strategy_instances_from_db(self) -> bool:
-        """从 /api/strategy/list 加载策略模板并实例化（每个模板一次）。"""
+        """从 /api/strategy/list 加载策略模板元数据到 _strategy_templates（不实例化）。
+
+        策略实例化延迟到 _build_user_strategy_states 中按 user_strategy 逐个创建，
+        以便为每个用户策略传入独立的 user_strategy_id 与参数。
+        """
         try:
             db_strategies: list[dict[str, Any]] = self._strategy_api.list()
         except Exception as exc:
@@ -414,21 +431,14 @@ class StrategyWorkflow(BaseWorkflow):
             self.logger.info("数据库中没有已保存的策略模板")
             return False
 
-        self._strategy_instances.clear()
+        self._strategy_templates.clear()
         for s in db_strategies:
             strategy_id: str = str(s.get("id") or s.get("_id") or "")
             if not strategy_id:
                 continue
-            if strategy_id in self._strategy_instances:
-                continue  # 已加载，跳过重复
-            instance = self._build_strategy_instance(s)
-            if instance is not None:
-                self._strategy_instances[strategy_id] = instance
-                self.logger.info(
-                    "策略实例加载: %s (strategy_id=%s)", instance.strategy_name, strategy_id,
-                )
+            self._strategy_templates[strategy_id] = s
 
-        self.logger.info("共加载 %d 个策略实例", len(self._strategy_instances))
+        self.logger.info("共加载 %d 个策略模板", len(self._strategy_templates))
         return True
 
     def _build_user_strategy_states(self) -> list[StrategyState]:
@@ -484,14 +494,30 @@ class StrategyWorkflow(BaseWorkflow):
             if assigned_ids and user_strategy_id not in assigned_ids:
                 continue
 
-            # 获取对应的策略实例
-            instance = self._strategy_instances.get(us_sid)
-            if instance is None:
+            # 获取策略模板元数据
+            template: dict[str, Any] | None = self._strategy_templates.get(us_sid)
+            if template is None:
                 self.logger.warning(
-                    "用户策略 %s 关联的 strategy_id=%s 无对应实例，跳过",
+                    "用户策略 %s 关联的 strategy_id=%s 无对应模板，跳过",
                     user_strategy_id, us_sid,
                 )
                 continue
+
+            # 为当前用户策略实例化独立策略实例，并传入 user_strategy_id 及参数
+            instance = self._build_strategy_instance(
+                template,
+                user_strategy_id=user_strategy_id,
+                user_strategy_params=us_item.get("strategy_params"),
+            )
+            if instance is None:
+                self.logger.warning(
+                    "用户策略 %s 实例化策略 %s 失败，跳过",
+                    user_strategy_id, us_sid,
+                )
+                continue
+            # 保留该策略模板的代表实例（供模板级选股使用）
+            if us_sid not in self._strategy_instances:
+                self._strategy_instances[us_sid] = instance
 
             pool_id: str = str(us_item.get("pool_id", ""))
             db_status: str = str(us_item.get("status", "stopped"))
@@ -638,20 +664,24 @@ class StrategyWorkflow(BaseWorkflow):
             self.logger.warning("策略 %s 已在缓存中", user_strategy_id)
             return True
 
-        # 获取或创建策略实例
-        instance = self._strategy_instances.get(strategy_id)
+        # 为当前用户策略实例化独立策略实例（传入 user_strategy_id 与用户级参数）
+        try:
+            template: dict[str, Any] = self._strategy_api.get_by_id(strategy_id)
+        except Exception as exc:
+            self.logger.error("获取策略模板失败: %s", exc)
+            return False
+        if not template:
+            self.logger.error("策略模板 %s 不存在", strategy_id)
+            return False
+        instance = self._build_strategy_instance(
+            template,
+            user_strategy_id=user_strategy_id,
+            user_strategy_params=user_strategy.strategy_params,
+        )
         if instance is None:
-            try:
-                template: dict[str, Any] = self._strategy_api.get_by_id(strategy_id)
-            except Exception as exc:
-                self.logger.error("获取策略模板失败: %s", exc)
-                return False
-            if not template:
-                self.logger.error("策略模板 %s 不存在", strategy_id)
-                return False
-            instance = self._build_strategy_instance(template)
-            if instance is None:
-                return False
+            return False
+        # 保留代表实例（供模板级选股使用）
+        if strategy_id not in self._strategy_instances:
             self._strategy_instances[strategy_id] = instance
 
         state = StrategyState(
@@ -752,8 +782,8 @@ class StrategyWorkflow(BaseWorkflow):
     def handle_bar(self, topic: str, payload: Any) -> None:
         """处理分钟行情消息。
 
-        遍历策略实例 → 对每只股票调用 _process_bar。
-        仅调度有运行中用户策略的实例，且在调度前过滤黑名单股票。
+        遍历所有运行中的用户策略 → 用各自策略实例对每只股票调用 _process_bar。
+        调度前按用户过滤黑名单股票。
 
         :param topic: MQTT topic
         :param payload: 分钟行情数据列表 list[dict]，每项含 code 字段
@@ -764,6 +794,7 @@ class StrategyWorkflow(BaseWorkflow):
 
         running_count: int = 0
         blacklist_skip_count: int = 0
+        topic_pool_id, topic_stock_code = MqttTopic.decode_stock_minute_topic(topic)
 
         if not isinstance(payload, list):
             payload = [payload]
@@ -774,15 +805,22 @@ class StrategyWorkflow(BaseWorkflow):
             if not code:
                 continue
 
-            for strategy_id, instance in self._strategy_instances.items():
-                if not self._is_strategy_running(strategy_id):
-                    continue
-                # 黑名单过滤：如果所有运行中的用户策略都将该 code 列入黑名单，则跳过
-                if self._is_code_blacklisted_for_all(strategy_id, code):
-                    blacklist_skip_count += 1
-                    continue
-                running_count += 1
-                self.submit(self._process_bar, strategy_id, instance, code, bar_data)
+            for strategy_id, states in self._user_strategies.items():
+                for state in states:
+                    if state.status != "running":
+                        continue
+                    if state.instance is None:
+                        continue
+                    # 黑名单过滤：该用户已将 code 列入黑名单则跳过
+                    if self._is_blacklisted(state, code):
+                        blacklist_skip_count += 1
+                        continue
+                    if topic_pool_id != "" and topic_pool_id != state.pool_id:
+                        continue
+                    if topic_stock_code != "" and topic_stock_code not in state.stock_pool:
+                        continue
+                    running_count += 1
+                    self.submit(self._process_bar, state, code, bar_data)
 
         if running_count > 0 or blacklist_skip_count > 0:
             self.logger.debug(
@@ -793,8 +831,8 @@ class StrategyWorkflow(BaseWorkflow):
     def handle_tick(self, topic: str, payload: Any) -> None:
         """处理实时行情消息。
 
-        遍历策略实例 → 对每只股票调用 _process_tick。
-        仅调度有运行中用户策略的实例，且在调度前过滤黑名单股票。
+        遍历所有运行中的用户策略 → 用各自策略实例对每只股票调用 _process_tick。
+        调度前按用户过滤黑名单股票。
 
         :param topic: MQTT topic
         :param payload: 实时行情数据列表 list[dict]，每项含 code 字段
@@ -803,6 +841,7 @@ class StrategyWorkflow(BaseWorkflow):
             self.logger.warning("handle_tick: payload 格式异常，期望 list or dict，实际 %s", type(payload))
             return
 
+        topic_pool_id, topic_stock_code = MqttTopic.decode_stock_realtime_topic(topic)
         running_count: int = 0
         blacklist_skip_count: int = 0
         if not isinstance(payload, list):
@@ -815,15 +854,22 @@ class StrategyWorkflow(BaseWorkflow):
             if not code:
                 continue
 
-            for strategy_id, instance in self._strategy_instances.items():
-                if not self._is_strategy_running(strategy_id):
-                    continue
-                # 黑名单过滤：如果所有运行中的用户策略都将该 code 列入黑名单，则跳过
-                if self._is_code_blacklisted_for_all(strategy_id, code):
-                    blacklist_skip_count += 1
-                    continue
-                running_count += 1
-                self.submit(self._process_tick, strategy_id, instance, code, tick_data)
+            for strategy_id, states in self._user_strategies.items():
+                for state in states:
+                    if state.status != "running":
+                        continue
+                    if state.instance is None:
+                        continue
+                    # 黑名单过滤：该用户已将 code 列入黑名单则跳过
+                    if self._is_blacklisted(state, code):
+                        blacklist_skip_count += 1
+                        continue
+                    if topic_pool_id != "" and topic_pool_id != state.pool_id:
+                        continue
+                    if topic_stock_code != "" and topic_stock_code not in state.stock_pool:
+                        continue
+                    running_count += 1
+                    self.submit(self._process_tick, state, code, tick_data)
 
         if running_count > 0 or blacklist_skip_count > 0:
             self.logger.debug(
@@ -834,27 +880,40 @@ class StrategyWorkflow(BaseWorkflow):
     # ---- 策略执行核心逻辑 ----
 
     def _process_bar(
-        self, strategy_id: str, instance: BaseStrategy, code: str, bar_data: dict[str, Any]
+        self, state: StrategyState, code: str, bar_data: dict[str, Any]
     ) -> None:
         """在线程池中执行策略的分钟级检查逻辑。
 
-        1. 查找运行中用户策略的持仓信息，传递给 handle_minute_bar
-        2. 调用 instance.handle_minute_bar() 获取买卖信号
-        3. 记录信号通过 MQTT 发送
-        4. 对每个匹配的用户策略，按信号创建订单
+        1. 调用 state.instance.handle_minute_bar() 获取买卖信号
+        2. 记录信号通过 MQTT 发送
+        3. 按信号为当前用户策略创建订单
+
+        **设计约定（信号优先）**：本方法调用策略时有意传入空持仓 `{}`。
+        系统定位是「尽可能产出买卖信号」的辅助决策工具：信号先行，订单与持仓
+        都由信号派生，最终由交易员判断是否真的买卖。因此策略在实时链路下
+        不依赖真实持仓运行，持仓状态只在后续下单环节（_load_positions）才参与判断。
+        回测链路会传真实持仓，两者口径差异属已知权衡。
 
         并发安全：每个 StrategyState 持有独立锁（_lock），
         确保同一 state 在不同 code 并发处理时不产生竞态条件。
 
-        :param strategy_id: 策略模板 ID
-        :param instance: 策略实例
+        :param state: 用户策略运行时状态
         :param code: 股票代码
         :param bar_data: 分钟行情数据
         """
+        instance: BaseStrategy | None = state.instance
+        if instance is None:
+            return
         try:
 
             # 1. 调用策略的 handle_minute_bar 获取信号
+            # 设计约定：此处有意传空持仓 {} —— 实时链路以「尽可能产出买卖信号」为目标，
+            # 不依赖持仓状态，策略侧以「无持仓」语义运行（卖出基准由策略按最近 2 个
+            # 交易日兜底），订单与持仓都产生在信号之后，最终由交易员判断，系统只做辅助建议。
+            # 注意：回测链路（backtest_engine）会传真实持仓，两者口径差异见审查报告。
             matched, extra = instance.handle_minute_bar(code, {}, bar_data)
+            # matched = True
+            # extra["signal"] = "BUY"
             if not matched:
                 # 未匹配：记录原因日志
                 reason: str = extra.get("reason", "")
@@ -865,98 +924,93 @@ class StrategyWorkflow(BaseWorkflow):
                 return  # 条件不符合直接返回
 
             # 2. 记录交易信号（含信号风暴过滤，被抑制则跳过订单创建）
-            if not self._save_trade_signal(strategy_id, code, extra):
+            if not self._save_trade_signal(state.strategy_id, state.user_strategy_id, code, extra):
                 return
 
-            # 3. 对每个用户策略，检查 code 是否在其股票池中，创建订单
-            for us_state in self._user_strategies.get(strategy_id, []):
-                # 黑名单过滤
-                if self._is_blacklisted(us_state, code):
-                    continue
-                if us_state.status != "running":
-                    continue
-                if us_state.stock_pool and code not in us_state.stock_pool:
-                    continue
+            # 3. 股票池过滤
+            if state.stock_pool and code not in state.stock_pool:
+                return
 
-                signal_type: str = extra.get("signal", "")
+            signal_type: str = extra.get("signal", "")
 
-                # 使用 state 级锁保护并发临界区：
-                # pending_codes 检查/修改、持仓加载、资金修改、订单创建
-                with us_state._lock:
-                    positions: dict[str, dict[str, Any]] = self._load_positions(us_state)
+            # 使用 state 级锁保护并发临界区：
+            # pending_codes 检查/修改、持仓加载、资金修改、订单创建
+            with state._lock:
+                positions: dict[str, dict[str, Any]] = self._load_positions(state)
 
-                    if signal_type == "BUY":
-                        if code not in positions:
-                            # 检查是否已有在途订单（避免重复下单）
-                            if code in us_state.pending_codes:
-                                self.logger.debug(
-                                    "[%s] code=%s 已有在途买入订单，跳过",
-                                    us_state.strategy_name, code,
-                                )
-                            elif len(positions) >= us_state.max_stock_count:
-                                # 检查持仓数量是否已达上限
-                                self.logger.debug(
-                                    "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入",
-                                    us_state.strategy_name, code,
-                                    len(positions),
-                                    us_state.max_stock_count,
-                                )
-                            else:
-                                self._create_buy_order(us_state, code, extra)
-                        else:
+                if signal_type == "BUY":
+                    if code not in positions:
+                        # 检查是否已有在途订单（避免重复下单）
+                        if code in state.pending_codes:
                             self.logger.debug(
-                                "[%s] code=%s 已有持仓，跳过买入",
-                                us_state.strategy_name, code,
+                                "[%s] code=%s 已有在途买入订单，跳过",
+                                state.strategy_name, code,
                             )
-                    elif signal_type == "SELL":
-                        if code in positions:
-                            if code in us_state.pending_codes:
-                                self.logger.debug(
-                                    "[%s] code=%s 已有在途卖出订单，跳过",
-                                    us_state.strategy_name, code,
-                                )
-                            else:
-                                pos = positions[code]
-                                buy_time = pos.get("buy_time", "")
-                                stock_create_time = bar_data.get("create_time", "")
-                                if len(stock_create_time) >= 10:
-                                    stock_create_day = stock_create_time[:10]
-                                    if buy_time == stock_create_day:
-                                        self.logger.info(f"买入当天不能立马卖出T+1规则, 发出买入信号时间:{buy_time}, 股票实际时间:{stock_create_day}")
-                                self._create_sell_order(
-                                    us_state, code, float(pos.get("cost_price", 0)), extra
-                                )
-                        else:
+                        elif len(positions) >= state.max_stock_count:
+                            # 检查持仓数量是否已达上限
                             self.logger.debug(
-                                "[%s] code=%s 无持仓，跳过卖出",
-                                us_state.strategy_name, code,
+                                "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入",
+                                state.strategy_name, code,
+                                len(positions),
+                                state.max_stock_count,
+                            )
+                        else:
+                            self._create_buy_order(state, code, extra)
+                    else:
+                        self.logger.debug(
+                            "[%s] code=%s 已有持仓，跳过买入",
+                            state.strategy_name, code,
+                        )
+                elif signal_type == "SELL":
+                    if code in positions:
+                        if code in state.pending_codes:
+                            self.logger.debug(
+                                "[%s] code=%s 已有在途卖出订单，跳过",
+                                state.strategy_name, code,
+                            )
+                        else:
+                            pos = positions[code]
+                            # T+1 提示（设计约定 D-2：仅提示不拦截，订单仍创建供交易员参考）
+                            self._log_t1_advisory(
+                                state, code, pos, bar_data.get("create_time", "")
+                            )
+                            self._create_sell_order(
+                                state, code, float(pos.get("cost_price", 0)), extra
                             )
                     else:
                         self.logger.debug(
-                            "[%s] code=%s 信号类型未知: %s",
-                            us_state.strategy_name, code, signal_type,
+                            "[%s] code=%s 无持仓，跳过卖出",
+                            state.strategy_name, code,
                         )
+                else:
+                    self.logger.debug(
+                        "[%s] code=%s 信号类型未知: %s",
+                        state.strategy_name, code, signal_type,
+                    )
 
         except Exception as exc:
             self.logger.error(
                 "[%s] _process_bar(%s) 异常: %s",
-                instance.strategy_name, code, exc, exc_info=True,
+                state.strategy_name, code, exc, exc_info=True,
             )
 
     def _process_tick(
-        self, strategy_id: str, instance: BaseStrategy, code: str, tick_data: dict[str, Any]
+        self, state: StrategyState, code: str, tick_data: dict[str, Any]
     ) -> None:
         """在线程池中执行策略的实时级检查逻辑（同 _process_bar 模式）。
 
         并发安全：每个 StrategyState 持有独立锁（_lock），
         确保同一 state 在不同 code 并发处理时不产生竞态条件。
 
-        :param strategy_id: 策略模板 ID
-        :param instance: 策略实例
+        :param state: 用户策略运行时状态
         :param code: 股票代码
         :param tick_data: 实时行情数据
         """
+        instance: BaseStrategy | None = state.instance
+        if instance is None:
+            return
         try:
+            # 同 _process_bar：有意传空持仓 {}，实时链路以产出信号优先，详见 _process_bar 注释。
             matched, extra = instance.handle_tick_bar(code, {}, tick_data)
 
             if not matched:
@@ -969,43 +1023,42 @@ class StrategyWorkflow(BaseWorkflow):
                 return  # 条件不符合直接返回
 
             # 记录交易信号（含信号风暴过滤，被抑制则跳过订单创建）
-            if not self._save_trade_signal(strategy_id, code, extra):
+            if not self._save_trade_signal(state.strategy_id, state.user_strategy_id, code, extra):
                 return
 
-            for us_state in self._user_strategies.get(strategy_id, []):
-                if us_state.status != "running":
-                    continue
-                # 黑名单过滤
-                if self._is_blacklisted(us_state, code):
-                    continue
-                if us_state.stock_pool and code not in us_state.stock_pool:
-                    continue
+            # 股票池过滤
+            if state.stock_pool and code not in state.stock_pool:
+                return
 
-                signal_type: str = extra.get("signal", "")
+            signal_type: str = extra.get("signal", "")
 
-                # 使用 state 级锁保护并发临界区
-                with us_state._lock:
-                    positions: dict[str, dict[str, Any]] = self._load_positions(us_state)
+            # 使用 state 级锁保护并发临界区
+            with state._lock:
+                positions: dict[str, dict[str, Any]] = self._load_positions(state)
 
-                    if signal_type == "BUY" and code not in positions and code not in us_state.pending_codes:
-                        if len(positions) >= us_state.max_stock_count:
-                            self.logger.debug(
-                                "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入",
-                                us_state.strategy_name, code,
-                                len(positions), us_state.max_stock_count,
-                            )
-                            continue
-                        self._create_buy_order(us_state, code, extra)
-                    elif signal_type == "SELL" and code in positions and code not in us_state.pending_codes:
-                        pos = positions[code]
-                        self._create_sell_order(
-                            us_state, code, float(pos.get("cost_price", 0)), extra
+                if signal_type == "BUY" and code not in positions and code not in state.pending_codes:
+                    if len(positions) >= state.max_stock_count:
+                        self.logger.debug(
+                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入",
+                            state.strategy_name, code,
+                            len(positions), state.max_stock_count,
                         )
+                    else:
+                        self._create_buy_order(state, code, extra)
+                elif signal_type == "SELL" and code in positions and code not in state.pending_codes:
+                    pos = positions[code]
+                    # 与 _process_bar 保持一致：T+1 仅提示不拦截（设计约定 D-2）
+                    self._log_t1_advisory(
+                        state, code, pos, tick_data.get("create_time", "")
+                    )
+                    self._create_sell_order(
+                        state, code, float(pos.get("cost_price", 0)), extra
+                    )
 
         except Exception as exc:
             self.logger.error(
                 "[%s] _process_tick(%s) 异常: %s",
-                instance.strategy_name, code, exc, exc_info=True,
+                state.strategy_name, code, exc, exc_info=True,
             )
 
     # ---- 交易信号记录 ----
@@ -1031,7 +1084,7 @@ class StrategyWorkflow(BaseWorkflow):
             return 2.0, 10
 
     def _save_trade_signal(
-        self, strategy_id: str, code: str, extra: dict[str, Any]
+        self, strategy_id: str, user_strategy_id: str, code: str, extra: dict[str, Any]
     ) -> bool:
         """保存交易信号到 /api/trade_signal/add。
 
@@ -1056,7 +1109,7 @@ class StrategyWorkflow(BaseWorkflow):
 
         # 查询最近一次同股票+同策略的交易信号（不限方向），用于信号风暴过滤
         try:
-            latest_any: Any = self._trade_signal_api.latest(strategy_id, code)
+            latest_any: Any = self._trade_signal_api.latest(strategy_id, user_strategy_id, code)
             if latest_any and isinstance(latest_any, dict):
                 last_action: str = str(latest_any.get("action", ""))
                 last_price: float = float(latest_any.get("trade_price", 0))
@@ -1102,7 +1155,7 @@ class StrategyWorkflow(BaseWorkflow):
         if signal_type == "SELL":
             try:
                 latest_result: Any = self._trade_signal_api.latest(
-                    strategy_id, code, action="买入"
+                    strategy_id, user_strategy_id, code, action="买入"
                 )
                 if latest_result and isinstance(latest_result, dict):
                     buy_price: float = float(latest_result.get("trade_price", 0))
@@ -1124,6 +1177,7 @@ class StrategyWorkflow(BaseWorkflow):
             # 1. 先通过 API 保存交易信号到服务器
             self._trade_signal_api.add(
                 strategy_id=strategy_id,
+                user_strategy_id=user_strategy_id,
                 stock_code=code,
                 trade_price=price,
                 action=action,
@@ -1140,6 +1194,7 @@ class StrategyWorkflow(BaseWorkflow):
             # 2. 通过 MQTT 发送交易信号通知
             signal_data: dict[str, Any] = {
                 "strategy_id": strategy_id,
+                "user_strategy_id": user_strategy_id,
                 "strategy_name": strategy_name,
                 "stock_code": code,
                 "trade_price": price,
@@ -1176,7 +1231,7 @@ class StrategyWorkflow(BaseWorkflow):
             self._notifier.notify(
                 notify_msg,
                 recipient=strategy_name,
-                user_strategy_id="",
+                user_strategy_id=user_strategy_id,
             )
 
             return True
@@ -1191,7 +1246,7 @@ class StrategyWorkflow(BaseWorkflow):
     ) -> None:
         """根据买入信号生成买入订单。"""
         strategy_name: str = state.strategy_name
-        current_price: float = float(extra.get("current_price", 0))
+        current_price: float = float(extra.get("current_price", extra.get("price", 0.0)))
         if current_price <= 0:
             self.logger.warning("[%s] 买入信号缺少有效价格: code=%s", strategy_name, code)
             return
@@ -1231,6 +1286,38 @@ class StrategyWorkflow(BaseWorkflow):
             "INFO",
         )
 
+    def _log_t1_advisory(
+        self,
+        state: StrategyState,
+        code: str,
+        position: dict[str, Any],
+        stock_time: Any,
+    ) -> None:
+        """T+1 提示日志（设计约定 D-2：只提示，不拦截下单）。
+
+        卖出信号涉及「当日买入」的标的时，按 A 股 T+1 规则当日不可卖出。
+        但本系统的订单只是给交易员的参考（信号优先、人做最终决策），
+        因此此处仅输出提示日志，订单仍会创建；若券商侧必须硬拦截，
+        请在调用本方法之后补 `return`。
+
+        注意：`position["buy_time"]` 由 TradeManager 写成 "YYYY-MM-DD HH:MM:SS"，
+        与行情时间比较必须按日期前缀截断，否则 `==` 恒为 False、日志永不触发。
+
+        :param state: 用户策略运行时状态
+        :param code: 股票代码
+        :param position: 该股票的持仓信息（含 buy_time）
+        :param stock_time: 触发信号时的行情时间（分钟 bar / tick 的 create_time）
+        """
+        buy_time: str = str(position.get("buy_time", ""))
+        bar_day: str = str(stock_time)[:10]
+        if not bar_day or buy_time[:10] != bar_day:
+            return
+        self.logger.info(
+            "[%s] code=%s 卖出信号涉及当日买入标的（T+1 不可卖出），"
+            "订单仍创建仅供交易员参考: buy_time=%s, bar_time=%s",
+            state.strategy_name, code, buy_time, bar_day,
+        )
+
     def _create_sell_order(
         self, state: StrategyState, code: str, entry_price: float, extra: dict[str, Any]
     ) -> None:
@@ -1245,7 +1332,7 @@ class StrategyWorkflow(BaseWorkflow):
         if code in state.pending_codes:
             self.logger.debug("[%s] code=%s 已有在途订单，跳过重复卖出", strategy_name, code)
             return
-        current_price: float = float(extra.get("current_price", 0))
+        current_price: float = float(extra.get("current_price", extra.get("price", 0.0)))
         if current_price <= 0:
             self.logger.warning("[%s] 卖出信号缺少有效价格: code=%s", strategy_name, code)
             return
@@ -1494,12 +1581,20 @@ class StrategyWorkflow(BaseWorkflow):
         # 去重
         pool_codes = list(dict.fromkeys(pool_codes))
 
-        # 1. before_trading
-        try:
-            instance.before_trading(trade_date=trade_date, stock_codes=pool_codes)
-            self.logger.info("[%s] before_trading 完成", sname)
-        except Exception as exc:
-            self.logger.error("[%s] before_trading 异常: %s", sname, exc, exc_info=True)
+        # 1. before_trading：对所有运行中的用户策略实例清理缓存（per-user 实例）
+        for us_state in self._user_strategies.get(strategy_id, []):
+            if us_state.status != "running":
+                continue
+            if us_state.instance is None:
+                continue
+            try:
+                us_state.instance.before_trading(trade_date=trade_date, stock_codes=pool_codes)
+            except Exception as exc:
+                self.logger.error(
+                    "[%s] before_trading 异常 (user_strategy_id=%s): %s",
+                    sname, us_state.user_strategy_id, exc, exc_info=True,
+                )
+        self.logger.info("[%s] before_trading 完成", sname)
 
         # 2. 合并股票池 + 热门行业
         combined: list[str] = list(dict.fromkeys(pool_codes + industry_codes))
@@ -1583,4 +1678,5 @@ class StrategyWorkflow(BaseWorkflow):
                     state.status = "paused"
                     self._save_runlog(state, f"策略 {state.strategy_name} 已暂停（工作流关闭）", "INFO")
         self._strategy_instances.clear()
+        self._strategy_templates.clear()
         self._user_strategies.clear()

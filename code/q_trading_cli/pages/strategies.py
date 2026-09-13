@@ -6,7 +6,7 @@ Description: 策略列表页面 — 严格按 strategies.html 原型实现
     - 筛选栏（搜索策略名称/描述 + 策略类型 + 状态 + 重置）
     - 策略表格（名称+描述 / 类型 / 创建时间 / 状态 / 最近信号 / 查看详情）
     - 分页页脚
-    - 策略详情面板（持仓信息 / 交易明细 / 运行日志）
+    - 策略详情面板（持仓信息 / 订单明细 / 运行日志）
     - 创建策略对话框（基本信息与类配置 / 选股配置 / 回测参数）
 
 数据来源：
@@ -14,7 +14,7 @@ Description: 策略列表页面 — 严格按 strategies.html 原型实现
     - 策略模板:     strategy_api.get_by_id() / strategy_api.create()
     - 最近信号列:   SignalManager 内存信号
     - 持仓信息:     user_strategy_api.get_latest_execution().positions
-    - 交易明细:     trade_signal_api.list(strategy_id=...)
+    - 订单明细:     order_api.get_latest(user_strategy_id, 持仓股票代码, action=买入)
     - 运行日志:     user_strategy_api.get_runlog()
 """
 
@@ -25,9 +25,11 @@ import math
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from nicegui import ui
 
 from app_context import AppContext
+from core.user_strategy_manager import UserStrategyManager
 from utils import tools
 
 logger = logging.getLogger(__name__)
@@ -156,6 +158,43 @@ def _collect_params(collector: dict[str, dict[str, Any]]) -> dict[str, dict[str,
     return result
 
 
+# 对话框装饰高度（头部 + 标签栏 + 底部按钮 + 对话框边距），用于计算内容区视口上限
+_DIALOG_CHROME_PX: int = 260
+# 参数面板高度估算常量（需与 _render_params_container 的行高/间距保持一致）
+_PARAM_ROW_HEIGHT_PX: int = 60         # 单个参数行高度（dense 输入框 + 上下 padding + 冗余）
+_PARAM_GROUP_HEADER_PX: int = 44       # 分组标题高度（文字行高 + margin-top + 冗余）
+_PARAM_CONTAINER_PADDING_PX: int = 40  # 参数容器上下内边距合计 + 冗余
+
+
+def _params_area_max_height(params: dict[str, Any], min_px: int = 200) -> str:
+    """根据参数数量估算参数编辑区的自适应最大高度表达式。
+
+    高度规则：
+    - 估算内容高度 = 容器内边距 + 分组标题数 × 标题高度 + 参数总行数 × 行高；
+    - 参数较少时：高度取估算内容高度，对话框随之变矮，所有参数直接可见、无需滚动；
+    - 参数较多时：高度上限为「视口高度 - 对话框装饰高度」，参数区尽量占满剩余
+      屏幕、避免对话框超出视口，仅超出部分在滚动区内滚动。
+
+    :param params: 策略模板 default_params 字典（结构 {group: {key: {...}}}）
+    :param min_px: 最小高度（像素），无参数时的兜底高度
+    :return: CSS max-height 表达式，如 "min(calc(100vh - 260px), 512px)"
+    """
+    row_total: int = 0
+    group_total: int = 0
+    for group_params in (params or {}).values():
+        count: int = len(group_params or {})
+        row_total += count
+        if count > 0:
+            group_total += 1
+    est_px: int = max(
+        _PARAM_CONTAINER_PADDING_PX
+        + group_total * _PARAM_GROUP_HEADER_PX
+        + row_total * _PARAM_ROW_HEIGHT_PX,
+        min_px,
+    )
+    return f"min(calc(100vh - {_DIALOG_CHROME_PX}px), {est_px}px)"
+
+
 def show_strategies_page() -> None:
     """策略列表页面入口。"""
     current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
@@ -210,8 +249,8 @@ def show_strategies_page() -> None:
         .strategy-dialog-tabs .q-tab {{
             background-color: {tab_bg} !important;
             color: {muted_color} !important;
-            border-radius: 8px !important;
-            margin: 6px 2px !important;
+            border-radius: 3px !important;
+            margin: 2px 2px !important;
         }}
         .strategy-dialog-tabs .q-tab--active,
         .strategy-dialog-tabs .q-tab.q-tab--active,
@@ -352,13 +391,7 @@ def show_strategies_page() -> None:
 
         :return: 策略行数据列表（按创建时间倒序）
         """
-        try:
-            user_strategies: list[dict[str, Any]] = AppContext().user_strategy_api.list()
-        except Exception:
-            logger.warning("查询用户策略列表失败", exc_info=True)
-            user_strategies = []
-        user_strategies.sort(key=lambda s: str(s.get("create_time", "")), reverse=True)
-
+        user_strategies: list[dict[str, Any]] = UserStrategyManager().list_user_strategies()
         templates: dict[str, dict[str, Any]] = {}
         rows: list[dict[str, Any]] = []
         for us in user_strategies:
@@ -371,7 +404,7 @@ def show_strategies_page() -> None:
                     templates[sid] = {}
             tpl: dict[str, Any] = templates.get(sid, {})
             total_profit = float(us.get("total_profit", 0.0))
-            init_amount = float(us.get("initial_amount", 0.0))
+            init_amount = float(us.get("initial_amount", 0.0) or 0.0)
             profit = 0.00 if init_amount == 0.0 else total_profit / init_amount * 100
             total_profit_str: str = f"{round(profit, 2)}%"
             # 正收益显示红色，负收益显示绿色（A 股惯例）
@@ -392,17 +425,19 @@ def show_strategies_page() -> None:
             })
         return rows
 
-    def _latest_signal_text(sid: str) -> tuple[str, str]:
+    def _latest_signal_text(us_id: str) -> tuple[str, str]:
         """获取指定策略最近一次信号文案与颜色。
 
         :param sid: 策略模板 ID
         :return: (信号文本如 '买入 600519', 颜色)，无信号返回 ('-', 灰色)
         """
+        positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
+        negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
         signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals(limit=50)
         for sig in signals:
-            if str(sig.get("strategy_id", "")) == sid:
+            if str(sig.get("user_strategy_id", "")) == us_id:
                 text: str = f"{sig.get('action', '')} {sig.get('stock_code', '')}".strip()
-                color: str = "#34d399" if sig.get("action") == "买入" else "#f87171"
+                color: str = positive_color if sig.get("action") == "买入" else negative_color
                 return (text or "-", color)
         return ("-", "#6b7280")
 
@@ -500,7 +535,7 @@ def show_strategies_page() -> None:
 
         # 预计算每行的信号和状态
         for r in page_rows:
-            sig_t, sig_c = _latest_signal_text(r["sid"])
+            sig_t, sig_c = _latest_signal_text(r["us_id"])
             r["_signal_text"] = sig_t
             r["_signal_color"] = sig_c
             st = _STATUS_STYLES.get(r["status"], ("未知", "#d1d5db", "rgba(55,65,81,0.8)"))
@@ -646,7 +681,7 @@ def show_strategies_page() -> None:
             tabs_row.clear()
             with tabs_row:
                 for key, text in [
-                    ("positions", "持仓信息"), ("trades", "交易明细"), ("runlogs", "运行日志"),
+                    ("positions", "持仓信息"), ("trades", "订单明细"), ("runlogs", "运行日志"),
                 ]:
                     active: bool = tab_state["tab"] == key
                     style: str = (
@@ -698,6 +733,8 @@ def show_strategies_page() -> None:
         if not positions:
             _detail_empty(container, "暂无持仓")
             return
+        positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
+        negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
         with container:
             # 表头（原型样式：深色背景 + 底部边框）
             with ui.row().classes("w-full items-center").style(
@@ -710,14 +747,22 @@ def show_strategies_page() -> None:
                         "text-xs font-semibold uppercase tracking-wider"
                     ).style(f"color: #9ca3af; flex: 1; {align}")
             # 数据行（字段: code/name/quantity/cost_price/current_price/profit_amount）
+            codes: str = ",".join(str(p.get("code")) for p in positions if p.get("code", "") != "")
+            rt_hq_list = AppContext().market_api.get_real_time(codes=codes)
+            price_dict: dict[str, float] = {
+                str(hq.get("code")): float(hq.get("price") or hq.get("close") or 0)
+                for hq in rt_hq_list
+                if hq.get("code")
+            }
             for idx, pos in enumerate(positions):
+                code: str = pos.get("code", "")
                 quantity: int = int(float(pos.get("quantity", 0) or 0))
                 cost_price: float = float(pos.get("cost_price", 0.0) or 0.0)
-                current_price: float = float(pos.get("current_price", 0.0) or 0.0)
-                profit_amount: float = float(pos.get("profit_amount", 0.0) or 0.0)
+                current_price: float = float(price_dict.get(code, pos.get("current_price", 0.0)) or 0.0)
+                profit_amount: float = (current_price - cost_price) * quantity
                 bg: str = input_bg if idx % 2 == 0 else "#151c29"
                 profit_text: str = f"{profit_amount:+,.0f}"
-                profit_color: str = "#34d399" if profit_amount >= 0 else "#f87171"
+                profit_color: str = positive_color if profit_amount >= 0 else negative_color
                 with ui.row().classes("w-full items-center").style(
                     f"padding: 12px 24px; background-color: {bg}; "
                     "border-bottom: 1px solid rgba(45,55,72,0.6);"
@@ -764,25 +809,42 @@ def show_strategies_page() -> None:
         return result
 
     def _render_trades(container: ui.column, row: dict[str, Any]) -> None:
-        """渲染交易明细标签页内容（原型列：日期/股票/方向/数量/价格/成交额）。
+        """渲染订单明细标签页内容（原型列：日期/股票/方向/数量/价格/成交额）。
 
-        信号记录字段：create_time/action/stock_code/trade_price/profit_rate/
-        profit_amount/reason，不含数量与成交额，缺失列显示 "--"。
+        以持仓信息的股票代码为参数，按 action=买入 查询各股票最新订单
+        （order_api.get_latest），构建订单明细。订单字段：create_time/
+        stock_code/action/entrust_quantity/trade_price/trade_quantity。
 
         :param container: 目标容器
         :param row: 表格行数据
         """
-        trades: list[dict[str, Any]] = []
+        # 1. 拿持仓，提取股票代码
+        execution: dict[str, Any] = {}
         try:
-            trades = AppContext().trade_signal_api.list(strategy_id=row["sid"], limit=20)
+            execution = AppContext().user_strategy_api.get_latest_execution(row["us_id"])
         except Exception:
-            logger.warning("查询交易明细失败: %s", row["sid"], exc_info=True)
-        if not trades:
-            _detail_empty(container, "暂无交易记录")
+            logger.warning("查询持仓失败: %s", row["us_id"], exc_info=True)
+        positions: list[dict[str, Any]] = list(execution.get("positions", []))
+        codes: list[str] = [str(p.get("code", "")) for p in positions if p.get("code")]
+        if not codes:
+            _detail_empty(container, "暂无订单记录")
+            return
+        # 2. 逐个股票查最新买入订单
+        orders: list[dict[str, Any]] = []
+        try:
+            orders = AppContext().order_api.get_latest(
+                row["us_id"], codes, action="买入"
+            )
+        except Exception:
+            logger.warning("查询最新订单失败: %s", codes, exc_info=True)
+        if not orders:
+            _detail_empty(container, "暂无订单记录")
             return
         names: dict[str, str] = _stock_name_map(
-            [str(t.get("stock_code", "")) for t in trades if t.get("stock_code")]
+            [str(o.get("stock_code", "")) for o in orders if o.get("stock_code")]
         )
+        positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
+        negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
         with container:
             with ui.row().classes("w-full items-center").style(
                 f"background-color: {card_bg}; border-bottom: 1px solid {border_color}; "
@@ -793,20 +855,23 @@ def show_strategies_page() -> None:
                     ui.label(hdr).classes(
                         "text-xs font-semibold uppercase tracking-wider"
                     ).style(f"color: #9ca3af; flex: 1; {align}")
-            for idx, trade in enumerate(trades):
-                action: str = str(trade.get("action", ""))
-                code: str = str(trade.get("stock_code", ""))
-                price: float = float(trade.get("trade_price", 0.0) or 0.0)
+            for idx, order in enumerate(orders):
+                action: str = str(order.get("action", ""))
+                code: str = str(order.get("stock_code", ""))
+                price: float = float(order.get("trade_price", 0.0) or 0.0)
+                quantity: int = int(float(order.get("entrust_quantity", 0) or 0))
+                trade_qty: int = int(float(order.get("trade_quantity", 0) or 0))
+                amount: float = price * trade_qty
                 bg: str = input_bg if idx % 2 == 0 else "#151c29"
-                action_color: str = "#34d399" if action == "买入" else (
-                    "#f87171" if action == "卖出" else "#9ca3af"
+                action_color: str = positive_color if action == "买入" else (
+                    negative_color if action == "卖出" else font_color
                 )
                 display_name: str = f"{code} {names.get(code, '')}".strip() or "-"
                 with ui.row().classes("w-full items-center").style(
                     f"padding: 12px 24px; background-color: {bg}; "
                     "border-bottom: 1px solid rgba(45,55,72,0.6);"
                 ):
-                    ui.label(str(trade.get("create_time", ""))[:16]).classes("text-sm").style(
+                    ui.label(str(order.get("create_time", ""))[:16]).classes("text-sm").style(
                         "color: #d1d5db; flex: 1;"
                     )
                     ui.label(display_name).classes("text-sm").style(
@@ -815,14 +880,14 @@ def show_strategies_page() -> None:
                     ui.label(action or "-").classes("text-sm font-medium").style(
                         f"color: {action_color}; flex: 1;"
                     )
-                    ui.label("--").classes("text-sm").style(
-                        "color: #6b7280; flex: 1; text-align: right;"
+                    ui.label(str(quantity) if quantity else "--").classes("text-sm").style(
+                        f"color: {font_color}; flex: 1; text-align: right;"
                     )
                     ui.label(f"{price:.2f}" if price else "--").classes("text-sm").style(
                         f"color: {font_color}; flex: 1; text-align: right;"
                     )
-                    ui.label("--").classes("text-sm").style(
-                        "color: #6b7280; flex: 1; text-align: right;"
+                    ui.label(f"{amount:,.0f}" if amount else "--").classes("text-sm").style(
+                        f"color: {font_color}; flex: 1; text-align: right;"
                     )
 
     def _render_runlogs(container: ui.column, row: dict[str, Any]) -> None:
@@ -872,8 +937,18 @@ def show_strategies_page() -> None:
             all_strategies = AppContext().strategy_api.list()
         except Exception:
             logger.warning("查询策略列表失败", exc_info=True)
+        # 已关联的策略（同一用户不能重复关联同一全局策略）→ 排除出创建列表
+        associated_ids: set[str] = set()
+        user_strategies: list[dict[str, Any]] = UserStrategyManager().list_user_strategies()
+        for us in user_strategies:
+            sid: str = str(us.get("strategy_id", ""))
+            if sid:
+                associated_ids.add(sid)
         strategy_name_map: dict[str, dict[str, Any]] = {
-            str(s.get("name", "")): s for s in all_strategies if s.get("name", "")
+            str(s.get("name", "")): s
+            for s in all_strategies
+            if s.get("name", "")
+            and str(s.get("_id", "") or s.get("id", "")) not in associated_ids
         }
         all_pools_list: list[dict[str, Any]] = []
         try:
@@ -886,7 +961,7 @@ def show_strategies_page() -> None:
         field_label_style = f"font-size: 0.875rem; font-weight: 500; color: {field_label_color};"
         input_style = f"flex: 1; background-color: {input_bg}; color: {font_color}; width: 100%;"
         with ui.dialog() as dialog, ui.card().classes("w-[600px] max-w-[95vw] gap-0").style(
-                f"background-color: {card_bg}; border: 1px solid {border_color}; height: 70vh; max-height: 70vh;"
+                f"background-color: {card_bg}; border: 1px solid {border_color}; "
                 f"border-radius: 12px; padding: 0; "
                 f"display: flex; flex-direction: column;"
             ):
@@ -903,8 +978,10 @@ def show_strategies_page() -> None:
                     ui.tab("参数").classes("text-sm")
                 with ui.tab_panels(dialog_tabs, value="策略").classes("w-full flex-1").style(f"background-color: {card_bg};"):
                     # ---- 策略 tab：策略选择 + 股票池 配置 ----
-                    with ui.tab_panel("策略").classes("p-0"):
-                        with ui.scroll_area().classes("w-full").style("max-height: 48vh;"):
+                    with ui.tab_panel("策略").classes("p-0"):  # noqa: SIM117
+                        with ui.scroll_area().classes("w-full").style(
+                            f"max-height: min(calc(100vh - {_DIALOG_CHROME_PX}px), 560px);"
+                        ):
                             with ui.column().classes("w-full gap-0"):
                                 def _section(title: str) -> None:
                                     """渲染对话框内的小节标题。"""
@@ -1013,23 +1090,31 @@ def show_strategies_page() -> None:
                                             value=4, format="%d",
                                         ).classes("w-[30%]").props("outlined dense").style(input_style)
 
-                    # ---- 参数 tab：策略运行参数 ----
+                    # ---- 参数 tab：策略运行参数（高度随参数数量自适应）----
                     with ui.tab_panel("参数").classes("p-0"):
-                        with ui.scroll_area().classes("w-full").style("max-height: 48vh;"):
-                            params_container: ui.column = (
-                                ui.column().classes("w-full gap-0").style("padding: 16px 24px;")
-                            )
+                        params_tab_container: ui.column = (
+                            ui.column().classes("w-full gap-0")
+                        )
 
                 # 参数页状态与渲染（在控件创建后定义，初始调用一次）
                 param_state: dict[str, Any] = {"collector": {}, "params": {}}
 
                 def _render_params_panel() -> None:
-                    """根据当前选中策略重新渲染参数页。"""
-                    params_container.clear()
+                    """根据当前选中策略重新渲染参数页（参数区高度随参数数量自适应）。"""
+                    params_tab_container.clear()
                     current_name: str = str(strategy_name_select.value or "")
                     tpl = strategy_name_map.get(current_name, {})
                     params: dict[str, Any] = tpl.get("default_params", {}) or {}
                     param_state["params"] = params
+                    with params_tab_container:  # noqa: SIM117
+                        # 参数少 → 高度即内容高度，所有参数直接可见；
+                        # 参数多 → 上限为视口剩余高度，仅超出部分需要滚动
+                        with ui.scroll_area().classes("w-full").style(
+                            f"max-height: {_params_area_max_height(params)};"
+                        ):
+                            params_container: ui.column = (
+                                ui.column().classes("w-full gap-0").style("padding: 16px 24px;")
+                            )
                     param_state["collector"] = _render_params_container(
                         params_container, params, None,
                         input_bg=input_bg, font_color=font_color,
@@ -1068,7 +1153,7 @@ def show_strategies_page() -> None:
                             return
                         
                         try:
-                            AppContext().user_strategy_api.create(
+                            result = AppContext().user_strategy_api.create(
                                 strategy_id=strategy_id,
                                 pool_id=pool_id,
                                 status="stopped",
@@ -1078,6 +1163,15 @@ def show_strategies_page() -> None:
                                     param_state.get("collector", {})
                                 ),
                             )
+                            user_strategy_id = result.get("_id", result.get("id", ""))
+                            UserStrategyManager().update_user_strategy(user_strategy_id, result)
+                        except httpx.HTTPStatusError as exc:
+                            if exc.response.status_code == 409:
+                                ui.notify("该策略已关联，请在列表中编辑，请勿重复创建", type="warning")
+                                return
+                            logger.exception("创建策略失败")
+                            ui.notify(f"创建策略失败: {exc}", type="negative")
+                            return
                         except Exception as exc:
                             logger.exception("创建策略失败")
                             ui.notify(f"创建策略失败: {exc}", type="negative")
@@ -1135,6 +1229,9 @@ def show_strategies_page() -> None:
             logger.warning("查询策略模板失败: %s", row["sid"], exc_info=True)
         saved_params: dict[str, Any] = row.get("strategy_params", {}) or {}
 
+        # 参数区高度随参数数量自适应：参数全部可见时无需滚动，过多时占满剩余视口后再滚动
+        params_max_h: str = _params_area_max_height(default_params)
+
         dialog = ui.dialog()
         with dialog:
             card = ui.card().classes("w-[600px] max-w-[95vw] gap-0").style(
@@ -1160,8 +1257,10 @@ def show_strategies_page() -> None:
                     ui.tab("参数").classes("text-sm")
                 with ui.tab_panels(edit_tabs, value="策略").classes("w-full flex-1").style(f"background-color: {card_bg};"):
                     # ---- 策略 tab：股票池 + 资金配置 ----
-                    with ui.tab_panel("策略").classes("p-0"):
-                        with ui.scroll_area().classes("w-full").style("max-height: 48vh;"):
+                    with ui.tab_panel("策略").classes("p-0"):  # noqa: SIM117
+                        with ui.scroll_area().classes("w-full").style(
+                            f"max-height: min(calc(100vh - {_DIALOG_CHROME_PX}px), 300px);"
+                        ):
                             with ui.column().classes("w-full gap-3").style("padding: 20px 24px;"):
                                 # 股票池
                                 with ui.row().classes("w-full gap-1 items-center"):
@@ -1196,9 +1295,11 @@ def show_strategies_page() -> None:
                                         format="%d",
                                     ).classes("w-[30%]").props("outlined dense").style(input_style)
 
-                    # ---- 参数 tab：策略运行参数 ----
-                    with ui.tab_panel("参数").classes("p-0"):
-                        with ui.scroll_area().classes("w-full").style("max-height: 48vh;"):
+                    # ---- 参数 tab：策略运行参数（高度随参数数量自适应）----
+                    with ui.tab_panel("参数").classes("p-0"):  # noqa: SIM117
+                        with ui.scroll_area().classes("w-full").style(
+                            f"max-height: {params_max_h};"
+                        ):
                             params_container: ui.column = (
                                 ui.column().classes("w-full gap-0").style("padding: 16px 24px;")
                             )
@@ -1230,15 +1331,19 @@ def show_strategies_page() -> None:
                             pool_dao.get("_id", "") or pool_dao.get("id", "")
                         )
                         try:
+                            params = _collect_params(param_state.get("collector", {}))
                             AppContext().user_strategy_api.update(
                                 user_strategy_id=row["us_id"],
                                 pool_id=pool_id,
                                 initial_amount=float(capital_input.value or 0.0),
                                 max_stock_count=int(max_stock_count_input.value or 0),
-                                strategy_params=_collect_params(
-                                    param_state.get("collector", {})
-                                ),
+                                strategy_params=params,
                             )
+                            row["pool_id"] = pool_id
+                            row["initial_amount"] = float(capital_input.value or 0.0)
+                            row["max_stock_count"] = int(max_stock_count_input.value or 0)
+                            row["strategy_params"] = params
+                            UserStrategyManager().update_user_strategy(row["us_id"], row)
                         except Exception as exc:
                             logger.exception("编辑策略失败")
                             ui.notify(f"编辑策略失败: {exc}", type="negative")

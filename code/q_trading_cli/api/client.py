@@ -197,6 +197,7 @@ class ApiClient:
     def _on_401(self) -> None:
         """401 响应时的处理：清除认证状态，提示用户并引导至登录页。"""
         self.clear_token()
+        self.clear_fallback_token()
         from nicegui import app
 
         # 清除用户会话中的认证信息
@@ -210,7 +211,7 @@ class ApiClient:
         except Exception:
             self.logger.debug("清除用户会话失败", exc_info=True)
 
-        # 委托共享模块弹出确认框 → 跳转 /login
+        # 委托共享模块清除会话并跳转登录页（UI 线程直接跳转；后台线程由心跳跳转）
         from api.error_handler import show_relogin_confirm
 
         show_relogin_confirm()

@@ -34,7 +34,7 @@ class TestStockFetchPoolDistribution(unittest.TestCase):
 
     def cleanup_pool(self) -> None:
         try:
-            self.pool_impl.delete_stock_pool(self.pool_name)
+            self.pool_impl.delete_stock_pool_by_id(self.pool_name)
         except Exception:
             pass
 

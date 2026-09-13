@@ -26,15 +26,15 @@ from web_api.models import (
 router = APIRouter(prefix="/api/strategy_select_stocks", tags=["策略选股管理"])
 
 
-def _resolve_strategy_ids_from_user(user_id: str, role: int) -> list[str] | None:
-    """通过用户 ID 查询该用户关联的所有 strategy_id
+def _resolve_user_strategy_ids_from_user(user_id: str, role: int) -> list[str] | None:
+    """通过用户 ID 查询该用户关联的所有 user_strategy_id
 
-    管理员（role == 0）返回 None 表示不限制策略范围（查询所有）；
-    普通用户返回该用户关联的 strategy_id 列表。
+    管理员（role == 0）返回 None 表示不限制范围（查询所有）；
+    普通用户返回该用户关联的 user_strategy_id 列表（即 UserStrategyDao 记录的 _id）。
 
     :param user_id: 用户 ID
     :param role: 用户角色，0 为管理员
-    :return: strategy_id 列表，管理员返回 None
+    :return: user_strategy_id 列表，管理员返回 None
     """
     if role == 0:
         return None
@@ -42,7 +42,7 @@ def _resolve_strategy_ids_from_user(user_id: str, role: int) -> list[str] | None
     res, records = impl.query_user_strategies_by_user(user_id)
     if not res or not records:
         return []
-    return [r.get("strategy_id", "") for r in records]
+    return [str(r["_id"]) for r in records]
 
 
 @router.post("/add", response_model=ApiResponse[list[StrategySelectStockItem]])
@@ -52,16 +52,16 @@ async def add_select_stock(
 ):
     """批量添加策略选股记录"""
     user_id, role = user_info
-    # 非管理员需验证该 strategy_id 属于当前用户
+    # 非管理员需验证该 user_strategy_id 属于当前用户
     if role != 0:
-        strategy_ids = _resolve_strategy_ids_from_user(user_id, role)
-        if not strategy_ids or req.strategy_id not in strategy_ids:
-            raise HTTPException(status_code=403, detail="无权操作此策略")
+        user_strategy_ids = _resolve_user_strategy_ids_from_user(user_id, role)
+        if not user_strategy_ids or req.user_strategy_id not in user_strategy_ids:
+            raise HTTPException(status_code=403, detail="无权操作此用户策略")
     impl = MongoStrategySelectStocksImpl()
     now = datetime.now().strftime("%Y-%m-%d")
     records = [
         {
-            "strategy_id": req.strategy_id,
+            "user_strategy_id": req.user_strategy_id,
             "code": code,
             "create_time": now,
         }
@@ -73,7 +73,7 @@ async def add_select_stock(
     rlist = [
         StrategySelectStockItem(
             id=record_ids[i] if i < len(record_ids) else "",
-            strategy_id=req.strategy_id,
+            user_strategy_id=req.user_strategy_id,
             code=code,
             create_time=now,
         )
@@ -97,7 +97,7 @@ async def delete_select_stock(
 
 @router.get("/list", response_model=ApiResponse[list[StrategySelectStockWithRtItem]])
 async def list_select_stocks(
-    strategy_id: str = Query(default="", description="策略 ID（可选）"),
+    user_strategy_id: str = Query(default="", description="用户策略 ID（可选）"),
     start_time: str = Query(default="", description="创建开始时间 YYYY-MM-DD HH:MM:SS（可选）"),
     end_time: str = Query(default="", description="创建结束时间 YYYY-MM-DD HH:MM:SS（可选）"),
     skip: int = Query(default=0, description="分页跳过条数"),
@@ -110,19 +110,19 @@ async def list_select_stocks(
     """
     user_id, role = user_info
     impl = MongoStrategySelectStocksImpl()
-    if strategy_id:
-        # 指定了策略 ID，直接按条件查询
+    if user_strategy_id:
+        # 指定了用户策略 ID，直接按条件查询
         res, records = impl.query_select_stocks(
-            strategy_id=strategy_id,
+            user_strategy_id=user_strategy_id,
             start_time=start_time,
             end_time=end_time,
             skip=skip,
             limit=limit,
         )
     else:
-        # 未指定策略 ID：管理员查所有，普通用户查自己的策略
-        strategy_ids = _resolve_strategy_ids_from_user(user_id, role)
-        if strategy_ids is None:
+        # 未指定用户策略 ID：管理员查所有，普通用户查自己的策略
+        user_strategy_ids = _resolve_user_strategy_ids_from_user(user_id, role)
+        if user_strategy_ids is None:
             # 管理员：查询所有记录
             res, records = impl.query_select_stocks(
                 start_time=start_time,
@@ -130,11 +130,11 @@ async def list_select_stocks(
                 skip=skip,
                 limit=limit,
             )
-        elif not strategy_ids:
+        elif not user_strategy_ids:
             return ApiResponse(data=[])
         else:
-            res, records = impl.query_select_stocks_by_strategy_ids(
-                strategy_ids=strategy_ids,
+            res, records = impl.query_select_stocks_by_user_strategy_ids(
+                user_strategy_ids=user_strategy_ids,
                 start_time=start_time,
                 end_time=end_time,
                 skip=skip,
@@ -167,7 +167,7 @@ async def list_select_stocks(
         rlist.append(
             StrategySelectStockWithRtItem(
                 id=str(r.get("_id", "")),
-                strategy_id=r.get("strategy_id", ""),
+                user_strategy_id=r.get("user_strategy_id", ""),
                 code=code,
                 create_time=r.get("create_time", ""),
                 name=str(rt_data.get("name", "")),
@@ -197,15 +197,15 @@ async def get_select_stocks_by_user(
     limit: int = Query(default=0, description="分页限制条数，0 表示不限制"),
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
 ):
-    """按用户 ID 查询选股记录 — 通过 UserStrategyDao 获取用户的 strategy_id 列表再查询
+    """按用户 ID 查询选股记录 — 通过 UserStrategyDao 获取用户的 user_strategy_id 列表再查询
 
     结合最新的实时行情数据一起返回。
     """
     user_id, role = user_info
     query_user_id = user_id
-    strategy_ids = _resolve_strategy_ids_from_user(query_user_id, role)
-    if strategy_ids is None or len(strategy_ids) <= 0:
-        # 管理员且未指定 target_user_id：查询所有
+    user_strategy_ids = _resolve_user_strategy_ids_from_user(query_user_id, role)
+    if user_strategy_ids is None:
+        # 管理员：查询所有
         impl = MongoStrategySelectStocksImpl()
         res, records = impl.query_select_stocks(
             start_time=start_time,
@@ -213,10 +213,12 @@ async def get_select_stocks_by_user(
             skip=skip,
             limit=limit,
         )
+    elif not user_strategy_ids:
+        return ApiResponse(data=[])
     else:
         impl = MongoStrategySelectStocksImpl()
-        res, records = impl.query_select_stocks_by_strategy_ids(
-            strategy_ids=strategy_ids,
+        res, records = impl.query_select_stocks_by_user_strategy_ids(
+            user_strategy_ids=user_strategy_ids,
             start_time=start_time,
             end_time=end_time,
             skip=skip,
@@ -249,7 +251,7 @@ async def get_select_stocks_by_user(
         rlist.append(
             StrategySelectStockWithRtItem(
                 id=str(r.get("_id", "")),
-                strategy_id=r.get("strategy_id", ""),
+                user_strategy_id=r.get("user_strategy_id", ""),
                 code=code,
                 create_time=r.get("create_time", ""),
                 name=str(rt_data.get("name", "")),

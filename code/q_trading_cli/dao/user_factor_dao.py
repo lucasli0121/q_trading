@@ -28,7 +28,7 @@ class UsereFactorDao:
         id: str = "",
         factor_id: str = "",
         user_id: str = "",
-        factor_params: dict = {},
+        factor_params: dict | None = None,
         create_time: str = ""
     ) -> None:
         """初始化自定义因子对象
@@ -42,7 +42,7 @@ class UsereFactorDao:
         self.id = id
         self.factor_id = factor_id
         self.user_id = user_id
-        self.factor_params = factor_params
+        self.factor_params = factor_params or {}
         self.create_time = create_time
 
     def from_db(self, data: dict[str, Any]) -> None:

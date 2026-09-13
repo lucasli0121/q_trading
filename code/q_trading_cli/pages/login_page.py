@@ -406,14 +406,19 @@ def _render_login_panel(
             return
         try:
             result = AppContext().user_api.login(account, pwd)
+            token: str = str(result.get("token", "") or "")
             app.storage.user.update({
                 "username": account,
                 "authenticated": True,
-                "token": result.get("token", ""),
+                "token": token,
                 "email": result.get("email", ""),
                 "phone": result.get("phone", ""),
                 "user_id": result.get("user_id", result.get("id", "")),
             })
+            # 后台线程（run_in_executor / MQTT 回调）无法访问 app.storage.user，
+            # 设置 fallback token 供后台 API 调用携带认证
+            if token:
+                AppContext().api_client.set_fallback_token(token)
             ui.notify("登录成功", type="positive")
             on_success()
         except ApiError as e:
@@ -504,14 +509,17 @@ def _render_register_panel(
             # 注册成功后自动登录
             try:
                 login_result = AppContext().user_api.login(username, pwd)
+                reg_token: str = str(login_result.get("token", "") or "")
                 app.storage.user.update({
                     "username": username,
                     "authenticated": True,
-                    "token": login_result.get("token", ""),
+                    "token": reg_token,
                     "email": login_result.get("email", email),
                     "phone": login_result.get("phone", phone),
                     "user_id": login_result.get("user_id", login_result.get("id", "")),
                 })
+                if reg_token:
+                    AppContext().api_client.set_fallback_token(reg_token)
                 ui.notify("登录成功", type="positive")
                 on_success()
             except Exception:  # noqa: BLE001

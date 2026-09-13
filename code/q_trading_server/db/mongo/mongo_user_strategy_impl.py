@@ -26,15 +26,29 @@ class MongoUserStrategyImpl:
         self.mongo_exec = AppContext().mongo_exec
         self.user_strategy_table = self.mongo_exec.db["user_strategy_tbl"]
 
-    def insert_or_update_user_strategy(
-        self, data: dict[str, Any], insert_only: bool = False
-    ) -> tuple[bool, str | None, str | None]:
-        """插入或更新用户策略关联
+    def _is_name_duplicated(self, user_id: str, name: str, exclude_id: str | None = None) -> bool:
+        """检查同一用户下是否已存在同名策略
+
+        :param user_id: 用户 ID
+        :param name: 策略名称，为空时不做唯一性校验
+        :param exclude_id: 需要排除的记录 ID（更新时排除自身）
+        :return: 已存在同名记录返回 True，否则返回 False
+        """
+        if not user_id or not name:
+            return False
+        condition: dict[str, Any] = {"user_id": user_id, "name": name}
+        if exclude_id:
+            condition["_id"] = {"$ne": ObjectId(exclude_id)}
+        return self.user_strategy_table.count_documents(condition) > 0
+
+    def insert_user_strategy(self, data: dict[str, Any]) -> tuple[bool, str | None, str | None]:
+        """新增用户策略关联（允许重复新增，不做重复检测、不更新已有记录）
+
+        同一用户下策略名称（name）需保持唯一；name 为空时不做唯一性校验。
 
         :param data: 用户策略数据字典，需包含 strategy_id、user_id、status、pool_id
-        :param insert_only: 为 True 时仅执行新增，若同一用户已关联该策略则返回冲突错误
         :return: (ok, record_id_or_None, error_or_None)
-                 error 可能的值: None（无错误）、"duplicate_user_strategy"（重复关联）
+                 error 可能的值: None（无错误）、"duplicate_name"（同一用户下名称重复）
         """
         try:
             data = data.copy()
@@ -47,22 +61,15 @@ class MongoUserStrategyImpl:
                 self.logger.error("strategy_id or user_id is empty.")
                 return False, None, None
 
-            if insert_only:
-                existing = self.user_strategy_table.find_one({
-                    "strategy_id": strategy_id,
-                    "user_id": user_id,
-                })
-                if existing:
-                    return False, None, "duplicate_user_strategy"
+            name = data.get("name", "")
+            if self._is_name_duplicated(user_id, name):
+                self.logger.warning(f"已存在同名用户策略: user_id={user_id}, name={name}")
+                return False, None, "duplicate_name"
 
-            filter: dict[str, Any] = {
-                "strategy_id": strategy_id,
-                "user_id": user_id,
-            }
-            result = self.user_strategy_table.update_one(filter, {"$set": data}, upsert=True)
-            return True, str(result.upserted_id) if result.upserted_id else None, None
+            result = self.user_strategy_table.insert_one(data)
+            return True, str(result.inserted_id), None
         except Exception as e:
-            self.logger.error(f"插入或更新用户策略关联失败: {e}")
+            self.logger.error(f"插入用户策略关联失败: {e}")
             return False, None, None
 
     def query_all_user_strategies(self) -> tuple[bool, Any | None]:
@@ -148,26 +155,37 @@ class MongoUserStrategyImpl:
             self.logger.error(f"按策略和用户查询关联失败: {e}")
             return False, None
 
-    def update_user_strategy(
-        self, id: str, data: dict[str, Any]
-    ) -> bool:
+    def update_user_strategy(self, id: str, data: dict[str, Any]) -> tuple[bool, str | None]:
         """更新用户策略关联的指定字段
 
+        同一用户下策略名称（name）需保持唯一（更新时排除自身）；name 为空时不做唯一性校验。
+
         :param id: 记录 ID（MongoDB _id）
-        :param data: 需要更新的字段字典（如 status、pool_id）
-        :return: 成功返回 True，否则返回 False
+        :param data: 需要更新的字段字典（如 name、status、pool_id）
+        :return: (ok, error_or_None)
+                 error 可能的值: None（无错误）、"duplicate_name"（同一用户下名称重复）
         """
         try:
+            name = data.get("name", "")
+            if name:
+                record = self.user_strategy_table.find_one({"_id": ObjectId(id)})
+                if record is None:
+                    self.logger.warning(f"未找到用户策略关联: id={id}")
+                    return False, None
+                if self._is_name_duplicated(record.get("user_id", ""), name, exclude_id=id):
+                    self.logger.warning(f"已存在同名用户策略: id={id}, name={name}")
+                    return False, "duplicate_name"
+
             result = self.user_strategy_table.update_one(
                 {"_id": ObjectId(id)}, {"$set": data}
             )
             if result.matched_count == 0:
                 self.logger.warning(f"未找到用户策略关联: id={id}")
-                return False
-            return result.acknowledged
+                return False, None
+            return result.acknowledged, None
         except Exception as e:
             self.logger.error(f"更新用户策略关联失败: {e}")
-            return False
+            return False, None
 
     def delete_user_strategy(self, id: str) -> bool:
         """按记录 ID 删除用户策略关联

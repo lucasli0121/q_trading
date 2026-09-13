@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Hashable
-
+from utils import tools
 from pymongo import UpdateOne
 from app_context import AppContext
 
@@ -21,11 +21,6 @@ class MongoCompanyValuationImpl:
         self.logger = logging.getLogger(__name__)
         self.mongo_exec = AppContext().mongo_exec
         self.company_valuation_table = self.mongo_exec.db["company_valuation_tbl"]
-
-    def normalize_code(self, code: str) -> str:
-        """提取股票代码中的数字部分，兼容 sh/sz 前缀和后缀。"""
-        match = re.search(r"\d+", code)
-        return match.group() if match else code
 
     def insert_or_update_company_valuation(self, data: dict[str, Any]) -> tuple[bool, str | None]:
         """插入或更新公司估值数据。
@@ -45,9 +40,9 @@ class MongoCompanyValuationImpl:
                 return False, None
             if "id" in data:
                 del data["id"]
-            pure_code = self.normalize_code(code)
+            pure_code = tools.guess_stock_code_suffix(code)
             filter: dict[str, Any] = {
-                "code": {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"},
+                "code": pure_code,
                 "report_date": report_date,
             }
             result = self.company_valuation_table.update_one(filter, {"$set": data}, upsert=True)
@@ -69,11 +64,11 @@ class MongoCompanyValuationImpl:
                 report_date = data.get("report_date", "")
                 if not code or not report_date:
                     continue
-                pure_code = self.normalize_code(code)
+                pure_code = tools.guess_stock_code_suffix(code)
                 requests.append(
                     UpdateOne(
                         {
-                            "code": {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"},
+                            "code": pure_code,
                             "report_date": report_date,
                         },
                         {"$set": {k: v for k, v in data.items() if k != "id"}},
@@ -111,16 +106,11 @@ class MongoCompanyValuationImpl:
             query: dict[str, Any] = {}
             if code:
                 if isinstance(code, list):
-                    or_clauses: list[dict[str, Any]] = []
-                    for c in code:
-                        if c and len(c) > 0:
-                            pure = self.normalize_code(c)
-                            or_clauses.append({"code": {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}})
-                    if or_clauses:
-                        query["$or"] = or_clauses
+                    in_clauses: list = [tools.guess_stock_code_suffix(c) for c in code]
+                    query["code"] = {"$in": in_clauses}
                 elif isinstance(code, str) and len(code) > 0:
-                    pure_code = self.normalize_code(code)
-                    query["code"] = {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}
+                    pure_code = tools.guess_stock_code_suffix(code)
+                    query["code"] = pure_code
             if report_date:
                 query["report_date"] = report_date
             return self.mongo_exec.query_by_condition(
@@ -186,18 +176,21 @@ class MongoCompanyValuationImpl:
                     cap_filter["$lte"] = cap_max
                 match["total_market_cap"] = cap_filter
 
-            pipeline: list[dict[str, Any]] = [
-                {"$sort": {"code": 1, "report_date": -1}},
+            pipeline: list[dict[str, Any]] = []
+            if match:
+                pipeline.append({"$match": match})
+            pipeline.append({"$sort": {"code": 1, "report_date": -1}})
+            pipeline.append(
                 {
                     "$group": {
                         "_id": "$code",
                         "doc": {"$first": "$$ROOT"},
                     }
-                },
-                {"$replaceRoot": {"newRoot": "$doc"}},
-            ]
-            if match:
-                pipeline.append({"$match": match})
+                }
+            )
+            pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
+
+            # 在 facet 之前按 code 排序（保证分页顺序稳定）
             pipeline.append({"$sort": {"code": 1}})
 
             facet_stage: dict[str, Any] = {
@@ -206,7 +199,7 @@ class MongoCompanyValuationImpl:
                     "total_count": [{"$count": "count"}],
                 }
             }
-            if skip > 0:
+            if skip > -1:
                 facet_stage["$facet"]["records"].append({"$skip": skip})
             if limit > 0:
                 facet_stage["$facet"]["records"].append({"$limit": limit})
@@ -215,7 +208,7 @@ class MongoCompanyValuationImpl:
 
             pipeline.append(facet_stage)
 
-            cursor = self.company_valuation_table.aggregate(pipeline)
+            cursor = self.company_valuation_table.aggregate(pipeline, allowDiskUse=True)
             results = list(cursor)
             if not results:
                 return True, []
@@ -231,8 +224,8 @@ class MongoCompanyValuationImpl:
         try:
             query: dict[str, Any] = {}
             if code:
-                pure_code = self.normalize_code(code)
-                query["code"] = {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}
+                pure_code = tools.guess_stock_code_suffix(code)
+                query["code"] = pure_code
             if report_date:
                 query["report_date"] = report_date
             if not query:

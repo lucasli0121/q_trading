@@ -22,6 +22,7 @@ from nicegui import app, ui
 
 from app_context import AppContext
 from components import custom_tabs
+from core.user_strategy_manager import UserStrategyManager
 from menu.top_menu import _do_logout, _show_profile_dialog
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ _NAV_GROUPS: list[dict[str, Any]] = [
         "items": [
             ("策略列表", "list", "strategies"),
             ("策略监控", "monitor_heart", "monitor"),
+            ("策略选股", "fact_check", "strategy_select"),
         ],
     },
     {
@@ -58,12 +60,49 @@ _NAV_GROUPS: list[dict[str, Any]] = [
 ]
 
 
+def _check_auth_heartbeat() -> None:
+    """会话心跳：检测到未登录（如后台线程 401 已清除 authenticated）立即跳转登录页。
+
+    后台线程（run_in_executor / MQTT 回调）触发 401 时无法直接操作 UI 跳转，
+    但 ApiClient._on_401 会把 app.storage.user["authenticated"] 置为 False（跨线程可见）。
+    本心跳每秒在客户端 UI 线程检查一次，发现未登录即跳转 /login。
+    """
+    try:
+        if not app.storage.user.get("authenticated", False):
+            ui.navigate.to("/login")
+    except Exception:
+        logger.debug("心跳检测登录状态失败", exc_info=True)
+
+
+def _ensure_fallback_token() -> None:
+    """为后台线程补设 fallback token。
+
+    app.storage.user 依赖 request_contextvar，仅在 UI 上下文可用；后台线程
+    （run_in_executor / MQTT 回调）访问会抛 RuntimeError，导致 ApiClient 取不到
+    token、后台 API 请求不带认证头而被后端 401。登录时已 set_fallback_token，
+    但服务器重启后内存中的 fallback 丢失而会话仍在，需在此补设。
+    """
+    try:
+        token: str = str(app.storage.user.get("token", "") or "")
+        if token:
+            AppContext().api_client.set_fallback_token(token)
+    except Exception:
+        logger.debug("补设 fallback token 失败", exc_info=True)
+
+
 def main_page() -> None:
     """主页面入口：侧边栏导航 + 内容区。未登录时直接跳转登录页。"""
     if not app.storage.user.get("authenticated", False):
         app.storage.user["referrer_path"] = "/"
         ui.navigate.to("/login")
         return
+
+    # 心跳：会话被后台 401 清除后立即跳转登录页（覆盖后台线程触发的登出）
+    ui.timer(1.0, _check_auth_heartbeat)
+
+    # 确保后台线程（run_in_executor / MQTT）的 fallback token 已设置：
+    # 服务器重启后 app.storage.user 会话仍在，但内存中的 fallback 会丢失，需在此补设
+    _ensure_fallback_token()
 
     AppContext().theme_manager.set_theme("dark")
     custom_tabs.load_left_drawer_tab_css()
@@ -97,6 +136,10 @@ def main_page() -> None:
         }}
     """)
 
+    # --- 初始化加载用户策略数据到app.storage --- #
+    UserStrategyManager().load_user_strategies()
+    # ---- 加载历史信号到内存（必须在 UI 上下文中调用） ----
+    AppContext().signal_manager.load_history(limit=10)
     # ---- 左侧抽屉导航 ----
     with ui.left_drawer(top_corner=True, bordered=True).props("width=256") \
         .classes("gap-0") \
@@ -215,6 +258,7 @@ def _navigate_to_page(key: str) -> None:
         "home": "/",
         "strategies": "/strategies",
         "monitor": "/strategy-monitor",
+        "strategy_select": "/strategy-select",
         "pools": "/stock-pools",
         "quotes": "/stock-quotes",
         "preferences": "/settings-preferences",
@@ -234,6 +278,12 @@ def main_page_with_content(content_fn: Any, page_key: str = "home") -> None:
         app.storage.user["referrer_path"] = f"/{page_key}" if page_key != "home" else "/"
         ui.navigate.to("/login")
         return
+
+    # 心跳：会话被后台 401 清除后立即跳转登录页（覆盖后台线程触发的登出）
+    ui.timer(1.0, _check_auth_heartbeat)
+
+    # 确保后台线程（run_in_executor / MQTT）的 fallback token 已设置
+    _ensure_fallback_token()
 
     AppContext().theme_manager.set_theme("dark")
     custom_tabs.load_left_drawer_tab_css()
@@ -434,8 +484,8 @@ def _render_home_dashboard(
     :param card_bg: 卡片背景色
     :param bg_color: 页面背景色
     """
-    positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#34d399")
-    negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#f87171")
+    positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
+    negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
 
     # 统计卡片行（策略总数 / 运行中策略 / 股票池数量 / 今日信号数）
     _build_stats_cards(card_bg, border_color, font_color, positive_color, negative_color)
@@ -476,20 +526,10 @@ def _build_stats_cards(
     :param negative_color: 负向色
     """
     # ---- 用户策略关联列表（策略总数 / 运行中数量 / 本月新增） ----
-    user_strategies: list[dict[str, Any]] = []
-    try:
-        user_strategies = AppContext().user_strategy_api.list()
-    except Exception:
-        logger.warning("查询用户策略列表失败", exc_info=True)
-    strategy_total: int = len(user_strategies)
-    running_count: int = sum(
-        1 for s in user_strategies if s.get("status") == "running"
-    )
-    month_prefix: str = datetime.now().strftime("%Y-%m")  # noqa: DTZ005
-    month_new: int = sum(
-        1 for s in user_strategies
-        if str(s.get("create_time", ""))[:7] == month_prefix
-    )
+    
+    strategy_total: int = UserStrategyManager().get_strategy_count()
+    running_count: int = UserStrategyManager().get_running_count()
+    month_new: int = UserStrategyManager().get_month_new_count()
 
     # ---- 股票池数量 ----
     pool_count: int = 0
@@ -500,23 +540,7 @@ def _build_stats_cards(
         logger.warning("查询股票池列表失败", exc_info=True)
 
     # ---- 今日信号数：先查数据库初始化基数 ----
-    db_today_count: int = 0
-    try:
-        today_start: str = datetime.now().strftime("%Y-%m-%d") + " 00:00:00"  # noqa: DTZ005
-        db_signals: list[dict[str, Any]] = AppContext().trade_signal_api.list(
-            start_time=today_start,
-        )
-        db_today_count = len(db_signals)
-    except Exception:
-        logger.warning("查询今日信号（数据库）失败", exc_info=True)
-    try:
-        AppContext().signal_manager.init_today_count(db_today_count)
-    except Exception:
-        logger.warning("初始化今日信号基数失败", exc_info=True)
-    today_signals: int = AppContext().signal_manager.get_today_count()
-
-    # ---- 加载历史信号到内存（必须在 UI 上下文中调用） ----
-    AppContext().signal_manager.load_history(limit=10)
+    today_signal_count: int = AppContext().signal_manager.get_today_count()
 
     cards_data: list[dict[str, Any]] = [
         {"key": "total", "icon": "description",
@@ -535,8 +559,8 @@ def _build_stats_cards(
          "badge": "", "badge_color": "", "badge_bg": ""},
         {"key": "signals", "icon": "bolt",
          "icon_bg": "rgba(251,146,60,0.4)", "icon_color": "#fb923c",
-         "label": "今日信号数", "value": str(today_signals),
-         "badge": "今日活跃" if today_signals > 0 else "暂无",
+         "label": "今日信号数", "value": str(today_signal_count),
+         "badge": "今日活跃" if today_signal_count > 0 else "暂无",
          "badge_color": "#f87171", "badge_bg": "rgba(248,113,113,0.3)"},
     ]
 
@@ -570,14 +594,14 @@ def _build_stats_cards(
     def _refresh_today_signals() -> None:
         """定时刷新今日信号卡片数值与角标。"""
         try:
-            count: int = AppContext().signal_manager.get_today_count()
+            today_signal_count: int = AppContext().signal_manager.get_today_count()
             refs: dict[str, Any] | None = card_refs.get("signals")
             if refs is None:
                 return
             value_lbl: ui.label = refs["value"]
             badge_lbl: ui.label = refs["badge"]
-            value_lbl.set_text(str(count))
-            if count > 0:
+            value_lbl.set_text(str(today_signal_count))
+            if today_signal_count > 0:
                 badge_lbl.set_text("今日活跃")
                 badge_lbl.style("color: #f87171; background-color: rgba(248,113,113,0.3);")
             else:
@@ -586,7 +610,7 @@ def _build_stats_cards(
         except Exception:  # noqa: BLE001, S110
             pass
 
-    ui.timer(2.0, _refresh_today_signals)
+    ui.timer(3.0, _refresh_today_signals)
 
 
 def _build_profit_chart(
@@ -695,7 +719,7 @@ def _build_cumulative_series(
         if len(raw_time) < 10:
             continue
         try:
-            rate_pct: float = float(ex.get("current_return_rate", 0) or 0) * 100.0
+            rate_pct: float = round(float(ex.get("current_return_rate", 0) or 0) * 100.0, 2)
         except (TypeError, ValueError):
             continue
         points.append((raw_time[:10], rate_pct))
@@ -737,7 +761,10 @@ def _profit_chart_option(labels: list[str], values: list[float]) -> dict[str, An
     option: dict[str, Any] = {
         "backgroundColor": "transparent",
         "grid": {"top": 20, "right": 20, "bottom": 40, "left": 50},
-        "tooltip": {"trigger": "axis"},
+        "tooltip": {
+            "trigger": "axis",
+            "formatter": "{b}<br/>{a}: {c}%",
+        },
         "xAxis": {
             "type": "category",
             "data": labels,
@@ -751,6 +778,7 @@ def _profit_chart_option(labels: list[str], values: list[float]) -> dict[str, An
             "axisLabel": {"color": "#9ca3af", "formatter": "{value}%"},
         },
         "series": [{
+            "name": "收益率",
             "data": values,
             "type": "line",
             "smooth": True,
@@ -794,11 +822,11 @@ def _build_recent_activity(
         )
 
         activity_container = ui.column().classes("w-full gap-6")
-
+        user_strategy_ids: list[str] = UserStrategyManager().get_user_strategy_ids()
         def _render() -> None:
             activity_container.clear()
             with activity_container:
-                signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals(limit=4)
+                signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals_by_user_strategy(user_strategy_ids=list(user_strategy_ids), limit=4)
                 if not signals:
                     ui.label("暂无信号活动").classes("text-sm").style("color: #6b7280;")
                 for sig in signals:
@@ -879,12 +907,7 @@ def _build_recent_strategies_table(
                       用户策略ID → 最新收益率百分数,
                       策略模板ID → 策略模板信息)
             """
-            try:
-                user_strategies: list[dict[str, Any]] = AppContext().user_strategy_api.list()
-            except Exception:
-                logger.warning("查询用户策略列表失败", exc_info=True)
-                user_strategies = []
-            user_strategies.sort(key=lambda s: str(s.get("create_time", "")), reverse=True)
+            user_strategies: list[dict[str, Any]] = UserStrategyManager().list_user_strategies()
 
             # 用户策略ID → 最新收益率（%），来自执行结果集中时间最新的一条
             latest_rate: dict[str, float] = {}
@@ -985,8 +1008,8 @@ def _build_recent_strategies_table(
                         else:
                             # 中国股市习惯：涨红跌绿
                             rate_color: str = (
-                                negative_color if rate_pct > 0
-                                else (positive_color if rate_pct < 0 else font_color)
+                                positive_color if rate_pct > 0
+                                else (negative_color if rate_pct < 0 else font_color)
                             )
                             ui.label(f"{rate_pct:+.1f}%").classes("text-sm font-semibold").style(
                                 f"color: {rate_color}; flex: 1;"

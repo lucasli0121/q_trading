@@ -32,6 +32,7 @@ class TradeSignalApi:
     def add(
         self,
         strategy_id: str,
+        user_strategy_id: str,
         stock_code: str,
         trade_price: float,
         action: str,
@@ -42,6 +43,7 @@ class TradeSignalApi:
         """保存交易信号。
 
         :param strategy_id: 策略模板 ID
+        :param user_strategy_id: 用户策略id
         :param stock_code: 股票代码
         :param trade_price: 交易价格
         :param action: 交易方向（买入/卖出）
@@ -52,6 +54,7 @@ class TradeSignalApi:
         """
         body: dict[str, Any] = {
             "strategy_id": strategy_id,
+            "user_strategy_id": user_strategy_id,
             "stock_code": stock_code,
             "trade_price": trade_price,
             "action": action,
@@ -65,6 +68,7 @@ class TradeSignalApi:
     def latest(
         self,
         strategy_id: str,
+        user_strategy_id: str,
         stock_code: str,
         action: str = "",
     ) -> dict[str, Any]:
@@ -77,6 +81,7 @@ class TradeSignalApi:
         """
         params: dict[str, str] = {
             "strategy_id": strategy_id,
+            "user_strategy_id": user_strategy_id,
             "stock_code": stock_code,
         }
         if action:
@@ -99,6 +104,7 @@ class TradeSignalApi:
     def list(
         self,
         strategy_id: str | None = None,
+        user_strategy_id: str | None = None,
         action: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
@@ -108,6 +114,7 @@ class TradeSignalApi:
         """查询交易信号列表。
 
         :param strategy_id: 策略模板 ID（可选）
+        :param user_strategy_id: 用户策略ID
         :param action: 交易方向筛选（可选，买入/卖出）
         :param start_time: 开始时间（可选，格式 YYYY-MM-DD HH:MM:SS）
         :param end_time: 结束时间（可选，格式 YYYY-MM-DD HH:MM:SS）
@@ -118,6 +125,8 @@ class TradeSignalApi:
         params: dict[str, Any] = {}
         if strategy_id:
             params["strategy_id"] = strategy_id
+        if user_strategy_id:
+            params["user_strategy_id"] = user_strategy_id
         if action:
             params["action"] = action
         if start_time:

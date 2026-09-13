@@ -18,7 +18,7 @@ from web_api.models import ApiResponse, TradeSignalCreateRequest, TradeSignalIte
 router = APIRouter(prefix="/api/trade_signal", tags=["交易信号管理"])
 
 
-def _resolve_strategy_ids_from_user(user_id: str, role: int) -> list[str] | None:
+def _resolve_user_strategy_ids_from_user(user_id: str, role: int) -> list[str] | None:
     """通过用户 ID 查询该用户关联的所有 strategy_id
 
     管理员（role == 0）返回 None 表示不限制策略范围（查询所有）；
@@ -34,7 +34,7 @@ def _resolve_strategy_ids_from_user(user_id: str, role: int) -> list[str] | None
     res, records = impl.query_user_strategies_by_user(user_id)
     if not res or not records:
         return []
-    return [r.get("strategy_id", "") for r in records]
+    return [str(r.get("_id", r.get("id", ""))) for r in records]
 
 
 @router.post("/add", response_model=ApiResponse[TradeSignalItem])
@@ -46,13 +46,14 @@ async def add_trade_signal(
     user_id, role = user_info
     # 非管理员需验证该 strategy_id 属于当前用户
     if role != 0:
-        strategy_ids = _resolve_strategy_ids_from_user(user_id, role)
-        if not strategy_ids or req.strategy_id not in strategy_ids:
+        user_strategy_ids = _resolve_user_strategy_ids_from_user(user_id, role)
+        if not user_strategy_ids or req.user_strategy_id not in user_strategy_ids:
             raise HTTPException(status_code=403, detail="无权操作此策略")
     impl = MongoTradeSignalImpl()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     record = {
         "strategy_id": req.strategy_id,
+        "user_strategy_id": req.user_strategy_id,
         "stock_code": req.stock_code,
         "trade_price": req.trade_price,
         "profit_rate": req.profit_rate,
@@ -68,6 +69,7 @@ async def add_trade_signal(
         data=TradeSignalItem(
             id=record_id or "",
             strategy_id=req.strategy_id,
+            user_strategy_id=req.user_strategy_id,
             stock_code=req.stock_code,
             trade_price=req.trade_price,
             profit_rate=req.profit_rate,
@@ -95,7 +97,9 @@ async def delete_trade_signal(
 
 @router.get("/list", response_model=ApiResponse[list[TradeSignalItem]])
 async def list_trade_signals(
+    stock_codes: list = Query(default=[], description="股票代码，默认为空，可多选"),
     strategy_id: str = Query(default="", description="策略 ID（可选）"),
+    user_strategy_id: str = Query(default="", description="用户策略 ID（可选）"),
     start_time: str = Query(default="", description="创建开始时间 YYYY-MM-DD HH:MM:SS（可选）"),
     end_time: str = Query(default="", description="创建结束时间 YYYY-MM-DD HH:MM:SS（可选）"),
     action: str = Query(default="", description="买卖方向: 买入/卖出（可选）"),
@@ -106,10 +110,12 @@ async def list_trade_signals(
     """查询交易信号记录 — 管理员查所有，普通用户查自己策略的信号记录"""
     user_id, role = user_info
     impl = MongoTradeSignalImpl()
-    if strategy_id:
+    if strategy_id or user_strategy_id:
         # 指定了策略 ID，直接按条件查询
         res, records = impl.query_signals(
+            stock_codes=stock_codes,
             strategy_id=strategy_id,
+            user_strategy_id=user_strategy_id,
             start_time=start_time,
             end_time=end_time,
             action=action,
@@ -118,21 +124,23 @@ async def list_trade_signals(
         )
     else:
         # 未指定策略 ID：管理员查所有，普通用户查自己的策略
-        strategy_ids = _resolve_strategy_ids_from_user(user_id, role)
-        if strategy_ids is None:
+        user_strategy_ids = _resolve_user_strategy_ids_from_user(user_id, role)
+        if user_strategy_ids is None:
             # 管理员：查询所有记录
             res, records = impl.query_signals(
+                stock_codes=stock_codes,
                 start_time=start_time,
                 end_time=end_time,
                 action=action,
                 skip=skip,
                 limit=limit,
             )
-        elif not strategy_ids:
+        elif not user_strategy_ids:
             return ApiResponse(data=[])
         else:
-            res, records = impl.query_signals_by_strategy_ids(
-                strategy_ids=strategy_ids,
+            res, records = impl.query_signals_by_user_strategy_ids(
+                stock_codes=stock_codes,
+                user_strategy_ids=user_strategy_ids,
                 start_time=start_time,
                 end_time=end_time,
                 action=action,
@@ -145,6 +153,7 @@ async def list_trade_signals(
         TradeSignalItem(
             id=str(r.get("_id", "")),
             strategy_id=r.get("strategy_id", ""),
+            user_strategy_id=r.get("user_strategy_id", ""),
             stock_code=r.get("stock_code", ""),
             trade_price=float(r.get("trade_price", 0.0) or 0.0),
             profit_rate=float(r.get("profit_rate", 0.0) or 0.0),
@@ -161,6 +170,7 @@ async def list_trade_signals(
 @router.get("/latest", response_model=ApiResponse[TradeSignalItem])
 async def get_latest_signal(
     strategy_id: str = Query(..., description="策略 ID"),
+    user_strategy_id: str = Query(..., description="用户策略 ID"),
     stock_code: str = Query(..., description="股票代码"),
     action: str = Query(default="", description="买卖方向: 买入/卖出（可选）"),
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
@@ -169,12 +179,13 @@ async def get_latest_signal(
     user_id, role = user_info
     # 非管理员需验证该 strategy_id 属于当前用户
     if role != 0:
-        strategy_ids = _resolve_strategy_ids_from_user(user_id, role)
-        if not strategy_ids or strategy_id not in strategy_ids:
+        user_strategy_ids = _resolve_user_strategy_ids_from_user(user_id, role)
+        if not user_strategy_ids or user_strategy_id not in user_strategy_ids:
             raise HTTPException(status_code=403, detail="无权操作此策略")
     impl = MongoTradeSignalImpl()
     res, records = impl.query_latest_signal(
         strategy_id=strategy_id,
+        user_strategy_id=user_strategy_id,
         stock_code=stock_code,
         action=action,
     )
@@ -187,6 +198,7 @@ async def get_latest_signal(
         data=TradeSignalItem(
             id=str(r.get("_id", "")),
             strategy_id=r.get("strategy_id", ""),
+            user_strategy_id=r.get("user_strategy_id", ""),
             stock_code=r.get("stock_code", ""),
             trade_price=float(r.get("trade_price", 0.0) or 0.0),
             profit_rate=float(r.get("profit_rate", 0.0) or 0.0),

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from configparser import ConfigParser
+import threading
 from typing import Any
 from urllib import request
 
@@ -55,6 +56,7 @@ class TradeNotifier:
         _cfg_path: str = config_path or resource_path("cfg/stock.cfg")
         self._config_path: str = _cfg_path
         self._api_client: Any = api_client
+        self._cache_lock = threading.Lock()
 
         # 从配置文件读取 webhook 地址
         self._enterprise_wechat_webhook_url: str | None = self._load_webhook_url(
@@ -189,8 +191,10 @@ class TradeNotifier:
                 if us_api is not None:
                     us_data: dict[str, Any] = us_api.get(user_strategy_id)
                     user_id: str = us_data.get("user_id", "")
+                    self.logger.debug(f"resolve_wx_push_url, user_strategy_id:{user_strategy_id}, user_id:{user_id}")
                     if user_id:
                         prefs: dict[str, Any] = self._load_user_preferences(user_id)
+                        self.logger.debug(f"获取用户偏好数据:{prefs}")
                         enable_wx: bool = False
                         wx_url: str = ""
                         if prefs:
@@ -204,37 +208,38 @@ class TradeNotifier:
                             self.logger.debug("用户偏好中企业微信推送已关闭")
                             return None
                         if wx_url:
-                            self.logger.debug("使用用户偏好 wx_push_url 推送")
+                            self.logger.debug(f"使用用户偏好 wx_push_url 推送，地址:{wx_url}")
                             return wx_url
             except Exception as e:
-                self.logger.debug("查询用户偏好失败，回退配置文件: %s", e)
+                self.logger.error("查询用户偏好失败，回退配置文件: %s", e)
 
         # 回退到配置文件中的 URL
         return self._enterprise_wechat_webhook_url
 
     def _load_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """加载用户偏好设置（带缓存）。
+        """加载指定用户的偏好设置（带缓存）。
 
         :param user_id: 用户 ID
         :return: 偏好字典
         """
-        if user_id in self._preferences_cache:
-            return self._preferences_cache[user_id]
-        if self._api_client is None:
-            self._preferences_cache[user_id] = {}
-            return {}
-        try:
-            result: Any = self._api_client.get(
-                "/api/user/preference",
-                params={"user_id": user_id},
-            )
-            if result and isinstance(result, dict):
-                self._preferences_cache[user_id] = dict(result)
+        with self._cache_lock:
+            if user_id in self._preferences_cache:
                 return self._preferences_cache[user_id]
-        except Exception:
-            pass
-        self._preferences_cache[user_id] = {}
-        return {}
+            if self._api_client is None:
+                return {}
+            try:
+                from api.preference import PreferenceApi
+
+                prefs: dict[str, Any] = PreferenceApi(
+                    self._api_client
+                ).get_by_user_id(user_id)
+                self.logger.debug(f"获取用户偏好结果:{prefs}")
+                if prefs:
+                    self._preferences_cache[user_id] = prefs
+                    return prefs
+            except Exception as e:
+                self.logger.error(f"获取用户微信推送配置出错:{e}")
+            return {}
 
     # ---- 公开接口 ----
 
@@ -254,7 +259,7 @@ class TradeNotifier:
         :param user_strategy_id: 用户策略关联 ID，用于查询用户偏好
         """
         self.logger.info(
-            "trade notify to %s: %s", recipient or "default", message
+            "trade notify user_strategy_id: %s to %s: %s", user_strategy_id, recipient or "default", message
         )
 
         # 解析企业微信推送 URL：优先用户偏好，否则使用配置文件

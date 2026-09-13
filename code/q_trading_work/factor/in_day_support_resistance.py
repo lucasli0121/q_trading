@@ -13,8 +13,9 @@ class InDaySRFactor(BaseFactor):
     """
     factor_name: str = "InDaySRFactor"
 
-    def __init__(self, days: int = 1) -> None:
+    def __init__(self, days: int = 1, shift_day: int = 0) -> None:
         self.days: int = days
+        self.shift_day: int = shift_day
 
     def pivot_points(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -22,9 +23,9 @@ class InDaySRFactor(BaseFactor):
         df需包含: high, low, close
         """
         # 使用前一日数据，显式转为 float 以兼容 pylance 类型检查
-        prev_high: "pd.Series[float]" = df["high"].shift(1).astype(float)
-        prev_low: "pd.Series[float]" = df["low"].shift(1).astype(float)
-        prev_close: "pd.Series[float]" = df["close"].shift(1).astype(float)
+        prev_high: "pd.Series[float]" = df["high"].shift(self.shift_day).astype(float)
+        prev_low: "pd.Series[float]" = df["low"].shift(self.shift_day).astype(float)
+        prev_close: "pd.Series[float]" = df["close"].shift(self.shift_day).astype(float)
 
         # 枢轴点
         pivot: "pd.Series[float]" = (prev_high + prev_low + prev_close) / 3.0
@@ -56,7 +57,10 @@ class InDaySRFactor(BaseFactor):
         计算支撑位和阻力位，根据当天股价在阻力位和支撑位之间摆动，计算分值
         """
         df: pd.DataFrame = self.calculate(stock_array)
-        rs_records = df.to_dict(orient="records")
+        return self.score_with_sr(df, stock_array)
+
+    def score_with_sr(self, sr_df: pd.DataFrame, stock_array: pd.DataFrame) -> float:
+        rs_records = sr_df.to_dict(orient="records")
         recent_rs_record = rs_records[-1]
         recent_stock = stock_array.to_dict(orient="records")[-1]
         price: float = 0.0
@@ -75,21 +79,17 @@ class InDaySRFactor(BaseFactor):
         if p == 0.0:
             return 0.0
         if price >= p: # 行情向上
-            if price >= r3 and r3 > 0: # 超出最大阻力位，可以卖出
+            if r3 > 0 and price >= r3: # 超出最大阻力位，可以卖出
                 score = -10.0
-            elif price >= r2 and r2 > 0:
+            elif r2 > 0 and price >= r2:
                 score = -7.5
-            elif price >= r1 and r1 > 0:
+            elif r1 > 0 and price >= r1:
                 score = -5.0
-            else:
-                score = 5.0 # 还在上涨中，利好
         else:
-            if price <= s3: # 超卖，可做多
+            if s3 > 0 and price <= s3: # 超卖，可做多
                 score = 10.0
-            elif price <= s2:
+            elif s2 > 0 and price <= s2:
                 score = 7.5
-            elif price <= s1:
+            elif s1 > 0 and price <= s1:
                 score = 5.0
-            else:
-                score = -5.0 # 还在下跌中 利空
         return score

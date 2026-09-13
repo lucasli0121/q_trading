@@ -68,6 +68,33 @@ class DummyStrategy(BaseStrategy):
 
 
 class TestBaseStrategy(unittest.TestCase):
+    def test_normalize_params_unwraps_desc_value(self) -> None:
+        """default_params 的 {desc, value} 包装格式应被解包为纯值。"""
+        wrapped = {
+            "match": {
+                "pe_limit": {"desc": "最大市盈率", "value": 300},
+                "rebound_score": {"desc": "反弹分值", "value": 10.0},
+            },
+            "sell": {"max_score": {"desc": "卖出分值", "value": -8.0}},
+        }
+        result = BaseStrategy._normalize_params(wrapped)
+        self.assertEqual(result["match"]["pe_limit"], 300)
+        self.assertEqual(result["match"]["rebound_score"], 10.0)
+        self.assertEqual(result["sell"]["max_score"], -8.0)
+
+    def test_normalize_params_keeps_flat_values(self) -> None:
+        """纯值格式（strategy_params/yaml）应保持不变。"""
+        flat = {
+            "match": {"pe_limit": 300.0, "rebound_score": 10.0},
+            "sell": {"max_score": -8.0},
+        }
+        result = BaseStrategy._normalize_params(flat)
+        self.assertEqual(result, flat)
+
+    def test_normalize_params_handles_empty_and_none(self) -> None:
+        self.assertEqual(BaseStrategy._normalize_params({}), {})
+        self.assertIsNone(BaseStrategy._normalize_params(None))
+
     def test_select_returns_matched_results(self) -> None:
         strategy = DummyStrategy()
 

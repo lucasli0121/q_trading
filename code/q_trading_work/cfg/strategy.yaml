@@ -26,7 +26,17 @@ strong_rebound_strategy:
     vwap_minutes_limit: 10
     # 回撤阈值（%）：从持仓最高点回撤超过此值触发卖出
     drawdown_pct: -6.0
-    # 单日跌幅阈值（%）：当日跌幅超过此值触发卖出
-    daily_drop_pct: -5.0
     # 卖出最大分数：当天累计减分 <= 此值触发卖出
     max_score: -8.0
+
+swing_trading_strategy:
+  match:
+    # 日K阻力支撑位检测连续窗口数
+    sr_window: 10
+    sr_tolerance: 0.02
+  buy:
+    # 当天买入接近支撑位的误差（%）
+    buy_sr_window: 10
+  sell:
+    # 当天卖出接近阻力位的误差（%）
+    sell_sr_window: 10

@@ -98,6 +98,7 @@ class TradeSignalApi:
 
     def list(
         self,
+        stock_codes: list | None = None,
         strategy_id: str | None = None,
         action: str | None = None,
         start_time: str | None = None,
@@ -116,6 +117,8 @@ class TradeSignalApi:
         :return: 交易信号列表
         """
         params: dict[str, Any] = {}
+        if stock_codes and len(stock_codes) > 0:
+            params["stock_codes"] = stock_codes
         if strategy_id:
             params["strategy_id"] = strategy_id
         if action:

@@ -2,7 +2,7 @@
 
 # General
 string_resources = {
-    'app_name': "QTrade",
+    'app_name': "QTrade量化系统",
     'app_version': "1.0.0",
     'app_author': "Li guo qiang",
     'log_content': "日志内容",

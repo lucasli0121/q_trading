@@ -82,6 +82,32 @@ class MqttTopic:
         :return: topic 字符串，如 {STOCK_MINUTE_SINGLE}/pool_id/000001
         """
         return f"q_share/stock/minute/{pool_id}/{code}"
+    @staticmethod
+    def decode_stock_minute_topic(topic: str) -> tuple[str, str]:
+        profix: str = "q_share/stock/minute/"
+        profix_len = len(profix)
+        if len(topic) > profix_len:
+            pool_id_str = topic[profix_len: ]
+            pool_id_index = pool_id_str.find("/")
+            if pool_id_index != -1:
+                pool_id = pool_id_str[:pool_id_index]
+                stock_str = pool_id_str[pool_id_index+1:]
+                stock_str = stock_str.replace("/", ".")
+                return pool_id, stock_str
+        return "", ""
+    @staticmethod
+    def decode_stock_realtime_topic(topic: str) -> tuple[str, str]:
+        profix: str = "q_share/stock/real_time/"
+        profix_len = len(profix)
+        if len(topic) > profix_len:
+            pool_id_str = topic[profix_len: ]
+            pool_id_index = pool_id_str.find("/")
+            if pool_id_index != -1:
+                pool_id = pool_id_str[:pool_id_index]
+                stock_str = pool_id_str[pool_id_index+1:]
+                stock_str = stock_str.replace("/", ".")
+                return pool_id, stock_str
+        return "", ""
 
 
 
