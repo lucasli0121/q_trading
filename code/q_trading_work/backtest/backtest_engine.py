@@ -475,7 +475,18 @@ class BacktestEngine:
             cache.set_redis_enabled(True)
 
     def _bind_strategy_id(self, strategy: Any) -> None:
-        """按策略名称查询策略模板，将 strategy_id 回填到策略实例。
+        """按策略名称（失败则回退类名）查询策略模板，把 strategy_id 回填到策略实例。
+
+        匹配顺序：
+
+        1. **策略名称** `strategy_name`（沿用历史行为，按
+           `/api/strategy/{name}` 查询）；
+        2. 名称未命中时退化为**类名** `class_name` —— 服务端策略模板的
+           `class_name` 字段与本端策略类名一致，但模板的显示名（`name`）
+           可能与类内 `strategy_name` 不同（实测：本端「强势反弹策略」对应
+           后台模板「强趋势策略」，本端「低频波段交易策略」对应「波段交易策略」）。
+           只按名称查会 404，导致 strategy_id 回填失败、`run(save=True)`
+           静默跳过写库，分钟频回测也无法按 id 取当日选股列表。
 
         查询失败或返回空数据时保持策略原有 strategy_id 不变，
         不中断回测流程（仅在日志中记录告警）。
@@ -483,36 +494,103 @@ class BacktestEngine:
         :param strategy: 策略实例
         """
         strategy_name: str = getattr(strategy, "strategy_name", "") or ""
-        if not strategy_name:
-            return
-        try:
-            info: dict[str, Any] = self._strategy_api.get(strategy_name)
-        except Exception as exc:
-            self.logger.warning(
-                "按名称查询策略 [%s] 失败，跳过回填 strategy_id: %s",
-                strategy_name,
-                exc,
-            )
-            return
+        class_name: str = type(strategy).__name__
+
+        info: dict[str, Any] | None = None
+        matched_by: str = ""
+        if strategy_name:
+            info = self._query_template_by_name(strategy_name)
+            if info:
+                matched_by = f"名称[{strategy_name}]"
+        if not info and class_name:
+            info = self._query_template_by_class_name(class_name)
+            if info:
+                matched_by = f"类名[{class_name}]"
+
         if not info:
             self.logger.warning(
-                "按名称未查询到策略 [%s]，跳过回填 strategy_id", strategy_name
+                "未查询到策略模板（名称=%s，类名=%s），跳过回填 strategy_id",
+                strategy_name or "-",
+                class_name or "-",
             )
             return
+
         strategy_id: str = str(
             info.get("id") or info.get("_id") or info.get("strategy_id") or ""
         )
         if not strategy_id:
             self.logger.warning(
-                "策略 [%s] 查询结果缺少 id 字段，跳过回填 strategy_id", strategy_name
+                "策略模板（按%s匹配）缺少 id 字段，跳过回填 strategy_id", matched_by
             )
             return
         strategy.strategy_id = strategy_id
         self.logger.info(
-            "策略 [%s] 已回填 strategy_id=%s", strategy_name, strategy_id
+            "策略已回填 strategy_id=%s（按%s匹配）", strategy_id, matched_by
         )
 
+    def _query_template_by_name(self, name: str) -> dict[str, Any] | None:
+        """按策略名称查询模板（/api/strategy/{name}），未命中返回 None。
+
+        :param name: 策略名称（本端类内 strategy_name）
+        :return: 策略模板字典，未命中或查询失败返回 None
+        """
+        try:
+            info: Any = self._strategy_api.get(name)
+        except Exception as exc:
+            # 名称对不上时会 404，属预期路径，降级为 debug 避免噪音
+            self.logger.debug("按名称查询策略 [%s] 未命中: %s", name, exc)
+            return None
+        return dict(info) if info else None
+
+    def _query_template_by_class_name(
+        self, class_name: str
+    ) -> dict[str, Any] | None:
+        """按类名在策略模板列表中查找（class_name 精确匹配）。
+
+        :param class_name: 本端策略类名，如 StrongReboundStrategy
+        :return: 策略模板字典，未命中或查询失败返回 None
+        """
+        try:
+            templates: list[dict[str, Any]] = self._strategy_api.list()
+        except Exception as exc:
+            self.logger.warning("查询策略模板列表失败: %s", exc)
+            return None
+        matched: list[dict[str, Any]] = [
+            t
+            for t in (templates or [])
+            if str(t.get("class_name") or "") == class_name
+        ]
+        if not matched:
+            return None
+        if len(matched) > 1:
+            self.logger.warning(
+                "类名 [%s] 匹配到 %d 条策略模板，取第一条", class_name, len(matched)
+            )
+        return matched[0]
+
     def _run_daily(
+        self, strategy: Any
+    ) -> tuple[list[TradeResult], BacktestSummary]:
+        """日频回测入口：关闭缓存 Redis 持久化后执行，结束后恢复。
+
+        与 `_run_minute` 对称 —— 回测是离线计算：历史日期写进实盘共用的 Redis
+        既无意义，又会污染 `select:` / `score:` 键；更严重的是**进程内快照与
+        Redis 会被下一次回测读到**，使同一配置重复回测得到不同结果
+        （实测同一配置得到 2 / 0 / 3 / 4 笔交易）。因此日频同样只走进程内快照。
+
+        :param strategy: 策略实例
+        :return: (交易记录列表, 回测汇总)
+        """
+        from core.user_strategy_cache import UserStrategyCache
+
+        cache: UserStrategyCache = UserStrategyCache()
+        cache.set_redis_enabled(False)
+        try:
+            return self._run_daily_inner(strategy)
+        finally:
+            cache.set_redis_enabled(True)
+
+    def _run_daily_inner(
         self, strategy: Any
     ) -> tuple[list[TradeResult], BacktestSummary]:
         """日频回测：逐日模拟每天开盘前操作。
@@ -1061,6 +1139,14 @@ class BacktestEngine:
         summary.end_date = self.config.end_date
         summary.benchmark_code = self.config.benchmark_code
 
+        # 交易天数：与是否有交易无关，始终按回测区间估算。
+        # 放在无交易早退之前，否则「零交易」回测会显示「交易天数: 0」，
+        # 让人误以为回测没跑起来。
+        trading_days: int = self._count_trading_days(
+            self.config.start_date, self.config.end_date
+        )
+        summary.trading_days = trading_days
+
         if not trades:
             summary.final_capital = self.config.initial_capital
             return summary
@@ -1092,13 +1178,7 @@ class BacktestEngine:
             summary.final_capital - summary.initial_capital, 2
         )
 
-        # 交易天数
-        trading_days: int = self._count_trading_days(
-            self.config.start_date, self.config.end_date
-        )
-        summary.trading_days = trading_days
-
-        # 年化收益
+        # 年化收益（trading_days 已在函数开头统一计算）
         summary.annualized_return_pct = self._compute_annualized_return(
             total_return, trading_days
         )

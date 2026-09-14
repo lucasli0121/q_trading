@@ -285,6 +285,61 @@ class TestBacktestEngine(unittest.TestCase):
         self.assertEqual(BacktestEngine._count_trading_days("", ""), 0)
         self.assertEqual(BacktestEngine._count_trading_days("bad", "2026-01-02"), 0)
 
+    def test_summary_without_trades_still_reports_trading_days(self) -> None:
+        """零交易时 trading_days 仍按回测区间估算，而不是 0。
+
+        背景（2026-09-15 生产实测）：`_compute_summary` 原在 `if not trades`
+        处提前 return，跳过了 trading_days 赋值 → 零交易回测显示
+        「交易天数: 0」，让人误以为回测没跑起来。
+        """
+        config = BacktestConfig()
+        config.start_date = "2026-01-01"
+        config.end_date = "2026-12-31"
+        engine = BacktestEngine(config=config)
+        summary = engine._compute_summary([], pd.DataFrame(), "SimpleMomentum")
+        self.assertEqual(summary.total_trades, 0)
+        self.assertEqual(summary.final_capital, config.initial_capital)
+        self.assertGreater(summary.trading_days, 0)
+
+    # ---- 回测期间必须关闭 Redis（与分钟频对称） ----
+
+    def test_run_daily_disables_redis_cache(self) -> None:
+        """日频回测全程关闭 Redis 持久化，结束后恢复。
+
+        否则回测会把 `select:` / `score:` 缓存写进实盘共用的 Redis，
+        且下一次回测会读到上次残留 → 同一配置重复回测结果不可复现
+        （实测同一配置得到 2 / 0 / 3 / 4 笔交易）。
+        """
+        from core.user_strategy_cache import UserStrategyCache
+
+        engine = BacktestEngine()
+        cache = UserStrategyCache()
+        cache.set_redis_enabled(True)
+        observed: list[bool] = []
+
+        def _inner(strategy: Any) -> tuple[list[TradeResult], BacktestSummary]:
+            observed.append(cache._redis_ready())
+            return [], BacktestSummary()
+
+        engine._run_daily_inner = _inner  # type: ignore[method-assign]
+        engine._run_daily(SimpleMomentumStrategy())
+        self.assertEqual(observed, [False])
+        self.assertTrue(cache._redis_ready())
+
+    def test_run_daily_restores_redis_on_error(self) -> None:
+        """内部异常时也必须恢复 Redis 开关（由 finally 保证）。"""
+        from core.user_strategy_cache import UserStrategyCache
+
+        engine = BacktestEngine()
+        cache = UserStrategyCache()
+        cache.set_redis_enabled(True)
+        engine._run_daily_inner = MagicMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("boom")
+        )
+        with self.assertRaises(RuntimeError):
+            engine._run_daily(SimpleMomentumStrategy())
+        self.assertTrue(cache._redis_ready())
+
     def test_calc_pct(self) -> None:
         self.assertEqual(BacktestEngine.calc_pct(110.0, 100.0), 10.0)
         self.assertEqual(BacktestEngine.calc_pct(90.0, 100.0), -10.0)
@@ -531,6 +586,82 @@ class TestBacktestEngine(unittest.TestCase):
             strategy_id="s1",
         )
         self.assertFalse(success)
+
+    # ---- _bind_strategy_id：名称优先、类名回退 ----
+
+    def test_bind_strategy_id_by_name(self) -> None:
+        """名称能查到模板时按名称回填，不做类名回退。
+
+        契约：后台模板名与本端 `strategy_name` 一致时保持历史行为。
+        """
+        engine = BacktestEngine()
+        engine._strategy_api = MagicMock()
+        engine._strategy_api.get.return_value = {"_id": "s-by-name"}
+        strategy = SimpleMomentumStrategy()
+        engine._bind_strategy_id(strategy)
+        self.assertEqual(strategy.strategy_id, "s-by-name")
+        engine._strategy_api.list.assert_not_called()
+
+    def test_bind_strategy_id_falls_back_to_class_name(self) -> None:
+        """名称查不到（404）时退化为按 class_name 匹配模板。
+
+        背景（2026-09-15 生产实测）：后台模板显示名与本端类内
+        `strategy_name` 不一致（本端「强势反弹策略」对应模板「强趋势策略」），
+        只按名称查会 404 → strategy_id 回填失败 → `run(save=True)` 静默跳过写库。
+        因此必须回退到 class_name（模板的 class_name 与本端类名一致）。
+        """
+        engine = BacktestEngine()
+        engine._strategy_api = MagicMock()
+        engine._strategy_api.get.side_effect = Exception("404 Not Found")
+        engine._strategy_api.list.return_value = [
+            {"_id": "s-other", "name": "别的策略", "class_name": "OtherStrategy"},
+            {
+                "_id": "s-by-class",
+                "name": "强趋势策略",
+                "class_name": "SimpleMomentumStrategy",
+            },
+        ]
+        strategy = SimpleMomentumStrategy()
+        engine._bind_strategy_id(strategy)
+        self.assertEqual(strategy.strategy_id, "s-by-class")
+        engine._strategy_api.list.assert_called_once()
+
+    def test_bind_strategy_id_keeps_previous_when_unresolved(self) -> None:
+        """名称与类名都匹配不到时保留原 strategy_id，且不抛异常。"""
+        engine = BacktestEngine()
+        engine._strategy_api = MagicMock()
+        engine._strategy_api.get.side_effect = Exception("404 Not Found")
+        engine._strategy_api.list.return_value = [
+            {"_id": "s-1", "class_name": "OtherStrategy"},
+        ]
+        strategy = SimpleMomentumStrategy()
+        strategy.strategy_id = "s-existing"
+        engine._bind_strategy_id(strategy)
+        self.assertEqual(strategy.strategy_id, "s-existing")
+
+    def test_bind_strategy_id_ambiguous_class_name_takes_first(self) -> None:
+        """同类名匹配到多条模板时取第一条，不抛异常。"""
+        engine = BacktestEngine()
+        engine._strategy_api = MagicMock()
+        engine._strategy_api.get.side_effect = Exception("404 Not Found")
+        engine._strategy_api.list.return_value = [
+            {"_id": "s-first", "class_name": "SimpleMomentumStrategy"},
+            {"_id": "s-second", "class_name": "SimpleMomentumStrategy"},
+        ]
+        strategy = SimpleMomentumStrategy()
+        engine._bind_strategy_id(strategy)
+        self.assertEqual(strategy.strategy_id, "s-first")
+
+    def test_bind_strategy_id_handles_list_error(self) -> None:
+        """类名回退时列表接口异常也不抛，保留原 strategy_id。"""
+        engine = BacktestEngine()
+        engine._strategy_api = MagicMock()
+        engine._strategy_api.get.side_effect = Exception("404 Not Found")
+        engine._strategy_api.list.side_effect = Exception("api down")
+        strategy = SimpleMomentumStrategy()
+        strategy.strategy_id = "s-keep"
+        engine._bind_strategy_id(strategy)
+        self.assertEqual(strategy.strategy_id, "s-keep")
 
     # ---- run(save=...) 回测结束写库 ----
 
