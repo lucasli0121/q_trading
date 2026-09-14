@@ -1,0 +1,13 @@
+# ruff 配置 — 文档：https://docs.astral.sh/ruff/configuration/
+#
+# 项目说明：Windows 开发、Linux Docker 部署。
+# 模块文件被 Git 记录了可执行位，clone 到 Linux 容器后 ruff 会报 EXE002（可执行但无 shebang）。
+# 这些是被导入的 Python 模块，并非入口脚本，因此全局忽略此规则。
+
+target-version = "py312"
+line-length = 120
+
+[lint]
+ignore = [
+    "EXE002",  # 可执行但无 shebang — 模块文件，非入口
+]
