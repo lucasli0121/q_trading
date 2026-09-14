@@ -88,3 +88,4 @@ code/THSDataInterface_Windows/
 code/*/cfg/stock.cfg
 code/*/cfg/cfg.yml
 redis.conf
+tickflow 股票接口.txt
