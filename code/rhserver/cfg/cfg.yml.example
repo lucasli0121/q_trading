@@ -1,0 +1,54 @@
+# ============================================================
+# cfg.yml 示例模板（脱敏，可安全提交到版本库）
+#
+# 使用方法：
+#   1) 复制为同目录下的 cfg.yml
+#        Windows:  copy cfg\cfg.yml.example cfg\cfg.yml
+#        Linux  :  cp cfg/cfg.yml.example cfg/cfg.yml
+#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
+#   3) 真实 cfg.yml 已被 .gitignore 忽略，不会被提交
+#
+# 注意：证书/私钥（cert/、*.crt、*.key）已在 .gitignore 中排除，不会提交。
+# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+# ============================================================
+server:
+  host: 0.0.0.0:9080
+  out_url: https://example.com:9080/
+  certFile: ./cert/server.crt
+  keyFile: ./cert/server.key
+  caFile: ./cert/ca.crt
+database:
+  #url: mongodb://192.168.1.63:27017
+  url: tcp(203.0.113.11:9306)
+  username: vplayer
+  #password: REPLACE_WITH_DB_PASSWORD
+  password: REPLACE_WITH_DB_PASSWORD
+  dbname: vplayer
+  driver: mysql
+  #driver: mongo
+redis:
+  host: example.com:6379
+  password: REPLACE_WITH_REDIS_PASSWORD
+  db: 0
+  certFile: ../../cert/client.crt
+  keyFile: ../../cert/client.key
+  caFile: ../../cert/ca.crt
+mq:
+  host: example.com
+  port: 8883
+  client_id: rhserver_mqtt_client_0
+  username: rh
+  password: REPLACE_WITH_MQTT_PASSWORD
+  certFile: ./cert/client.crt
+  keyFile: ./cert/client.key
+  caFile: ./cert/ca.crt
+log:
+  level: debug
+  file: ./log/rhserver.log
+  maxsize: 100
+  maxage: 7
+  maxbackups: 10
+  console: true
+  format: text  
+
+staticPath: ./public

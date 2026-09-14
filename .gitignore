@@ -84,5 +84,7 @@ code/THSDataInterface_Windows/
 .git/
 .git_backup_*/
 
-# ===== 本地真实配置（含明文凭据，禁止提交；模板见同目录 stock.cfg.example） =====
+# ===== 本地真实配置（含明文凭据，禁止提交；模板见同目录 *.example） =====
 code/*/cfg/stock.cfg
+code/*/cfg/cfg.yml
+redis.conf
