@@ -19,6 +19,7 @@ from httpx import HTTPStatusError
 import numpy as np
 import pandas as pd
 
+from api.backtest import BacktestApi
 from api.client import ApiClient
 from api.market import MarketApi
 from api.pool import PoolApi
@@ -26,6 +27,7 @@ from api.stock_info import StockInfoApi
 from api.strategy import StrategyApi
 from api.user_strategy import UserStrategyApi
 from app_context import AppContext
+from dao.backtest_dao import BacktestDao
 from trade.manager import TradeManager
 
 
@@ -163,6 +165,10 @@ class BacktestEngine:
         engine = BacktestEngine(config)
         trades, summary = engine.run(strategy)
         engine.save_results(strategy, trades, summary)
+
+    或一步到位（回测结束即写库）::
+
+        trades, summary = engine.run(strategy, save=True, strategy_id="s-xxx")
     """
 
     # 无风险利率（年化），用于夏普比率计算
@@ -195,6 +201,7 @@ class BacktestEngine:
             )
 
         self._strategy_api: StrategyApi = StrategyApi(self._admin_client)
+        self._backtest_api: BacktestApi = BacktestApi(self._admin_client)
         self._user_strategy_api: UserStrategyApi = UserStrategyApi(self._admin_client)
         self._trade_manager: TradeManager = TradeManager(api_client=self._admin_client)
         self._market_api: MarketApi = MarketApi(self._admin_client)
@@ -404,11 +411,22 @@ class BacktestEngine:
     # ---- 主回测逻辑 ----
 
     def run(
-        self, strategy: Any
+        self,
+        strategy: Any,
+        save: bool = False,
+        strategy_id: str = "",
+        user_strategy_id: str = "",
     ) -> tuple[list[TradeResult], BacktestSummary]:
         """执行回测，根据配置的频率分发到日频或分钟频回测。
 
+        回测结束后**默认不写库**；需要持久化时显式传 `save=True`
+        （或自行调用 `save_results()`），此时会构建 `BacktestDao` 并经
+        `BacktestApi` 写入 `POST /api/strategy/{strategy_id}/backtest`。
+
         :param strategy: 策略实例或策略类（类会被自动实例化）
+        :param save: 是否在回测结束后保存结果到服务端
+        :param strategy_id: 策略模板 ID（StrategyDao._id），为空时用回填到策略实例的值
+        :param user_strategy_id: 用户策略关联 ID（可选，额外同步策略执行指标）
         :return: (交易记录列表, 回测汇总)
         """
         # 如果传入的是类而非实例，自动实例化
@@ -417,9 +435,28 @@ class BacktestEngine:
         # 按策略名称查询策略模板，把 strategy_id 回填到策略实例，
         # 供 handle_minute_bar 内部按 id 加载当日选股列表并路由买入/卖出检查
         self._bind_strategy_id(strategy)
+        if strategy_id:
+            # 显式传入的 strategy_id 优先级最高（覆盖按名称回填的结果）
+            strategy.strategy_id = strategy_id
+
         if self.config.frequency == "minute":
-            return self._run_minute(strategy)
-        return self._run_daily(strategy)
+            trades, summary = self._run_minute(strategy)
+        else:
+            trades, summary = self._run_daily(strategy)
+
+        if save:
+            if not self.save_results(
+                strategy,
+                trades,
+                summary,
+                strategy_id=strategy_id,
+                user_strategy_id=user_strategy_id,
+            ):
+                self.logger.warning(
+                    "回测结果保存失败（策略: %s）",
+                    getattr(strategy, "strategy_name", "Unknown"),
+                )
+        return trades, summary
 
     def _run_minute(self, strategy: Any) -> tuple[list[TradeResult], BacktestSummary]:
         """分钟频回测入口：关闭缓存 Redis 持久化后执行，结束后恢复。
@@ -1254,10 +1291,11 @@ class BacktestEngine:
     ) -> bool:
         """将回测结果通过 API 保存到服务器。
 
-        回测结果按策略模板 ID 关联，写入 /api/strategy/{strategy_id}/backtest；
+        回测汇总与交易明细先装入 `BacktestDao`（本端回测结果唯一数据载体），
+        再由 `BacktestApi` 写入 `POST /api/strategy/{strategy_id}/backtest`；
         若同时提供 user_strategy_id，再同步一份策略执行指标（供策略页面展示）。
 
-        :param strategy: 策略实例
+        :param strategy: 策略实例（或策略类）
         :param trades: 交易记录列表
         :param summary: 回测汇总
         :param strategy_id: 策略模板 ID（StrategyDao._id），为空时尝试取 strategy.strategy_id
@@ -1272,42 +1310,20 @@ class BacktestEngine:
         # 保存完整回测结果
         if strategy_id:
             try:
-                result_data: dict[str, Any] = {
-                    "strategy_name": summary.strategy_name,
-                    "backtest_return_rate": summary.total_return_pct / 100,
-                    "backtest_profit": summary.total_profit,
-                    "benchmark_return_rate": summary.benchmark_return_pct / 100,
-                    "start_date": summary.start_date,
-                    "end_date": summary.end_date,
-                    "initial_amount": summary.initial_capital,
-                    "max_drawdown": summary.max_drawdown_pct / 100,
-                    "frequency": self.config.frequency,
-                    "trades": [
-                        {
-                            "code": t.code,
-                            "buy_date": t.buy_date,
-                            "sell_date": t.sell_date,
-                            "buy_price": t.buy_price,
-                            "sell_price": t.sell_price,
-                            "profit_pct": t.profit_pct,
-                        }
-                        for t in trades
-                    ],
-                    "summary": {
-                        "total_trades": summary.total_trades,
-                        "win_rate": summary.win_rate,
-                        "avg_profit": summary.avg_profit,
-                        "max_profit": summary.max_profit,
-                        "max_loss": summary.max_loss,
-                        "annualized_return_pct": summary.annualized_return_pct,
-                        "sharpe_ratio": summary.sharpe_ratio,
-                        "max_drawdown_pct": summary.max_drawdown_pct,
-                        "alpha": summary.alpha,
-                    },
-                }
-                self._strategy_api.save_backtest(strategy_id, result_data)
+                dao: BacktestDao = BacktestDao.from_summary(
+                    strategy_id=strategy_id,
+                    summary=summary,
+                    trades=list(trades or []),
+                    frequency=self.config.frequency,
+                    strategy_name=str(summary.strategy_name or strategy_name),
+                    create_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                record_id: str = self._backtest_api.save(dao)
                 self.logger.info(
-                    "回测结果已保存: %s (strategy_id=%s)", strategy_name, strategy_id
+                    "回测结果已保存: %s (strategy_id=%s, id=%s)",
+                    strategy_name,
+                    strategy_id,
+                    record_id,
                 )
             except HTTPStatusError as e:
                 self.logger.error("保存回测结果失败: %s", e.response.text)

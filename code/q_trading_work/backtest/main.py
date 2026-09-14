@@ -108,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--strategy-id",
         help="保存回测结果所需的策略模板 ID（StrategyDao._id）",
     )
+    out.add_argument(
+        "--user-strategy-id",
+        default="",
+        help="用户策略关联 ID（可选，保存后额外同步策略执行指标）",
+    )
     return parser
 
 
@@ -202,7 +207,10 @@ def main(argv: list[str] | None = None) -> int:
     trades: list[TradeResult]
     summary: BacktestSummary
     try:
-        trades, summary = engine.run(strategy_cls)
+        # 先实例化策略，run/save_results 复用同一实例，
+        # 保证 strategy_id（run 内按名称回填）与 strategy_name 在保存时可见
+        strategy_instance = strategy_cls()
+        trades, summary = engine.run(strategy_instance)
     except Exception as exc:
         print(f"[backtest] 回测执行失败: {exc}", flush=True)
         return 1
@@ -216,7 +224,11 @@ def main(argv: list[str] | None = None) -> int:
             print("[backtest] 保存回测结果需要 --strategy-id", flush=True)
             return 2
         ok = engine.save_results(
-            strategy_cls, trades, summary, strategy_id=args.strategy_id
+            strategy_instance,
+            trades,
+            summary,
+            strategy_id=args.strategy_id,
+            user_strategy_id=args.user_strategy_id or "",
         )
         print(
             f"[backtest] 回测结果保存{'成功' if ok else '失败'} "

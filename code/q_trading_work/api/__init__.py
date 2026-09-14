@@ -10,6 +10,7 @@ from api.client import ApiClient, ApiError, UnauthorizedError
 from api.error_handler import handle_http_error
 from api.user import UserApi
 from api.pool import PoolApi
+from api.backtest import BacktestApi
 from api.strategy import StrategyApi
 from api.user_strategy import UserStrategyApi
 from api.market import MarketApi
@@ -34,6 +35,7 @@ __all__ = [
     "handle_http_error",
     "UserApi",
     "PoolApi",
+    "BacktestApi",
     "StrategyApi",
     "UserStrategyApi",
     "MarketApi",

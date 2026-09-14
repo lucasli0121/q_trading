@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 from typing import Any
-from unittest.mock import ANY, MagicMock
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -22,6 +22,7 @@ from backtest.backtest_engine import (
     TradeCostConfig,
     TradeResult,
 )
+from dao.backtest_dao import BacktestDao
 from strategy.base_strategy import BaseStrategy
 from utils.tools import load_admin_token
 
@@ -440,7 +441,8 @@ class TestBacktestEngine(unittest.TestCase):
 
     def test_save_results_success(self) -> None:
         engine = BacktestEngine()
-        engine._strategy_api = MagicMock()
+        engine._backtest_api = MagicMock()
+        engine._backtest_api.save.return_value = "rec-1"
         engine._user_strategy_api = MagicMock()
         trades = [
             _trade("000001", "2026-01-05", "2026-01-12", 10.0, 11.0, 10.0)
@@ -464,22 +466,36 @@ class TestBacktestEngine(unittest.TestCase):
             user_strategy_id="us-1",
         )
         self.assertTrue(success)
-        engine._strategy_api.save_backtest.assert_called_once_with(
-            "s1", ANY
+        # 保存经 BacktestDao（唯一数据载体）交给 BacktestApi
+        engine._backtest_api.save.assert_called_once()
+        dao = engine._backtest_api.save.call_args.args[0]
+        self.assertIsInstance(dao, BacktestDao)
+        self.assertEqual(dao.strategy_id, "s1")
+        self.assertAlmostEqual(dao.backtest_return_rate, 0.10)
+        self.assertAlmostEqual(dao.backtest_profit, 1000.0)
+        self.assertEqual(dao.start_date, "2026-01-01")
+        self.assertEqual(dao.frequency, engine.config.frequency)
+        self.assertEqual(
+            dao.result_data["strategy_name"], "SimpleMomentum"
         )
+        self.assertEqual(len(dao.result_data["trades"]), 1)
+        self.assertEqual(dao.result_data["summary"]["total_trades"], 1)
         engine._user_strategy_api.save_execution.assert_called_once()
 
     def test_save_results_without_strategy_id(self) -> None:
         engine = BacktestEngine()
+        engine._backtest_api = MagicMock()
         success = engine.save_results(
             SimpleMomentumStrategy(), [], BacktestSummary()
         )
         self.assertFalse(success)
+        engine._backtest_api.save.assert_not_called()
 
     def test_save_results_strategy_only(self) -> None:
         """只提供 strategy_id 时仅保存回测结果，不写执行指标。"""
         engine = BacktestEngine()
-        engine._strategy_api = MagicMock()
+        engine._backtest_api = MagicMock()
+        engine._backtest_api.save.return_value = "rec-1"
         engine._user_strategy_api = MagicMock()
         success = engine.save_results(
             SimpleMomentumStrategy(),
@@ -488,13 +504,25 @@ class TestBacktestEngine(unittest.TestCase):
             strategy_id="s1",
         )
         self.assertTrue(success)
-        engine._strategy_api.save_backtest.assert_called_once()
+        engine._backtest_api.save.assert_called_once()
         engine._user_strategy_api.save_execution.assert_not_called()
+
+    def test_save_results_falls_back_to_strategy_id(self) -> None:
+        """未显式传 strategy_id 时，回退使用策略实例上的 strategy_id。"""
+        engine = BacktestEngine()
+        engine._backtest_api = MagicMock()
+        engine._backtest_api.save.return_value = "rec-1"
+        strategy = SimpleMomentumStrategy()
+        strategy.strategy_id = "s-from-instance"
+        success = engine.save_results(strategy, [], BacktestSummary())
+        self.assertTrue(success)
+        dao = engine._backtest_api.save.call_args.args[0]
+        self.assertEqual(dao.strategy_id, "s-from-instance")
 
     def test_save_results_handles_api_error(self) -> None:
         engine = BacktestEngine()
-        engine._strategy_api = MagicMock()
-        engine._strategy_api.save_backtest.side_effect = Exception("api down")
+        engine._backtest_api = MagicMock()
+        engine._backtest_api.save.side_effect = Exception("api down")
         engine._user_strategy_api = MagicMock()
         success = engine.save_results(
             SimpleMomentumStrategy(),
@@ -503,6 +531,46 @@ class TestBacktestEngine(unittest.TestCase):
             strategy_id="s1",
         )
         self.assertFalse(success)
+
+    # ---- run(save=...) 回测结束写库 ----
+
+    def _engine_with_stubbed_run(self) -> BacktestEngine:
+        """构造一个 run 内部逻辑被打桩的引擎（不跑真实回测）。"""
+        engine = BacktestEngine()
+        engine._backtest_api = MagicMock()
+        engine._backtest_api.save.return_value = "rec-1"
+        engine._run_daily = MagicMock(  # type: ignore[method-assign]
+            return_value=([], BacktestSummary(strategy_name="SimpleMomentum"))
+        )
+        return engine
+
+    def test_run_without_save_does_not_persist(self) -> None:
+        """默认（save=False）不回写数据库，只返回回测结果。"""
+        engine = self._engine_with_stubbed_run()
+        trades, summary = engine.run(SimpleMomentumStrategy())
+        self.assertEqual(trades, [])
+        self.assertEqual(summary.strategy_name, "SimpleMomentum")
+        engine._backtest_api.save.assert_not_called()
+
+    def test_run_with_save_persists_result(self) -> None:
+        """save=True 时回测结束即写库，且显式 strategy_id 优先。"""
+        engine = self._engine_with_stubbed_run()
+        engine._bind_strategy_id = MagicMock()  # type: ignore[method-assign]
+        strategy = SimpleMomentumStrategy()
+        engine.run(strategy, save=True, strategy_id="s-explicit")
+        engine._backtest_api.save.assert_called_once()
+        dao = engine._backtest_api.save.call_args.args[0]
+        self.assertEqual(dao.strategy_id, "s-explicit")
+        # 显式传入的 id 应同时回写到策略实例（供 runner/执行指标复用）
+        self.assertEqual(strategy.strategy_id, "s-explicit")
+
+    def test_run_with_save_without_strategy_id_logs_warning(self) -> None:
+        """save=True 但拿不到 strategy_id 时保存失败，但不抛异常。"""
+        engine = self._engine_with_stubbed_run()
+        engine._bind_strategy_id = MagicMock()  # type: ignore[method-assign]
+        trades, summary = engine.run(SimpleMomentumStrategy(), save=True)
+        self.assertEqual(trades, [])
+        engine._backtest_api.save.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -174,8 +174,10 @@ DO NOT create new instances of these services — always use `AppContext()`.
 
 [backtest/backtest_engine.py](backtest/backtest_engine.py):
 - `BacktestEngine.run(strategy, stock_codes, start_date, end_date, hold_days)` — walks each stock's daily data with a sliding window, calls `strategy.is_match_strategy()`, simulates buy-next-open / sell-after-N-days, returns `TradeResult` list with profit stats
+- So far the signature is `run(strategy, save=False, strategy_id="", user_strategy_id="")`; pass `save=True` to persist the result right after the run
 - Supports daily and minute-level backtesting
-- CLI entry: [backtest/main.py](backtest/main.py)
+- Result persistence: `save_results()` builds a [dao/backtest_dao.py](dao/backtest_dao.py) `BacktestDao` (the single data carrier) and writes it through [api/backtest.py](api/backtest.py) `BacktestApi` → `POST /api/strategy/{strategy_id}/backtest`; `BacktestApi.get()` reads records back as `BacktestDao`
+- CLI entry: [backtest/main.py](backtest/main.py) (`--save --strategy-id s-xxx [--user-strategy-id us-xxx]`)
 
 ### API 访问
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from api.backtest import BacktestApi
 from api.client import ApiClient
 
 
@@ -36,6 +37,7 @@ class StrategyApi:
         :param client: ApiClient 实例
         """
         self._client: ApiClient = client
+        self._backtest_api: BacktestApi = BacktestApi(client)
         self.logger = logging.getLogger(__name__)
 
     # ---- 策略模板 CRUD ----
@@ -110,6 +112,9 @@ class StrategyApi:
         return list(result) if result else []
 
     # ---- 回测结果（按策略模板 ID 关联） ----
+    # 说明：回测结果读写的完整实现已迁到 api/backtest.py 的 BacktestApi
+    # （BacktestDao 为唯一数据载体）。此处两个方法保留为兼容转发，
+    # 老调用方无需改动。
 
     def save_backtest(
         self,
@@ -122,11 +127,7 @@ class StrategyApi:
         :param result_data: 回测结果数据（JSON 对象）
         :return: 操作结果提示信息
         """
-        body: dict[str, dict[str, Any]] = {"result_data": result_data}
-        result: Any = self._client.post(
-            f"/api/strategy/{strategy_id}/backtest", body
-        )
-        return str(result)
+        return self._backtest_api.save_result_data(strategy_id, result_data)
 
     def get_backtest(self, strategy_id: str) -> list[dict[str, Any]]:
         """查看策略模板的回测结果。
@@ -134,7 +135,4 @@ class StrategyApi:
         :param strategy_id: 策略模板 ID（StrategyDao._id）
         :return: 回测结果列表
         """
-        result: Any = self._client.get(
-            f"/api/strategy/{strategy_id}/backtest"
-        )
-        return list(result) if result else []
+        return self._backtest_api.get_raw(strategy_id)
