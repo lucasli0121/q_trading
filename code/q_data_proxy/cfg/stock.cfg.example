@@ -1,0 +1,62 @@
+# ============================================================
+# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+#
+# 使用方法：
+#   1) 复制为同目录下的 stock.cfg
+#        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
+#        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
+#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
+#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
+#
+# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+# ============================================================
+
+
+[redis]
+enable=true
+#host=example.com
+host=192.168.1.63
+port=16379
+password=REPLACE_WITH_REDIS_PASSWORD
+db=0
+enable_ssl=false
+cert = cert/client.crt
+key = cert/client.key
+ca = cert/ca.crt
+[mongo]
+host=example.com
+#host=192.168.1.63
+port=27017
+username=qshare
+password=REPLACE_WITH_MONGO_PASSWORD
+database=q_share
+[stock_fetch]
+real_time_sync_interval=6
+minute_sync_interval=2
+sync_workers=5
+real_time_stock_limit=5
+[tickflow]
+api_token=REPLACE_WITH_TICKFLOW_API_TOKEN
+server_url=https://api.tickflow.org/v1
+industry_hq_sync_interval=12
+history_hq_sync_interval=6
+history_hq_sync_number_of_once=1
+[akshare]
+industry_hq_sync_interval=120
+[mqtt]
+host=example.com
+#host=192.168.1.63
+port=8883
+#port=1883
+client_id=q_share_mqtt_client_10
+username=q_share
+password=REPLACE_WITH_MQTT_PASSWORD
+need_tls=true
+cert_file=./cert/client.crt
+key_file=./cert/client.key
+ca_file=./cert/ca.crt
+[log]
+config=cfg/log.yaml
+[data_proxy]
+name=q_share_proxy_1

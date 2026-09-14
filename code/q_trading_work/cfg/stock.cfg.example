@@ -1,0 +1,83 @@
+# ============================================================
+# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+#
+# 使用方法：
+#   1) 复制为同目录下的 stock.cfg
+#        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
+#        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
+#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
+#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
+#
+# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+# ============================================================
+
+
+[server]
+#host=host.docker.internal
+host=example.com
+port=8000
+admin_token=REPLACE_WITH_ADMIN_TOKEN
+#admin_token=REPLACE_WITH_ADMIN_TOKEN
+[mqtt]
+host=example.com
+#host=192.168.1.63
+port=8883
+#port=1883
+client_id=q_trading_work_1
+username=q_share
+password=REPLACE_WITH_MQTT_PASSWORD
+keep_alive=15
+need_tls=true
+cert_file=./cert/client.crt
+key_file=./cert/client.key
+ca_file=./cert/ca.crt
+[log]
+config=cfg/log.yaml
+[scheduler]
+before_trading_hour = 9
+before_trading_minute = 0
+[trade]
+enterprise_wechat_webhook_url=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPLACE_WITH_WEBHOOK_KEY
+wechat_webhook_url=
+wechat_friend_name=
+[strategy]
+type=趋势追踪, 反弹策略, 网格交易策略, 反转策略, 多因子选股, 基本面策略
+[signal_filter]
+# 信号风暴过滤：连续相同方向信号需同时满足以下条件才发出新信号
+# 价格变化阈值（%）：超过此阈值才发出新信号
+price_change_threshold=2.0
+# 时间间隔阈值（分钟）：超过此间隔才发出新信号
+time_gap_minutes=10
+[cost_config]
+# 买入滑点（元）：成交价 = 当前价 + buy_slip，为了快速成交
+buy_slip=0.2
+# 卖出滑点（元）：成交价 = 当前价 - sell_slip
+sell_slip=0.2
+# 手续费百分率（%）：如 0.02 表示 0.02%，成交 100 元收 0.02 元
+fee_pct=0.02
+# 最低手续费（元）：按比例计算不足时按此收取
+fee_low=5
+[workflow]
+service_name=workflow_service_1
+# 是否派发实时 tick 行情任务。内置策略的 check_tick_buy / check_tick_sell 均未实现
+# （恒返回 False），开启只会用空转任务占满线程池并延迟分钟信号，故默认关闭。
+enable_handle_tick=false
+# 行情派发队列上限（背压）：队列满时丢弃最旧的待处理行情，避免内存无限增长
+order_queue_size=512
+[benchmark]
+# 基准标的代码（用于计算 benchmark_return_rate，即策略同期对比基准）
+# **当前置空 = 关闭基准计算**：后台目前没有获取任何指数行情，
+#   填了代码也取不到数据，只会周期性打无效请求并记 warning。
+# 后续接入指数/ETF 行情后，把代码填上即可启用（填 510300 之类 ETF 也行）。
+code=
+[redis]
+enable=true
+host=192.168.1.63
+port=16379
+password=REPLACE_WITH_REDIS_PASSWORD
+db=0
+enable_ssl=false
+cert = cert/client.crt
+key = cert/client.key
+ca = cert/ca.crt

@@ -1,0 +1,39 @@
+# ============================================================
+# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+#
+# 使用方法：
+#   1) 复制为同目录下的 stock.cfg
+#        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
+#        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
+#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
+#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
+#
+# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+# ============================================================
+
+
+[server]
+#host=host.docker.internal
+host=example.com
+port=8000
+admin_token=REPLACE_WITH_ADMIN_TOKEN
+[mqtt]
+host=example.com
+#host=192.168.1.63
+port=8883
+#port=1883
+client_id=q_trading_cli_1
+username=q_share
+password=REPLACE_WITH_MQTT_PASSWORD
+need_tls=true
+cert_file=./cert/client.crt
+key_file=./cert/client.key
+ca_file=./cert/ca.crt
+[web]
+listen_host=0.0.0.0
+listen_port=8085
+[log]
+config=cfg/log.yaml
+[strategy]
+type=趋势追踪, 反弹策略, 网格交易策略, 反转策略, 多因子选股, 基本面策略
