@@ -141,7 +141,7 @@ DO NOT create new instances of these services — always use `AppContext()`.
 - Concrete factors: `PctChangeFactor`, `ReboundFactor`, `MaFactor`, `VolumeExpansionFactor`, `DrawdownFactor`, `DeclineFactor`, `CloseReboundFactor`, `VwapFactor`, `PriceTrendFactor`, `AdxTrendFactor`, `KlineSRFactor`, `InDaySRFactor`
 
 **Strategies** ([strategy/](strategy/)):
-- [base_strategy.py](strategy/base_strategy.py) — `BaseStrategy(ABC)`: declares `init_factors()`, `is_match_strategy(df) -> (bool, dict)`, and a `select(codes, days) -> list[dict]` method that iterates stock codes, fetches daily K-line data, and checks signals. Also provides `handle_minute_bar()`, `handle_tick_bar()`, `check_minute_buy/sell()`, `check_tick_buy/sell()`, and `before_trading()` hooks.
+- [base_strategy.py](strategy/base_strategy.py) — `BaseStrategy(ABC)`: declares `init_factors()`, `is_match_strategy(df) -> (bool, dict)`, and `select(codes, today_str, days, retries=None, retry_interval=None, raise_on_error=False) -> list[dict]` which iterates stock codes, fetches daily K-line data, and checks signals. Each result carries `score` / `fetch_failed` / `reason_code` so that **「取数失败」与「正常不满足条件」被严格区分**（`MarketDataFetchError`）。Also provides `handle_minute_bar()`, `handle_tick_bar()`, `check_minute_buy/sell()`, `check_tick_buy/sell()`, and `before_trading()` hooks.
 - [strong_rebound_strategy.py](strategy/strong_rebound_strategy.py) — `StrongReboundStrategy`: 强势反弹策略
 - [swing_trading_strategy.py](strategy/swing_trading_strategy.py) — `SwingTradingStrategy`: 低频波段/网格策略
 
@@ -177,7 +177,17 @@ DO NOT create new instances of these services — always use `AppContext()`.
 - So far the signature is `run(strategy, save=False, strategy_id="", user_strategy_id="")`; pass `save=True` to persist the result right after the run
 - Supports daily and minute-level backtesting
 - Result persistence: `save_results()` builds a [dao/backtest_dao.py](dao/backtest_dao.py) `BacktestDao` (the single data carrier) and writes it through [api/backtest.py](api/backtest.py) `BacktestApi` → `POST /api/strategy/{strategy_id}/backtest`; `BacktestApi.get()` reads records back as `BacktestDao`
-- CLI entry: [backtest/main.py](backtest/main.py) (`--save --strategy-id s-xxx [--user-strategy-id us-xxx]`)
+- **Data completeness (fail closed)**: market data fetches go through `_call_market_api()`, which retries `fetch_retries` times (default 2) and then raises `MarketDataFetchError`. A fetch failure **aborts the whole backtest and writes nothing** — never degrade a data outage into an empty table (that used to produce unreproducible results, e.g. the same config yielding 2/0/4/3/0 trades). "API returned no rows" is *not* a fetch failure and is still treated as no-data.
+- `BacktestConfig.benchmark_code` defaults to `""` (benchmark off): the server day-K API does not support index codes, so configuring one only yields fetch failures. Aligned with `TradeManager.DEFAULT_BENCHMARK_CODE`.
+- CLI entry: [backtest/main.py](backtest/main.py) (`--save --strategy-id s-xxx [--user-strategy-id us-xxx] [--fetch-retries N]`)
+
+### 策略选股结果（select → 服务端）
+
+- `BaseStrategy.select()` 的结果里 `score` 取 `extra["score"]`（缺失记 0.0）；
+  `StrategyWorkflow.daily_before_trading` 保存时按 `stocks=[{"code": ..., "score": ...}]` 组装。
+- 服务端 `StrategySelectStockCreateRequest` 已由 `codes: list[str]` 改为
+  `stocks: list[{code, score}]`（[api/strategy_select_stock.py](api/strategy_select_stock.py) 会兼容旧的纯代码列表并归一化）。
+- `dao/strategy_select_stocks.py::StrategySelectStockDao` 关联字段为 `user_strategy_id`，并含 `score`。
 
 ### API 访问
 

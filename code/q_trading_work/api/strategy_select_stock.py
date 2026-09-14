@@ -33,20 +33,33 @@ class StrategySelectStockApi:
     def add(
         self,
         user_strategy_id: str,
-        codes: list[str],
+        stocks: list[Any],
     ) -> list[dict[str, Any]]:
-        """保存策略选股结果。
+        """保存策略选股结果（含评分）。
 
-        注意：服务端 `StrategySelectStockCreateRequest` 已把关联字段由 `strategy_id`
-        改为 `user_strategy_id`（必填），因此选股结果按用户策略维度存储。
+        服务端契约已变更：`StrategySelectStockCreateRequest` 由
+        `codes: list[str]` 改为 `stocks: list[StrategySelectStockInput]`，
+        即每只股票需要携带 `score`（新增字段，缺失按 0.0 处理）。
+        为兼容调用方仍可能传 `["000001", ...]` 的旧写法，这里统一归一化：
+        字符串元素按 `{"code": x, "score": 0.0}` 处理，字典元素取 code/score。
+
+        注意：服务端 `stocks` 为空会直接返回 400，因此空列表不再发请求。
 
         :param user_strategy_id: 用户策略 ID
-        :param codes: 选中的股票代码列表
-        :return: 保存结果列表
+        :param stocks: 选股列表，元素为 `{"code": str, "score": float}` 或纯代码字符串
+        :return: 保存结果列表；无有效数据时返回空列表
         """
+        normalized: list[dict[str, Any]] = [
+            item for item in (self._normalize_stock(s) for s in (stocks or [])) if item
+        ]
+        if not normalized:
+            self.logger.warning(
+                "选股结果为空，跳过保存: user_strategy_id=%s", user_strategy_id
+            )
+            return []
         body: dict[str, Any] = {
             "user_strategy_id": user_strategy_id,
-            "codes": codes,
+            "stocks": normalized,
         }
         result: Any = self._client.post("/api/strategy_select_stocks/add", body)
         if not result:
@@ -54,6 +67,25 @@ class StrategySelectStockApi:
         if isinstance(result, list):
             return [dict(item) for item in result]
         return [dict(result)]
+
+    @staticmethod
+    def _normalize_stock(item: Any) -> dict[str, Any]:
+        """把单条选股元素归一化为服务端要求的 `{code, score}`。
+
+        :param item: `{"code": ..., "score": ...}` 字典，或纯代码字符串
+        :return: `{"code": str, "score": float}`；无法解析出 code 时返回空字典
+        """
+        if isinstance(item, dict):
+            code: str = str(item.get("code", item.get("stock_code", "")) or "")
+            if not code:
+                return {}
+            try:
+                score: float = float(item.get("score", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            return {"code": code, "score": score}
+        code = str(item or "")
+        return {"code": code, "score": 0.0} if code else {}
 
     def list(
         self,

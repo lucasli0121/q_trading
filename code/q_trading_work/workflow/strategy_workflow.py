@@ -2153,9 +2153,27 @@ class StrategyWorkflow(BaseWorkflow):
             self.logger.error("[%s] select 筛选异常: %s", sname, exc, exc_info=True)
             return
 
-        matched_codes: list[str] = [
-            str(r["code"]) for r in results if r.get("matched", False)
+        matched_results: list[dict[str, Any]] = [
+            r for r in results if r.get("matched", False)
         ]
+        matched_codes: list[str] = [str(r["code"]) for r in matched_results]
+        # 代码 → 策略打分：服务端选股表已新增 score 字段，保存时必须带上
+        score_map: dict[str, float] = {
+            str(r["code"]): float(r.get("score", 0.0) or 0.0) for r in matched_results
+        }
+
+        # 4.1 把「取数失败」与「正常不满足条件」分开统计并显式告警 ——
+        #     取数失败（行情接口异常）时候选集不完整，绝不能静默变成「0 交易」
+        fetch_failed_codes: list[str] = [
+            str(r["code"]) for r in results if r.get("fetch_failed", False)
+        ]
+        if fetch_failed_codes:
+            self.logger.warning(
+                "[%s] 盘前筛选有 %d/%d 只股票**取数失败**（行情接口异常，非「不满足条件」），"
+                "当日候选集不完整，建议人工复核: %s (user_strategy_id=%s)",
+                sname, len(fetch_failed_codes), len(results),
+                fetch_failed_codes[:20], usid,
+            )
 
         # 5. 过滤该用户的股票池外与黑名单股票
         #    （选股结果只保留该用户真正关注的标的，避免把全市场结果推给用户）
@@ -2176,17 +2194,21 @@ class StrategyWorkflow(BaseWorkflow):
                     sname, before_black - len(matched_codes),
                 )
         self.logger.info(
-            "[%s] 盘前筛选完成: 筛选 %d 只, 符合策略 %d 只 (user_strategy_id=%s)",
-            sname, len(combined), len(matched_codes), usid,
+            "[%s] 盘前筛选完成: 筛选 %d 只, 符合策略 %d 只, 取数失败 %d 只 (user_strategy_id=%s)",
+            sname, len(combined), len(matched_codes), len(fetch_failed_codes), usid,
         )
 
-        # 6. 保存选股结果（按 user_strategy_id 归属，P1-20）
+        # 6. 保存选股结果（按 user_strategy_id 归属，P1-20；携带 score）
         if matched_codes:
+            stocks: list[dict[str, Any]] = [
+                {"code": code, "score": score_map.get(code, 0.0)}
+                for code in matched_codes
+            ]
             try:
-                self._strategy_select_stock_api.add(usid, matched_codes)
+                self._strategy_select_stock_api.add(usid, stocks)
                 self.logger.info(
-                    "[%s] 策略选股结果已保存: user_strategy_id=%s, codes=%s",
-                    sname, usid, matched_codes,
+                    "[%s] 策略选股结果已保存: user_strategy_id=%s, stocks=%s",
+                    sname, usid, stocks,
                 )
             except Exception as exc:
                 self.logger.error("[%s] 保存策略选股结果失败: %s", sname, exc, exc_info=True)

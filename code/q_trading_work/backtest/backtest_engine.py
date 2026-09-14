@@ -11,9 +11,10 @@ from __future__ import annotations
 from configparser import ConfigParser
 import inspect
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from httpx import HTTPStatusError
 import numpy as np
@@ -28,6 +29,7 @@ from api.strategy import StrategyApi
 from api.user_strategy import UserStrategyApi
 from app_context import AppContext
 from dao.backtest_dao import BacktestDao
+from strategy.base_strategy import MarketDataFetchError
 from trade.manager import TradeManager
 
 
@@ -52,7 +54,9 @@ class BacktestConfig:
 
     Attributes:
         initial_capital: 初始资金
-        benchmark_code: 基准股票代码，默认 000300（沪深300）
+        benchmark_code: 基准代码，**默认关闭（空字符串）** —— 服务端日K接口
+            暂不支持指数代码（P1-27），填了只会拿到取数失败；后台接入指数行情后
+            在 cfg/stock.cfg [benchmark] code= 配置即可启用（与 TradeManager 口径一致）
         pool_id: 股票池 ID，优先级最高，与 pool_name / stock_codes 三选一
         pool_name: 股票池名称，与 pool_id / stock_codes 三选一
         stock_codes: 显式股票代码列表，优先级最低
@@ -63,10 +67,14 @@ class BacktestConfig:
         frequency: K线频率，\"daily\" 为日K线，\"minute\" 为分钟K线
         trade_config: 交易成本配置
         position_size_pct: 每笔交易使用资金比例（1.0 = 全仓）
+        fetch_retries: 行情取数失败的额外重试次数（回测数据完整性要求，默认重试 2 次）
+        fetch_retry_interval: 取数重试间隔秒数
     """
 
     initial_capital: float = 100000.0
-    benchmark_code: str = "000300"
+    # 基准默认关闭：服务端日K不支持指数代码（P1-27），默认填代码只会取数失败。
+    # 与 TradeManager.DEFAULT_BENCHMARK_CODE 保持一致；后台有指数行情后再启用。
+    benchmark_code: str = ""
     pool_id: str = ""
     pool_name: str = ""
     stock_codes: list[str] | None = None
@@ -77,6 +85,11 @@ class BacktestConfig:
     frequency: str = "daily"
     trade_config: TradeCostConfig | None = None
     position_size_pct: float = 1.0
+    # 回测必须保证数据完整：取数失败先重试，重试后仍失败即中止回测并报错，
+    # 绝不静默降级成空表继续算（否则会写出一条「看似正常」的不完整回测记录）。
+    # 实时链路相反 —— 一次失败即记 warning + 透出 fetch_failed，不做重试阻塞。
+    fetch_retries: int = 2
+    fetch_retry_interval: float = 1.0
 
 
 @dataclass
@@ -336,77 +349,126 @@ class BacktestEngine:
 
     # ---- 数据获取 ----
 
+    def _call_market_api(self, description: str, fetch: Callable[[], Any]) -> Any:
+        """带重试地调用行情接口；重试后仍失败则抛 `MarketDataFetchError`。
+
+        回测是离线计算：「没取到数据」与「该股确实没有数据」必须严格区分。
+        接口抛异常说明这次没取到，**不能**降级成空表继续算 ——
+        否则整段回测会基于不完整数据得出失真结论，并写成一条看似正常的
+        回测记录（这正是「同一配置结果不可复现」的成因之一）。
+
+        :param description: 出错信息里的描述（如 "000001 日K"）
+        :param fetch: 无参可调用对象，内部完成一次行情请求
+        :return: 接口返回的原始数据
+        :raises MarketDataFetchError: 重试后仍失败
+        """
+        attempts: int = max(int(self.config.fetch_retries), 0) + 1
+        interval: float = max(float(self.config.fetch_retry_interval), 0.0)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return fetch()
+            except Exception as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    self.logger.warning(
+                        "%s 取数失败(第 %d/%d 次): %s，%.1fs 后重试",
+                        description, attempt, attempts, exc, interval,
+                    )
+                    if interval > 0:
+                        time.sleep(interval)
+                else:
+                    self.logger.error(
+                        "%s 取数失败(第 %d/%d 次): %s",
+                        description, attempt, attempts, exc,
+                    )
+
+        error_msg: str = (
+            f"{description} 取数失败（重试 {attempts} 次后仍失败）: {last_exc}"
+            " —— 数据不完整，回测中止，不产出回测记录"
+        )
+        raise MarketDataFetchError(error_msg) from last_exc
+
     def _fetch_stock_data(
         self, code: str, start_date: str, end_date: str
     ) -> pd.DataFrame:
         """根据配置的频率获取股票K线数据。
 
+        取数失败（接口异常）按配置重试；重试后仍失败抛 `MarketDataFetchError`，
+        由上层中止整个回测。接口正常返回空列表表示「无数据」，返回空表即可。
+
         :param code: 股票代码
         :param start_date: 开始日期
         :param end_date: 结束日期
         :return: K线 DataFrame，至少包含 open/close/create_time 列
+        :raises MarketDataFetchError: 行情接口重试后仍失败
         """
-        try:
+        freq_label: str = "分钟" if self.config.frequency == "minute" else "日"
+
+        def _fetch() -> Any:
             if self.config.frequency == "minute":
-                raw: list[dict[str, Any]] = self._market_api.get_minute_kline(
+                return self._market_api.get_minute_kline(
                     code=code, start=start_date, end=end_date
                 )
-            else:
-                raw = self._market_api.get_day_kline(
-                    code=code, start=start_date, end=end_date
-                )
-            if not raw:
-                return pd.DataFrame()
-            df = pd.DataFrame(raw)
-            # 统一列名
-            if "date" in df.columns and "create_time" not in df.columns:
-                df["create_time"] = df["date"]
-            if "code" not in df.columns:
-                df["code"] = code
-            return df
-        except Exception as exc:
-            self.logger.warning(
-                "获取 %s %sK线数据失败: %s",
-                code,
-                "分钟" if self.config.frequency == "minute" else "日",
-                exc,
+            return self._market_api.get_day_kline(
+                code=code, start=start_date, end=end_date
             )
+
+        raw: Any = self._call_market_api(f"{code} {freq_label}K", _fetch)
+        if not raw:
+            # 接口正常但无数据：不是取数失败，由调用方按「无数据」处理
+            self.logger.info("%s %sK线无数据: %s~%s", code, freq_label, start_date, end_date)
             return pd.DataFrame()
+        df = pd.DataFrame(raw)
+        # 统一列名
+        if "date" in df.columns and "create_time" not in df.columns:
+            df["create_time"] = df["date"]
+        if "code" not in df.columns:
+            df["code"] = code
+        return df
 
     def _fetch_benchmark_data(
         self, start_date: str, end_date: str
     ) -> pd.DataFrame:
         """获取基准（如沪深300）的K线数据，频率与回测配置一致。
 
+        基准未配置（`benchmark_code` 为空）时直接返回空表 —— 服务端日K
+        接口当前不支持指数代码，基准默认关闭。一旦配置了基准，取数失败同样
+        按「重试 → 仍失败即中止」处理：基准不完整会让超额收益失真。
+
         :param start_date: 开始日期
         :param end_date: 结束日期
         :return: 基准K线 DataFrame
+        :raises MarketDataFetchError: 基准行情接口重试后仍失败
         """
         if not self.config.benchmark_code:
             return pd.DataFrame()
-        try:
+
+        freq_label: str = "分钟" if self.config.frequency == "minute" else "日"
+
+        def _fetch() -> Any:
             if self.config.frequency == "minute":
-                raw: list[dict[str, Any]] = self._market_api.get_minute_kline(
+                return self._market_api.get_minute_kline(
                     code=self.config.benchmark_code,
                     start=start_date,
                     end=end_date,
                 )
-            else:
-                raw = self._market_api.get_day_kline(
-                    code=self.config.benchmark_code,
-                    start=start_date,
-                    end=end_date,
-                )
-            if not raw:
-                self.logger.warning("基准 %s 无数据", self.config.benchmark_code)
-                return pd.DataFrame()
-            df = pd.DataFrame(raw)
-            if "date" in df.columns and "create_time" not in df.columns:
-                df["create_time"] = df["date"]
-            return df
-        except Exception as exc:
-            self.logger.warning("获取基准数据失败: %s", exc)
+            return self._market_api.get_day_kline(
+                code=self.config.benchmark_code,
+                start=start_date,
+                end=end_date,
+            )
+
+        raw: Any = self._call_market_api(
+            f"基准 {self.config.benchmark_code} {freq_label}K", _fetch
+        )
+        if not raw:
+            self.logger.warning("基准 %s 无数据", self.config.benchmark_code)
             return pd.DataFrame()
+        df = pd.DataFrame(raw)
+        if "date" in df.columns and "create_time" not in df.columns:
+            df["create_time"] = df["date"]
+        return df
 
     # ---- 主回测逻辑 ----
 
@@ -428,6 +490,7 @@ class BacktestEngine:
         :param strategy_id: 策略模板 ID（StrategyDao._id），为空时用回填到策略实例的值
         :param user_strategy_id: 用户策略关联 ID（可选，额外同步策略执行指标）
         :return: (交易记录列表, 回测汇总)
+        :raises MarketDataFetchError: 行情取数重试后仍失败 —— 回测中止且不写库
         """
         # 如果传入的是类而非实例，自动实例化
         if inspect.isclass(strategy):
@@ -439,10 +502,21 @@ class BacktestEngine:
             # 显式传入的 strategy_id 优先级最高（覆盖按名称回填的结果）
             strategy.strategy_id = strategy_id
 
-        if self.config.frequency == "minute":
-            trades, summary = self._run_minute(strategy)
-        else:
-            trades, summary = self._run_daily(strategy)
+        try:
+            if self.config.frequency == "minute":
+                trades, summary = self._run_minute(strategy)
+            else:
+                trades, summary = self._run_daily(strategy)
+        except MarketDataFetchError:
+            # C 决策：行情数据不完整即中止，并且**不写库** ——
+            # 绝不落一条「看似正常」的不完整回测记录（那会让同一配置的
+            # 重复回测结果不可复现，且把数据故障伪装成策略表现）
+            self.logger.error(
+                "回测中止：行情数据不完整（策略: %s），本次不保存回测结果",
+                getattr(strategy, "strategy_name", "Unknown"),
+                exc_info=True,
+            )
+            raise
 
         if save:
             if not self.save_results(
@@ -843,25 +917,62 @@ class BacktestEngine:
         strategy_name: str,
         today_str: str = "",
     ) -> list[str]:
-        """调用策略 select 按日线数据筛选当日候选股票。"""
+        """调用策略 select 按日线数据筛选当日候选股票。
+
+        **回测数据完整性（C）**：select 以 `raise_on_error=True` 调用，
+        取数失败按 `fetch_retries` 重试，仍失败则抛 `MarketDataFetchError`，
+        这里直接上抛让整个回测中止 —— 绝不降级成「全量股票池」继续算
+        （旧实现会把取数失败吞掉后回退全量池，等于把一次数据故障变成了
+        一堆凭空产生的交易）。策略自身异常仍保留原有的宽返回容错。
+
+        :param strategy: 策略实例
+        :param codes: 候选股票池
+        :param signal_window: 日线窗口长度
+        :param strategy_name: 策略名（日志用）
+        :param today_str: 交易日 YYYY-MM-DD
+        :return: 命中的股票代码列表
+        :raises MarketDataFetchError: 行情取数重试后仍失败
+        """
         try:
             if not hasattr(strategy, "select"):
                 self.logger.info(f"策略:{strategy_name}，缺少select方法")
             select_results: list[dict[str, Any]] = strategy.select(
-                codes=codes, today_str=today_str, days=signal_window
+                codes=codes,
+                today_str=today_str,
+                days=signal_window,
+                retries=self.config.fetch_retries,
+                retry_interval=self.config.fetch_retry_interval,
+                raise_on_error=True,
             )
             matched_codes: list[str] = [
                 str(r["code"]) for r in select_results if r.get("matched", False)
             ]
+            # 取数失败单独统计并告警：reason 实际在 extra 里，
+            # 旧实现取顶层 `"reason" in result` 恒为 False、日志全丢
+            fetch_failed_codes: list[str] = [
+                str(r["code"]) for r in select_results if r.get("fetch_failed", False)
+            ]
+            if fetch_failed_codes:
+                self.logger.warning(
+                    "select 筛选 %s: %d 只股票取数失败（候选集不完整）: %s",
+                    today_str or "-", len(fetch_failed_codes), fetch_failed_codes[:20],
+                )
             for result in select_results:
-                if not result.get("matched", False) and "reason" in result:
-                    self.logger.info(result.get("reason", ""))
+                if result.get("matched", False):
+                    continue
+                reason: str = str((result.get("extra") or {}).get("reason", ""))
+                if reason:
+                    self.logger.info("[%s] %s", result.get("code", ""), reason)
             self.logger.info(
-                "select 筛选 %s: %d 只股票 → %d 只符合条件",
+                "select 筛选 %s: %d 只股票 → %d 只符合条件（取数失败 %d 只）",
                 today_str or "-",
                 len(codes),
                 len(matched_codes),
+                len(fetch_failed_codes),
             )
+        except MarketDataFetchError:
+            # 数据不完整 → 中止回测，交由 run() 上抛给调用方（不写库）
+            raise
         except Exception as exc:
             self.logger.warning("select 筛选异常: %s，使用全量股票池", exc)
             matched_codes = list(codes)
@@ -1060,6 +1171,9 @@ class BacktestEngine:
             state["in_position"] = in_position
             state["cost_price"] = cost_price
             state["buy_time"] = buy_time
+        except MarketDataFetchError:
+            # 取数失败必须中止整个回测，不能被「单只股票异常」的兜底吞掉
+            raise
         except Exception as exc:
             self.logger.warning("分钟回测 %s 异常: %s", code, exc)
         return trades

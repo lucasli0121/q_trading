@@ -156,7 +156,9 @@ class TestStrategyWorkflow(unittest.TestCase):
 
         instance = self.wf._instantiate_strategy(StrongReboundStrategy)
         self.assertIsNotNone(instance)
-        self.assertEqual(instance.strategy_name, "强势反弹策略")
+        # 类内 strategy_name 已与后台策略模板显示名对齐（原「强势反弹策略」→
+        # 「强趋势策略」），否则按名称查模板恒 404、strategy_id 回填失败
+        self.assertEqual(instance.strategy_name, "强趋势策略")
 
     def test_build_strategy_instance(self) -> None:
         template = {
@@ -811,9 +813,11 @@ class TestStrategyWorkflow(unittest.TestCase):
 
     def test_daily_before_trading(self) -> None:
         instance = MagicMock()
-        instance.strategy_name = "强势反弹策略"
+        instance.strategy_name = "强趋势策略"
         instance.before_trading.return_value = None
-        instance.select.return_value = [{"code": "000001", "matched": True}]
+        instance.select.return_value = [
+            {"code": "000001", "matched": True, "score": 7.5}
+        ]
         state = make_state(instance=instance)
         self.wf._strategy_instances = {"sid": instance}
         self.wf._user_strategies = {"sid": [state]}
@@ -827,12 +831,45 @@ class TestStrategyWorkflow(unittest.TestCase):
 
         self.wf.daily_before_trading()
 
-        # P1-20/P2-25：改为按用户策略逐个选股，选股结果按 user_strategy_id 归属
+        # P1-20/P2-25：改为按用户策略逐个选股，选股结果按 user_strategy_id 归属；
+        # 保存时必须带 score（服务端 StrategySelectStockCreateRequest 已改为 stocks:[{code,score}]）
         instance.select.assert_called_once()
         self.wf._strategy_select_stock_api.add.assert_called_once_with(
-            "us1", ["000001"]
+            "us1", [{"code": "000001", "score": 7.5}]
         )
         self.wf._save_runlog.assert_called()
+
+    def test_daily_before_trading_logs_fetch_failed(self) -> None:
+        """取数失败必须告警且不得保存，不能被当成「正常不满足条件」静默 0 交易。"""
+        instance = MagicMock()
+        instance.strategy_name = "强趋势策略"
+        instance.before_trading.return_value = None
+        instance.select.return_value = [
+            {
+                "code": "000001",
+                "matched": False,
+                "score": 0.0,
+                "fetch_failed": True,
+                "reason_code": "fetch_failed",
+                "extra": {"reason": "取数失败: HTTP 500"},
+            }
+        ]
+        state = make_state(instance=instance)
+        self.wf._strategy_instances = {"sid": instance}
+        self.wf._user_strategies = {"sid": [state]}
+        self.wf._stock_info_api.get_hot_industries.return_value = [{"name": "科技"}]
+        self.wf._stock_info_api.get_by_industry.return_value = [{"code": "600519"}]
+        self.wf._strategy_select_stock_api = MagicMock()
+        self.wf._save_runlog = MagicMock()
+        self.wf.xshg = MagicMock()
+        self.wf.xshg.is_session.return_value = True
+
+        with self.assertLogs("workflow.strategy_workflow", level="WARNING") as logs:
+            self.wf.daily_before_trading()
+
+        joined = "\n".join(logs.output)
+        self.assertIn("取数失败", joined)
+        self.wf._strategy_select_stock_api.add.assert_not_called()
 
     def test_daily_before_trading_skips_stopped_strategy(self) -> None:
         instance = MagicMock()

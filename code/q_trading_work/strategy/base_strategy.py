@@ -5,6 +5,7 @@ import datetime
 import json
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import Any, cast
 
@@ -21,6 +22,22 @@ from core.user_strategy_cache import UserStrategyCache
 from factor.factor_manager import FactorManager
 import exchange_calendars as xcals
 
+
+class MarketDataFetchError(RuntimeError):
+    """行情取数失败 —— 与「接口正常返回但没有行情数据」严格区分。
+
+    触发场景：行情接口抛异常 / 连接超时 / 服务端 5xx（例如
+    `/api/market/kline/day` 不带日期或第三方回源超时导致的间歇性 500）。
+
+    **语义**：这只说明「这次没取到数据」，**不代表该股票没有行情、更不代表
+    它不符合策略条件**。因此调用方不得把它当成「正常不满足条件」静默忽略：
+    - 实时链路（workflow）：至少要落到 warning 并在 select 结果里标出
+      `fetch_failed=True`，避免出现「静默 0 交易」；
+    - 回测链路：必须重试后仍失败即**中止回测并报错**，绝不允许把不完整的
+      数据继续算下去、写出一条看似正常的回测记录。
+    """
+
+
 class BaseStrategy(ABC):
     """策略顶级基类，提供通用数据加载、选股与策略元数据保存能力。"""
 
@@ -36,6 +53,21 @@ class BaseStrategy(ABC):
 
     # 分钟缓存 Redis key 过期时间（秒）：6 小时，覆盖整个交易日
     MINUTE_CACHE_TTL: int = 6 * 60 * 60
+
+    # 日K取数失败重试次数（额外重试次数，总尝试 = 1 + FETCH_RETRIES）。
+    # 实时链路默认 **不重试**：盘前选股期间不能 sleep 阻塞行情派发，
+    # 一次失败即记 warning 并把 fetch_failed 透出（见 MarketDataFetchError）。
+    # 回测链路会显式放大（见 BacktestConfig.fetch_retries）且要求失败即中止。
+    FETCH_RETRIES: int = 0
+    # 重试间隔（秒）；<=0 表示立即重试
+    FETCH_RETRY_INTERVAL: float = 1.0
+
+    # select 结果里的 reason_code 取值：用于把「取数失败」与「正常不满足条件」区分开
+    REASON_MATCHED: str = "matched"
+    REASON_NOT_MATCHED: str = "not_matched"
+    REASON_NO_DATA: str = "no_data"
+    REASON_FETCH_FAILED: str = "fetch_failed"
+    REASON_STRATEGY_ERROR: str = "strategy_error"
 
     def __init__(
         self,
@@ -487,8 +519,59 @@ class BaseStrategy(ABC):
 
     # ---- 通用方法 ----
 
-    def load_his_daily_data(self, code: str, today_str: str, days: int) -> pd.DataFrame:
-        """使用行情接口加载指定股票的日线数据，并返回最近 days 条记录。"""
+    @staticmethod
+    def _empty_kline_frame(
+        fetch_failed: bool = False, fetch_error: str = ""
+    ) -> pd.DataFrame:
+        """构造统一列名的空日K表，并用 `attrs` 标记是否属于「取数失败」。
+
+        `attrs` 是 pandas 官方提供的 DataFrame 元数据容器，用它而不是加列，
+        是为了不污染下游因子的列判断（`load_his_daily_data` 的返回值会被
+        直接喂给因子计算）。
+
+        :param fetch_failed: True 表示这是**取数失败**，而非「查询成功但无数据」
+        :param fetch_error: 取数失败原因（供日志/异常消息使用）
+        :return: 空 DataFrame，`attrs["fetch_failed"]` 标记失败语义
+        """
+        df = pd.DataFrame(
+            columns=pd.Index(["code", "open", "close", "volume", "create_time"])
+        )
+        if fetch_failed:
+            df.attrs["fetch_failed"] = True
+            df.attrs["fetch_error"] = fetch_error
+        return df
+
+    def load_his_daily_data(
+        self,
+        code: str,
+        today_str: str,
+        days: int,
+        retries: int | None = None,
+        retry_interval: float | None = None,
+        raise_on_error: bool = False,
+    ) -> pd.DataFrame:
+        """使用行情接口加载指定股票的日线数据，并返回最近 days 条记录。
+
+        **必须带日期查询**：服务端只保留约 3 个月历史行情，超出部分会被清理；
+        而它的行情来自第三方，若库里没有该股历史会即时回源第三方拉取
+        （可能超时/报错）。因此这里恒定传入 `start` / `end`，
+        避免「不带日期」触发的服务端异常分支。
+
+        **取数失败的语义**（见 `MarketDataFetchError`）：
+        - 接口抛异常 → 重试 `retries` 次；仍失败时
+          `raise_on_error=True` 抛 `MarketDataFetchError`，
+          否则返回带 `attrs["fetch_failed"]=True` 的空表 + warning 日志。
+        - 接口正常返回但列表为空 → 属于「无数据」，不是取数失败。
+
+        :param code: 股票代码
+        :param today_str: 行情时间或日期，为空时取最近交易日
+        :param days: 需要返回的日K条数（取数区间会按 2 倍回溯）
+        :param retries: 额外重试次数；None 时取类属性 `FETCH_RETRIES`
+        :param retry_interval: 重试间隔秒数；None 时取类属性 `FETCH_RETRY_INTERVAL`
+        :param raise_on_error: 取数失败时是否抛 `MarketDataFetchError`
+            （回测链路必须为 True —— 数据不完整就中止，不产出回测记录）
+        :return: 日K DataFrame；取数失败/无数据时返回空表（失败时带 attrs 标记）
+        """
         # 计算起始和结束日期，确保至少有足够的历史数据用于因子计算。
         # 结束日期为昨天，起始日期为当前日期向前回溯的天数，至少为 15 天。
         # 日期减一是只取历史数据，不包含当天的未完成交易日数据。
@@ -506,22 +589,57 @@ class BaseStrategy(ABC):
         market_api = AppContext().market_api
         raw_data: list[dict[str, Any]] = []
 
-        try:
-            if market_api and hasattr(market_api, "get_day_kline"):
-                raw_data = market_api.get_day_kline(
-                    code=code,
-                    start=start_date,
-                    end=end_date,
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            self.logger.debug("market_api.get_day_kline error: %s", exc)
+        attempts: int = (self.FETCH_RETRIES if retries is None else int(retries)) + 1
+        attempts = max(attempts, 1)
+        interval: float = (
+            self.FETCH_RETRY_INTERVAL if retry_interval is None else float(retry_interval)
+        )
+
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                if market_api and hasattr(market_api, "get_day_kline"):
+                    raw_data = market_api.get_day_kline(
+                        code=code,
+                        start=start_date,
+                        end=end_date,
+                    )
+                last_exc = None
+                break
+            except Exception as exc:  # pragma: no cover - defensive
+                last_exc = exc
+                if attempt < attempts:
+                    # 重试过程记 warning：原实现只在 debug 记录，线上等于静默
+                    self.logger.warning(
+                        "[%s] 日K取数失败(第 %d/%d 次) code=%s %s~%s: %s，%.1fs 后重试",
+                        self.strategy_name, attempt, attempts, code,
+                        start_date, end_date, exc, max(interval, 0.0),
+                    )
+                    if interval > 0:
+                        time.sleep(interval)
+
+        if last_exc is not None:
+            error_msg: str = (
+                f"日K取数失败 code={code} range={start_date}~{end_date} "
+                f"attempts={attempts}: {last_exc}"
+            )
+            # 原实现是 logger.debug，线上无法察觉 —— 提升为 warning，
+            # 并显式声明这不是「无数据」，避免被误判成「正常不满足条件」
+            self.logger.warning(
+                "[%s] %s —— 这是**取数失败**，不是「无数据」，"
+                "不能当作正常不满足条件忽略",
+                self.strategy_name, error_msg,
+            )
+            if raise_on_error:
+                raise MarketDataFetchError(error_msg) from last_exc
+            return self._empty_kline_frame(fetch_failed=True, fetch_error=str(last_exc))
 
         if not raw_data:
-            return pd.DataFrame(columns=pd.Index(["code", "open", "close", "volume", "create_time"]))
+            return self._empty_kline_frame()
 
         df = pd.DataFrame(raw_data)
         if df.empty:
-            return pd.DataFrame(columns=pd.Index(["code", "open", "close", "volume", "create_time"]))
+            return self._empty_kline_frame()
 
         if not df.empty and "create_time" not in df.columns:
             if "date" in df.columns:
@@ -536,25 +654,157 @@ class BaseStrategy(ABC):
         df = df.tail(max(days, 1))
         return df
 
-    def select(self, codes: list[str], today_str: str, days: int = 15) -> list[dict[str, Any]]:
-        """遍历股票代码，加载日线数据并判断策略是否命中。"""
+    def select(
+        self,
+        codes: list[str],
+        today_str: str,
+        days: int = 15,
+        retries: int | None = None,
+        retry_interval: float | None = None,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """遍历股票代码，加载日线数据并判断策略是否命中。
+
+        每条结果除 `code` / `matched` / `extra` 外，还额外给出三个字段，
+        用于把「取数失败」与「正常不满足条件」明确区分开：
+
+        - `score`：策略打分（命中时取 `extra["score"]`，缺失记 0.0）。
+          服务端选股表已新增 score 字段，保存选股结果时直接取此值。
+        - `fetch_failed`：True 仅表示**行情取数失败**（接口异常，重试后仍失败），
+          此时该股**是否满足条件未知**，候选集不完整；
+        - `reason_code`：`matched` / `not_matched` / `no_data` / `fetch_failed`
+          / `strategy_error`（前两者为正常判定，`no_data` 为接口正常但无数据）。
+
+        :param codes: 股票代码列表
+        :param today_str: 行情时间或日期，用于推算日线取数区间
+        :param days: 日线窗口长度
+        :param retries: 取数失败额外重试次数（None 用类属性默认值）
+        :param retry_interval: 重试间隔秒数（None 用类属性默认值）
+        :param raise_on_error: True 时遇到取数失败立即抛 `MarketDataFetchError`；
+            回测链路必须为 True（数据不完整即中止，绝不产出回测记录）
+        :return: 每只股票一条结果字典
+        """
         results: list[dict[str, Any]] = []
         for code in codes:
+            # ---- 1. 取数：严格区分「取数失败」与「无数据」----
             try:
-                df = self.load_his_daily_data(code=code, today_str=today_str, days=days)
-                if df.empty:
-                    results.append({"code": code, "matched": False, "extra": {"reason": "no data"}})
-                    continue
+                df = self.load_his_daily_data(
+                    code=code,
+                    today_str=today_str,
+                    days=days,
+                    retries=retries,
+                    retry_interval=retry_interval,
+                    raise_on_error=raise_on_error,
+                )
+            except MarketDataFetchError:
+                # raise_on_error=True：直接上抛，由回测链路中止并报错
+                raise
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                # 子类重写了 load_his_daily_data 且未按新契约实现时的兜底：
+                # 归为取数失败而非「不满足条件」
+                self.logger.warning(
+                    "[%s] select(%s) 取数异常: %s", self.strategy_name, code, exc
+                )
+                if raise_on_error:
+                    raise MarketDataFetchError(
+                        f"日K取数失败 code={code}: {exc}"
+                    ) from exc
+                results.append(
+                    {
+                        "code": code,
+                        "matched": False,
+                        "score": 0.0,
+                        "fetch_failed": True,
+                        "reason_code": self.REASON_FETCH_FAILED,
+                        "extra": {"reason": f"取数失败: {exc}"},
+                    }
+                )
+                continue
 
+            fetch_failed: bool = bool(getattr(df, "attrs", {}).get("fetch_failed", False))
+            if fetch_failed:
+                error_msg: str = str(
+                    getattr(df, "attrs", {}).get("fetch_error", "") or "未知取数错误"
+                )
+                if raise_on_error:
+                    raise MarketDataFetchError(f"日K取数失败 code={code}: {error_msg}")
+                results.append(
+                    {
+                        "code": code,
+                        "matched": False,
+                        "score": 0.0,
+                        "fetch_failed": True,
+                        "reason_code": self.REASON_FETCH_FAILED,
+                        "extra": {"reason": f"取数失败: {error_msg}"},
+                    }
+                )
+                continue
+
+            if df.empty:
+                # 接口正常返回但没有日线数据：属于「无数据」，不是取数失败
+                results.append(
+                    {
+                        "code": code,
+                        "matched": False,
+                        "score": 0.0,
+                        "fetch_failed": False,
+                        "reason_code": self.REASON_NO_DATA,
+                        "extra": {"reason": "no data"},
+                    }
+                )
+                continue
+
+            # ---- 2. 策略判定 ----
+            try:
                 matched, extra = self.is_match_strategy(
                     cast(list[dict[str, Any]], df.to_dict(orient="records"))
                 )
-                results.append({"code": code, "matched": matched, "extra": extra})
             except Exception as exc:  # pragma: no cover - defensive fallback
-                self.logger.warning("[%s] select(%s) error: %s", self.strategy_name, code, exc)
-                results.append({"code": code, "matched": False, "extra": {"reason": str(exc)}})
+                # 策略自身异常：与取数失败分开标记，便于定位
+                self.logger.warning(
+                    "[%s] select(%s) is_match_strategy 异常: %s",
+                    self.strategy_name, code, exc,
+                )
+                results.append(
+                    {
+                        "code": code,
+                        "matched": False,
+                        "score": 0.0,
+                        "fetch_failed": False,
+                        "reason_code": self.REASON_STRATEGY_ERROR,
+                        "extra": {"reason": str(exc)},
+                    }
+                )
+                continue
+
+            extra_dict: dict[str, Any] = extra if isinstance(extra, dict) else {}
+            results.append(
+                {
+                    "code": code,
+                    "matched": bool(matched),
+                    "score": self._extract_score(extra_dict),
+                    "fetch_failed": False,
+                    "reason_code": (
+                        self.REASON_MATCHED if matched else self.REASON_NOT_MATCHED
+                    ),
+                    "extra": extra_dict,
+                }
+            )
 
         return results
+
+    @staticmethod
+    def _extract_score(extra: dict[str, Any]) -> float:
+        """从策略返回的 extra 中提取打分，容错处理缺失/None/非数值。
+
+        :param extra: 策略 is_match_strategy 返回的附加信息
+        :return: 打分（float），取不到时返回 0.0
+        """
+        try:
+            value: Any = extra.get("score", 0.0)
+            return float(value) if value is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
     def _load_select_stocks(self, today_str: str) -> set[str]:
         """加载用户策略当日选中的股票代码集合。

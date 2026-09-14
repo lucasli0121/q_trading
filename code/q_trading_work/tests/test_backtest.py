@@ -23,7 +23,7 @@ from backtest.backtest_engine import (
     TradeResult,
 )
 from dao.backtest_dao import BacktestDao
-from strategy.base_strategy import BaseStrategy
+from strategy.base_strategy import BaseStrategy, MarketDataFetchError
 from utils.tools import load_admin_token
 
 
@@ -111,12 +111,19 @@ def _trade(
 
 class TestBacktestEngine(unittest.TestCase):
     def test_run_daily_with_real_data(self) -> None:
-        """真实日K数据回测：产生交易、买卖价格含滑点、持有天数正确。"""
+        """真实日K数据回测：产生交易、买卖价格含滑点、持有天数正确。
+
+        ⚠️ 取数区间必须落在**服务端保留窗口（约 3 个月）内**：
+        后台只保留近 3 个月历史行情，更早的数据会被删除；库中没有的标的
+        会即时回源第三方拉取（可能超时/报错）。因此这里固定用最近一个多月的
+        区间（实测 2026-09-15 时 `000001` 在 `2026-08-01~2026-09-12` 有 30 根，
+        而 `2026-03-01~2026-07-31` 只剩 2 根 → 用旧区间会得到 0 交易）。
+        """
         config = BacktestConfig(
             initial_capital=100000,
             stock_codes=["000001"],
-            start_date="2026-03-01",
-            end_date="2026-07-31",
+            start_date="2026-08-01",
+            end_date="2026-09-12",
             hold_days=3,
             signal_window=5,
             trade_config=TradeCostConfig(
@@ -605,10 +612,11 @@ class TestBacktestEngine(unittest.TestCase):
     def test_bind_strategy_id_falls_back_to_class_name(self) -> None:
         """名称查不到（404）时退化为按 class_name 匹配模板。
 
-        背景（2026-09-15 生产实测）：后台模板显示名与本端类内
-        `strategy_name` 不一致（本端「强势反弹策略」对应模板「强趋势策略」），
-        只按名称查会 404 → strategy_id 回填失败 → `run(save=True)` 静默跳过写库。
-        因此必须回退到 class_name（模板的 class_name 与本端类名一致）。
+        背景（2026-09-15 生产实测）：后台模板显示名与本端类内 `strategy_name`
+        曾不一致（本端「强势反弹策略」对应模板「强趋势策略」），只按名称查会 404
+        → strategy_id 回填失败 → `run(save=True)` 静默跳过写库。
+        现两处名称已对齐（本端改为「强趋势策略」），但类名回退必须保留：
+        后台改模板显示名是随时可能发生的，不能让写库再次静默失败。
         """
         engine = BacktestEngine()
         engine._strategy_api = MagicMock()
@@ -702,6 +710,139 @@ class TestBacktestEngine(unittest.TestCase):
         trades, summary = engine.run(SimpleMomentumStrategy(), save=True)
         self.assertEqual(trades, [])
         engine._backtest_api.save.assert_not_called()
+
+
+class TestBacktestDataCompleteness(unittest.TestCase):
+    """C 决策：回测取数失败要重试，重试后仍失败必须**中止并报错**，
+    绝不把不完整数据写成一条看似正常的回测记录。
+
+    背景：服务端 `/api/market/kline/day` 间歇性 HTTP 500（不带日期参数必现），
+    旧实现把该异常吞成「no data」→ 0 候选 → 0 交易，于是同一配置重复回测
+    会得到 2/0/4/3/0 笔交易（结果不可复现）。
+    """
+
+    def test_call_market_api_retries_then_succeeds(self) -> None:
+        engine = BacktestEngine(
+            config=BacktestConfig(fetch_retries=2, fetch_retry_interval=0)
+        )
+        calls = {"n": 0}
+
+        def fetch() -> list[dict[str, Any]]:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("HTTP 500")
+            return [{"close": 1.0}]
+
+        self.assertEqual(
+            engine._call_market_api("000001 日K", fetch), [{"close": 1.0}]
+        )
+        self.assertEqual(calls["n"], 3)
+
+    def test_call_market_api_raises_after_retries_exhausted(self) -> None:
+        engine = BacktestEngine(
+            config=BacktestConfig(fetch_retries=2, fetch_retry_interval=0)
+        )
+        calls = {"n": 0}
+
+        def always_fail() -> Any:
+            calls["n"] += 1
+            raise RuntimeError("HTTP 500")
+
+        with self.assertRaises(MarketDataFetchError) as ctx:
+            engine._call_market_api("000001 日K", always_fail)
+
+        # 1 次 + 2 次重试 = 3 次尝试，且消息里带足定位信息
+        self.assertEqual(calls["n"], 3)
+        self.assertIn("000001 日K", str(ctx.exception))
+        self.assertIn("重试 3 次后仍失败", str(ctx.exception))
+
+    def test_fetch_stock_data_returns_empty_without_exception_when_no_data(self) -> None:
+        """接口正常但无数据 ≠ 取数失败：返回空表，不抛异常、不重试。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(fetch_retries=2, fetch_retry_interval=0)
+        )
+        engine._market_api = MagicMock()
+        engine._market_api.get_day_kline.return_value = []
+
+        df = engine._fetch_stock_data("000001", "2026-07-01", "2026-07-31")
+
+        self.assertTrue(df.empty)
+        engine._market_api.get_day_kline.assert_called_once()
+
+    def test_select_candidates_aborts_on_fetch_failure(self) -> None:
+        """取数失败必须上抛，不能回退成「全量股票池」继续瞎算。"""
+        engine = BacktestEngine(config=BacktestConfig(fetch_retries=0))
+        strategy = SimpleMomentumStrategy()
+        strategy.select = MagicMock(side_effect=MarketDataFetchError("取数失败"))
+
+        with self.assertRaises(MarketDataFetchError):
+            engine._select_candidates(
+                strategy, ["000001"], 5, "SimpleMomentum", today_str="2026-07-15"
+            )
+
+    def test_select_candidates_keeps_full_pool_fallback_for_strategy_bug(self) -> None:
+        """策略自身异常仍保留原有的「回退全量池」容错（与取数失败区分开）。"""
+        engine = BacktestEngine()
+        strategy = SimpleMomentumStrategy()
+        strategy.select = MagicMock(side_effect=ValueError("策略 bug"))
+
+        codes = engine._select_candidates(
+            strategy, ["000001", "600519"], 5, "SimpleMomentum", today_str="2026-07-15"
+        )
+
+        self.assertEqual(codes, ["000001", "600519"])
+
+    def test_select_candidates_requests_strict_fetch(self) -> None:
+        """回测必须要求 select 严格取数（重试 + 失败即抛）。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(fetch_retries=3, fetch_retry_interval=0.25)
+        )
+        strategy = SimpleMomentumStrategy()
+        strategy.select = MagicMock(
+            return_value=[{"code": "000001", "matched": True, "score": 1.0}]
+        )
+
+        engine._select_candidates(
+            strategy, ["000001"], 5, "SimpleMomentum", today_str="2026-07-15"
+        )
+
+        kwargs = strategy.select.call_args.kwargs
+        self.assertTrue(kwargs["raise_on_error"])
+        self.assertEqual(kwargs["retries"], 3)
+        self.assertEqual(kwargs["retry_interval"], 0.25)
+
+    def test_run_aborts_without_saving_when_data_incomplete(self) -> None:
+        """关键：数据不完整时回测中止，且**不写库**（不留下不完整记录）。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(
+                stock_codes=["000001"],
+                start_date="2026-07-01",
+                end_date="2026-07-31",
+                fetch_retries=0,
+                fetch_retry_interval=0,
+            )
+        )
+        engine._bind_strategy_id = MagicMock()  # type: ignore[method-assign]
+        engine._backtest_api = MagicMock()
+        engine._run_daily = MagicMock(  # type: ignore[method-assign]
+            side_effect=MarketDataFetchError("000001 日K 取数失败")
+        )
+
+        with self.assertRaises(MarketDataFetchError):
+            engine.run(SimpleMomentumStrategy(), save=True, strategy_id="s-1")
+
+        engine._backtest_api.save.assert_not_called()
+
+    def test_benchmark_disabled_by_default(self) -> None:
+        """基准默认关闭（服务端日K不支持指数代码，P1-27）—— 空 code 直接跳过取数。"""
+        engine = BacktestEngine()
+        self.assertEqual(engine.config.benchmark_code, "")
+        engine._market_api = MagicMock()
+
+        df = engine._fetch_benchmark_data("2026-07-01", "2026-07-31")
+
+        self.assertTrue(df.empty)
+        engine._market_api.get_day_kline.assert_not_called()
 
 
 if __name__ == "__main__":

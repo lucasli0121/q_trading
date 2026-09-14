@@ -88,7 +88,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--position-size", type=float, default=1.0, help="每笔交易使用资金比例（0-1）"
     )
-    parser.add_argument("--benchmark", default="000300", help="基准指数代码，为空则不做基准对比")
+    parser.add_argument(
+        "--benchmark",
+        default="",
+        help=(
+            "基准代码，默认空=关闭基准对比（服务端日K暂不支持指数代码，"
+            "填了会取数失败）；后台接入指数行情后再填，如 000300"
+        ),
+    )
+    parser.add_argument(
+        "--fetch-retries",
+        type=int,
+        default=2,
+        help="行情取数失败重试次数（回测要求数据完整，重试后仍失败即中止且不写库）",
+    )
+    parser.add_argument(
+        "--fetch-retry-interval",
+        type=float,
+        default=1.0,
+        help="行情取数重试间隔（秒）",
+    )
 
     cost = parser.add_argument_group("交易成本")
     cost.add_argument("--buy-slip", type=float, default=0.2, help="买入滑点（元）")
@@ -166,6 +185,8 @@ def build_backtest_config(args: argparse.Namespace) -> BacktestConfig:
         signal_window=args.signal_window,
         frequency=args.frequency,
         position_size_pct=args.position_size,
+        fetch_retries=args.fetch_retries,
+        fetch_retry_interval=args.fetch_retry_interval,
         trade_config=TradeCostConfig(
             buy_slippage=args.buy_slip,
             sell_slippage=args.sell_slip,
