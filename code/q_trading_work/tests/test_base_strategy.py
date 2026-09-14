@@ -39,7 +39,7 @@ class DummyStrategy(BaseStrategy):
         return False, {}
 
     def check_minute_buy(
-        self, stock_data: list[dict[str, Any]]
+        self, code: str, stock_data: dict[str, Any]
     ) -> tuple[bool, dict[str, Any]]:
         return False, {}
 
@@ -49,7 +49,7 @@ class DummyStrategy(BaseStrategy):
         return False, {}
 
     def check_tick_buy(
-        self, stock_data: list[dict[str, Any]]
+        self, code: str, stock_data: dict[str, Any]
     ) -> tuple[bool, dict[str, Any]]:
         return False, {}
 
@@ -58,7 +58,10 @@ class DummyStrategy(BaseStrategy):
     ) -> tuple[bool, dict]:
         return False, {}
 
-    def load_his_daily_data(self, code: str, days: int) -> pd.DataFrame:
+    def load_his_daily_data(
+        self, code: str, today_str: str, days: int
+    ) -> pd.DataFrame:
+        """与基类签名一致：select() 会以关键字传入 today_str。"""
         return pd.DataFrame(
             [
                 {"code": code, "close": 10.0, "open": 9.5, "volume": 1000},
@@ -98,12 +101,24 @@ class TestBaseStrategy(unittest.TestCase):
     def test_select_returns_matched_results(self) -> None:
         strategy = DummyStrategy()
 
-        results = strategy.select(["000001"], days=2)
+        # select() 现签名为 (codes, today_str, days)：today_str 用于推算日线取数区间，
+        # 原用例缺少该参数（历史遗留）。
+        results = strategy.select(["000001"], "2026-07-15", days=2)
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["code"], "000001")
         self.assertTrue(results[0]["matched"])
         self.assertEqual(results[0]["extra"]["last_close"], 11.0)
+
+    def test_select_handles_empty_data(self) -> None:
+        """日线为空时应返回 matched=False 而不是抛异常。"""
+        strategy = DummyStrategy()
+        strategy.load_his_daily_data = lambda code, today_str, days: pd.DataFrame()
+
+        results = strategy.select(["000001"], "2026-07-15", days=2)
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0]["matched"])
 
 
 if __name__ == "__main__":

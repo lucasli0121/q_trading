@@ -36,9 +36,15 @@ class AppContext:
 
     def __init__(self):
         if not hasattr(self, '_initialized'):
-            from factor.factor_manager import FactorManager
             self._initialized = True
-            self.factor_manager = FactorManager()
+            # 说明（P0-5）：FactorManager 不再是全局单例。
+            # 原来所有策略实例共享同一个 FactorManager，因子对象（含 days 等参数、
+            # 可能的内部状态）会在不同用户策略之间串用 —— 每个 user_strategy 的
+            # 参数不同，共享注册表会让后注册的因子覆盖先注册的，导致 A 用户的
+            # 策略跑出 B 用户的因子参数。
+            # 现改为每个 BaseStrategy 各自持有私有 FactorManager（见
+            # strategy/base_strategy.py）。FactorManager 本身只是一个 name→factor
+            # 的注册表、不缓存行情数据，实例化的内存开销可忽略。
             self.mqtt_client = MqttClient()
 
     # ---- API 客户端（懒加载） ----

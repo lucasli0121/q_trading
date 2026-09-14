@@ -32,17 +32,17 @@ class StrategySelectStockApi:
 
     def add(
         self,
-        strategy_id: str,
+        user_strategy_id: str,
         codes: list[str],
     ) -> list[dict[str, Any]]:
         """保存策略选股结果。
 
-        :param strategy_id: 策略模板 ID
+        :param user_strategy_id: 用户策略 ID（UserStrategy 记录 ID）
         :param codes: 选中的股票代码列表
         :return: 保存结果列表
         """
         body: dict[str, Any] = {
-            "strategy_id": strategy_id,
+            "user_strategy_id": user_strategy_id,
             "codes": codes,
         }
         result: Any = self._client.post("/api/strategy_select_stocks/add", body)
@@ -54,7 +54,7 @@ class StrategySelectStockApi:
 
     def list(
         self,
-        strategy_id: str = "",
+        user_strategy_id: str = "",
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
@@ -62,16 +62,19 @@ class StrategySelectStockApi:
     ) -> list[dict[str, Any]]:
         """查询策略选股结果列表。
 
-        :param strategy_id: 策略模板 ID（可选）
-        :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
-        :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
+        :param user_strategy_id: 用户策略 ID（UserStrategyDao 记录 ID，可选）
+        :param start_time: 开始日期 YYYY-MM-DD（可选）
+
+            注意：后端文档写的是 "YYYY-MM-DD HH:MM:SS"，但数据库 create_time
+            实际只保存日期、不带时分秒，传带时间的字符串会查不到数据。
+        :param end_time: 结束日期 YYYY-MM-DD（可选，同 start_time）
         :param skip: 分页偏移（可选）
         :param limit: 分页大小（可选，0 表示不限制）
         :return: 选股结果列表（含实时行情数据）
         """
         params: dict[str, Any] = {}
-        if strategy_id:
-            params["strategy_id"] = strategy_id
+        if user_strategy_id:
+            params["user_strategy_id"] = user_strategy_id
         if start_time:
             params["start_time"] = start_time
         if end_time:
@@ -99,8 +102,11 @@ class StrategySelectStockApi:
     ) -> list[dict[str, Any]]:
         """查询当前用户所有策略的选股结果。
 
-        :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
-        :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
+        :param start_time: 开始日期 YYYY-MM-DD（可选）
+
+            注意：后端文档写的是 "YYYY-MM-DD HH:MM:SS"，但数据库 create_time
+            实际只保存日期、不带时分秒，传带时间的字符串会查不到数据。
+        :param end_time: 结束日期 YYYY-MM-DD（可选，同 start_time）
         :param skip: 分页偏移（可选）
         :param limit: 分页大小（可选，0 表示不限制）
         :return: 选股结果列表（含实时行情数据）

@@ -217,8 +217,12 @@ class StrongReboundStrategy(BaseStrategy):
         return True, extra
 
     def _before_minute_route(self, code: str, stock_data: dict[str, Any]) -> None:
-        """分钟路由前保存分钟行情缓存。"""
-        self._save_minute_cache(code, stock_data)
+        """分钟路由前钩子。
+
+        注意：分钟行情缓存已改为由 `StrategyWorkflow` 单点写入 UserStrategyCache
+        （每个 code 只写一次），策略侧只读，因此这里不再写入。
+        """
+        return
 
     # ---- 内部方法 ----
 

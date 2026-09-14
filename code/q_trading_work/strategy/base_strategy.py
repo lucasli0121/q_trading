@@ -17,6 +17,7 @@ from api.strategy import StrategyApi
 from api.strategy_select_stock import StrategySelectStockApi
 from api.user_strategy import UserStrategyApi
 from app_context import AppContext
+from core.user_strategy_cache import UserStrategyCache
 from factor.factor_manager import FactorManager
 import exchange_calendars as xcals
 
@@ -56,20 +57,18 @@ class BaseStrategy(ABC):
             由 workflow 批量加载时传入；为 None 时初始化时自行查询
         """
         self.logger = logging.getLogger(__name__)
-        self.factor_manager: FactorManager = AppContext().factor_manager
+        # 因子管理器改为**实例私有**：原实现取 AppContext 的全局单例，而 register 是无条件覆盖，
+        # 导致多用户策略实例用各自的参数互相覆盖同一 key 的因子（原 P0-5）。
+        self.factor_manager: FactorManager = FactorManager()
         self.user_strategy_id = user_strategy_id
         self.strategy_id = strategy_id
         self.strategy_type = strategy_type
         self.strategy_params: dict[str, Any] = {}  # 已加载的策略参数（来源见 param_source）
         self.param_source: str = ""  # 参数来源描述（user_strategy/strategy/yaml）
-        self._select_stocks_set: set[str] = set()  # 当日选中股票代码集合（由 daily_before_trading 填充）
-        self._select_stocks_date: str = ""  # 缓存日期，跨天自动刷新
-        self._minute_cache: dict[str, list[dict[str, Any]]] = {}  # 分钟级行情本地兜底缓存，key=code（Redis 不可用时使用）
-        self._minute_cache_day: str = ""  # 当前分钟缓存日期（由最近保存的行情时间决定），用于拼接 Redis key
-        self._redis_enabled: bool = AppContext().redis_exec.enabled  # Redis 是否启用（来自配置文件）
-        self._redis_failed: bool = False  # Redis 不可用标记，失败一次后当天回退本地缓存
-        self._stock_scores: dict[str, dict[str, Any]] = {}  # 策略对股票的评分，key=code（选股/买入打分时更新）
         self._highest_prices: dict[str, float] = {}  # 持仓期间最高价，key=code
+        # 全局缓存单例：当日行情（由 workflow 单点写入）、策略打分、选股结果。
+        # 原来由本类维护的行情/评分缓存已迁出，见 core/user_strategy_cache.py。
+        self._cache: UserStrategyCache = UserStrategyCache()
         self.xshg = xcals.get_calendar("XSHG", start="2020-01-01")  # 上交所交易日历，用于判断交易日
         # 先加载策略参数再注册因子，保证 init_factors 使用加载后的参数：
         # 优先级 user_strategy.strategy_params > strategy.default_params > cfg/strategy.yaml
@@ -281,12 +280,10 @@ class BaseStrategy(ABC):
         :param stock_codes: 当日关注的股票代码列表
         :param kwargs: 扩展参数（如初始资金、仓位配置等）
         """
-        self._select_stocks_set.clear()
-        self._select_stocks_date = ""
-        self._minute_cache.clear()
-        self._minute_cache_day = ""
-        self._redis_failed = False  # 新的一天重新尝试 Redis
-        self._stock_scores.clear()
+        # 清理本用户策略的打分与选股缓存（行情缓存按日期存放，由 workflow 维护，此处不动）
+        self._cache.clear_user(self.user_strategy_id)
+        # 新的一天重新尝试 Redis（前一天可能因抖动被标记为不可用）
+        self._cache.reset_redis_failure()
         self._highest_prices.clear()
         self.logger.debug(
             "[%s] before_trading(trade_date=%s, codes=%d)",
@@ -357,12 +354,25 @@ class BaseStrategy(ABC):
             "code": code,
         }
 
-    def _save_score_cache(self, code: str, action: str, score: float, check_num: int, create_time: str, done: bool | None = None):
+    def _save_score_cache(
+        self,
+        code: str,
+        action: str,
+        score: float,
+        check_num: int,
+        create_time: str,
+        done: bool | None = None,
+    ) -> None:
         """缓存当天的买入/卖出积分，分钟实时检测时，每次检测积分可以累计。
-        
-        主存储为 Redis 列表：key=code:action:score:日期（如 000001:BUY:score:2026-08-17），
+
+        实际存储交由 UserStrategyCache（key 含 user_strategy_id，多用户互相隔离），
+        内存快照 + Redis 双重缓存，Redis 不可用时自动降级为纯内存。
+
         :param code: 股票代码
-        :param score: 策略对股票的打分，None 时取 self._stock_scores 中的最近评分
+        :param action: BUY / SELL
+        :param score: 策略对股票的累计打分
+        :param check_num: 累计检查次数（用于计算平均分）
+        :param create_time: 行情时间，用于推导日期
         :param done: 已买入/卖出标记
         """
         avg_score: float = score / check_num if check_num > 0 else 0.0
@@ -372,147 +382,71 @@ class BaseStrategy(ABC):
             "avg_score": float(avg_score),
             "create_time": create_time,
             "check_number": check_num,
-            "done": bool(done) if done is not None else None
+            "done": bool(done) if done is not None else None,
         }
-        day: str = (
-            create_time[:10]
-            if len(create_time) >= 10
-            else datetime.datetime.now().strftime("%Y-%m-%d")
+        self._cache.save_score(
+            self.user_strategy_id,
+            code,
+            action,
+            entry,
+            UserStrategyCache.day_of(create_time),
         )
-        # Redis 主路径：写入 code+日期 的列表，8 小时过期，并裁剪到最近 max_cache 条
-        if self._redis_enabled and not self._redis_failed:
-            redis_exec = AppContext().redis_exec
-            key: str = self._cache_score_key(code, action, day)
-            if redis_exec.set_key_string( key, json.dumps(entry), ex=self.MINUTE_CACHE_TTL):
-                return
-            # 写入失败：标记后回退本地缓存，当天不再重试 Redis
-            self._redis_failed = True
-        # 本地兜底路径（Redis 未启用或不可用）
-        self._stock_scores[code] = entry
 
     def _get_score_cache(self, code: str, action: str, create_time: str) -> dict:
         """从缓存取出当天的买入/卖出积分，分钟实时检测时，每次检测积分可以累计。
-                
-        主存储为 Redis 列表：key=code:action:score:日期（如 000001:BUY:score:2026-08-17），
-        如果redis失败则从_stock_scores中获取
-        :param code: 股票代码
-        """
-        day: str = (
-            create_time[:10]
-            if len(create_time) >= 10
-            else datetime.datetime.now().strftime("%Y-%m-%d")
-        )
-        # get redis返回空值时不设置 self._redis_failed, 因为有时redis上本来就是空值
-        entries: dict[str, Any] = {}
-        if self._redis_enabled and not self._redis_failed:
-            redis_exec = AppContext().redis_exec
-            key: str = self._cache_score_key(code, action, day)
-            raw: str | None = redis_exec.get_key_string(key)
-            if raw is not None:
-                try:
-                    entries = json.loads(raw)
-                except json.JSONDecodeError:
-                    self.logger.warning(
-                        "[%s] 代码分数缓存 JSON 解析失败: code=%s",
-                        self.strategy_name, code,
-                    )
-        if len(entries) == 0:
-            if code in self._stock_scores:
-                entries = self._stock_scores[code]
-        return entries
-    
-    @staticmethod
-    def _cache_score_key(code: str, action: str, day: str) -> str:
-        """构造分钟缓存 Redis key：code + action + score + 日期（如 000001:BUY:score:2026-08-17）。
+
+        key 由 user_strategy_id + code + action + 日期 组成，多用户互相隔离。
 
         :param code: 股票代码
-        :param day: 日期字符串 YYYY-MM-DD
-        :return: Redis key
+        :param action: BUY / SELL
+        :param create_time: 行情时间，用于推导日期
+        :return: 打分条目，无记录返回空字典
         """
-        return f"{code}:{action}:score:{day}"
+        return self._cache.get_score(
+            self.user_strategy_id,
+            code,
+            action,
+            UserStrategyCache.day_of(create_time),
+        )
 
     def _save_minute_cache(
         self,
         code: str,
         stock_data: dict[str, Any],
-        max_cache: int = 60 * 4
+        max_cache: int = UserStrategyCache.MAX_MINUTE_CACHE,
     ) -> None:
-        """缓存当前分钟行情（含 low/score/bought 字段），仅保留最近窗口防止无限增长。
+        """缓存一根分钟行情。
 
-        主存储为 Redis 列表：key=code+日期（如 000001:2026-08-17），
-        过期时间 MINUTE_CACHE_TTL（8 小时，覆盖整个交易日），每次写入后
-        裁剪到最近 max_cache 条；Redis 未启用或写入失败时回退本地内存缓存。
+        **注意**：行情缓存现在统一由 `StrategyWorkflow` 单点写入（每个 code 只写一次），
+        策略侧只读。保留本方法仅为兼容既有调用点/测试，正常链路不应再由策略调用。
 
         :param code: 股票代码
-        :param stock_data: 分钟行情数据（price/volume/amount/close/low/create_time）
+        :param stock_data: 分钟行情数据
         :param max_cache: 单只股票最大缓存条数
         """
-        create_time: str = str(stock_data.get("create_time", ""))
-        day: str = (
-            create_time[:10]
-            if len(create_time) >= 10
-            else datetime.datetime.now().strftime("%Y-%m-%d")
-        )
-        if day:
-            self._minute_cache_day = day
-        # Redis 主路径：写入 code+日期 的列表，8 小时过期，并裁剪到最近 max_cache 条
-        if self._redis_enabled and not self._redis_failed:
-            redis_exec = AppContext().redis_exec
-            key: str = self._minute_cache_key(code, day)
-            if redis_exec.push_value_to_rlist(
-                key, json.dumps(stock_data), ex=self.MINUTE_CACHE_TTL
-            ):
-                redis_exec.ltrim_rlist(key, -max_cache, -1)
-                return
-            # 写入失败：标记后回退本地缓存，当天不再重试 Redis
-            self._redis_failed = True
-            self.logger.warning(
-                "[%s] Redis 分钟缓存写入失败，回退本地缓存: code=%s",
-                self.strategy_name, code,
-            )
-        # 本地兜底路径（Redis 未启用或不可用）
-        if code not in self._minute_cache:
-            self._minute_cache[code] = []
-        self._minute_cache[code].append(stock_data.copy())
-        if len(self._minute_cache[code]) > max_cache:
-            self._minute_cache[code] = self._minute_cache[code][-max_cache:]
+        self._cache.push_minute_bar(code, stock_data, max_cache=max_cache)
 
     @staticmethod
     def _minute_cache_key(code: str, day: str) -> str:
-        """构造分钟缓存 Redis key：code + 日期（如 000001:2026-08-17）。
+        """构造分钟行情缓存的 key：bar:{code}:{day}。
 
         :param code: 股票代码
         :param day: 日期字符串 YYYY-MM-DD
-        :return: Redis key
+        :return: key 字符串
         """
-        return f"{code}:{day}"
+        return UserStrategyCache.minute_key(code, day)
 
-    def _get_minute_cache(self, code: str) -> list[dict[str, Any]]:
-        """读取 code 当日分钟缓存（Redis 优先，Redis 无数据或不可用时回退本地缓存）。
+    def _get_minute_cache(self, code: str, length: int = 0) -> list[dict[str, Any]]:
+        """读取 code 当日分钟行情。
+
+        数据由 `UserStrategyCache` 提供（进程内快照优先，未命中才读 Redis 并回填），
+        同一进程中同一 (code, 日期) 最多只访问一次 Redis，避免单次检查内反复 IO。
 
         :param code: 股票代码
-        :return: 分钟行情条目列表，每项含 price/volume/low/score/bought 等字段
+        :param length: 需要的条数；<=0 表示取当日全部
+        :return: 分钟行情条目列表（时间正序），无数据返回空列表
         """
-        day: str = self._minute_cache_day or datetime.datetime.now().strftime("%Y-%m-%d")
-        # get redis返回值为空时，不设置self._redis_failed, 因为有时就是空值，不表示redis有问题
-        if self._redis_enabled and not self._redis_failed:
-            redis_exec = AppContext().redis_exec
-            raw: list[str] | None = redis_exec.get_value_from_rlist(
-                self._minute_cache_key(code, day), -1, False
-            )
-            if raw is not None:
-                entries: list[dict[str, Any]] = []
-                for item in raw:
-                    try:
-                        entries.append(json.loads(item))
-                    except json.JSONDecodeError:
-                        self.logger.warning(
-                            "[%s] 分钟缓存 JSON 解析失败: code=%s",
-                            self.strategy_name, code,
-                        )
-                if entries:
-                    return entries
-        return list(self._minute_cache.get(code, []))
+        return self._cache.get_minute_bars(code, length=length)
 
     """
     function: get_previous_trading_day
@@ -623,32 +557,37 @@ class BaseStrategy(ABC):
         return results
 
     def _load_select_stocks(self, today_str: str) -> set[str]:
-        """从 API 加载当日策略选中的股票代码集合。
+        """加载用户策略当日选中的股票代码集合。
 
-        按日期缓存，同一天内只请求一次。
+        选股结果按 **user_strategy_id + 日期** 缓存（内存快照 + Redis，见 UserStrategyCache），
+        因此同一天内同一用户策略只请求一次；服务端接口参数已由 strategy_id 改为
+        user_strategy_id，不同用户参数不同、选股结果也不再共用。
 
+        :param today_str: 行情时间或日期，为空时取最近交易日
         :return: 选中股票代码集合
         """
-        # 复用全局 ApiClient（已带 admin fallback token），避免每次调用创建新连接池
-        admin_client: ApiClient = AppContext().api_client
         if today_str == "":
             today_str = self.get_recent_trading_day()
-        today = today_str[:10]  # YYYY-MM-DD
-        if self._select_stocks_date == today and self._select_stocks_set:
-            return self._select_stocks_set
+        today: str = today_str[:10]  # YYYY-MM-DD
 
-        if not self.strategy_id:
-            self.logger.warning("[%s] strategy_id 为空，无法加载选股列表", self.strategy_name)
+        cached: set[str] | None = self._cache.get_select_stocks(self.user_strategy_id, today)
+        if cached is not None:
+            return cached
+
+        if not self.user_strategy_id:
+            self.logger.warning(
+                "[%s] user_strategy_id 为空，无法加载选股列表", self.strategy_name
+            )
             return set()
 
         try:
-            start_time: str = today
-            end_time: str = today + " 23:00:00"
+            # 复用全局 ApiClient（已带 admin fallback token），避免每次调用创建新连接池
+            admin_client: ApiClient = AppContext().api_client
             select_api = StrategySelectStockApi(admin_client)
             items = select_api.list(
-                strategy_id=self.strategy_id,
-                start_time=start_time,
-                end_time=end_time,
+                user_strategy_id=self.user_strategy_id,
+                start_time=today,
+                end_time=today + " 23:00:00",
             )
 
             codes: set[str] = set()
@@ -657,17 +596,16 @@ class BaseStrategy(ABC):
                 if c:
                     codes.add(c)
 
-            self._select_stocks_set = codes
-            self._select_stocks_date = today
+            self._cache.save_select_stocks(self.user_strategy_id, today, codes)
             self.logger.info(
-                "[%s] 加载选股列表: strategy_id=%s, codes=%s",
-                self.strategy_name, self.strategy_id, codes,
+                "[%s] 加载选股列表: user_strategy_id=%s, codes=%s",
+                self.strategy_name, self.user_strategy_id, codes,
             )
             return codes
         except Exception:
             self.logger.warning(
-                "[%s] 加载选股列表失败: strategy_id=%s",
-                self.strategy_name, self.strategy_id, exc_info=True,
+                "[%s] 加载选股列表失败: user_strategy_id=%s",
+                self.strategy_name, self.user_strategy_id, exc_info=True,
             )
             return set()
 

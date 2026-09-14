@@ -32,17 +32,20 @@ class StrategySelectStockApi:
 
     def add(
         self,
-        strategy_id: str,
+        user_strategy_id: str,
         codes: list[str],
     ) -> list[dict[str, Any]]:
         """保存策略选股结果。
 
-        :param strategy_id: 策略模板 ID
+        注意：服务端 `StrategySelectStockCreateRequest` 已把关联字段由 `strategy_id`
+        改为 `user_strategy_id`（必填），因此选股结果按用户策略维度存储。
+
+        :param user_strategy_id: 用户策略 ID
         :param codes: 选中的股票代码列表
         :return: 保存结果列表
         """
         body: dict[str, Any] = {
-            "strategy_id": strategy_id,
+            "user_strategy_id": user_strategy_id,
             "codes": codes,
         }
         result: Any = self._client.post("/api/strategy_select_stocks/add", body)
@@ -54,7 +57,7 @@ class StrategySelectStockApi:
 
     def list(
         self,
-        strategy_id: str = "",
+        user_strategy_id: str = "",
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
@@ -62,7 +65,7 @@ class StrategySelectStockApi:
     ) -> list[dict[str, Any]]:
         """查询策略选股结果列表。
 
-        :param strategy_id: 策略模板 ID（可选）
+        :param user_strategy_id: 用户策略 ID（可选；服务端 query 参数名，原为 strategy_id）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
         :param skip: 分页偏移（可选）
@@ -70,8 +73,8 @@ class StrategySelectStockApi:
         :return: 选股结果列表（含实时行情数据）
         """
         params: dict[str, Any] = {}
-        if strategy_id:
-            params["strategy_id"] = strategy_id
+        if user_strategy_id:
+            params["user_strategy_id"] = user_strategy_id
         if start_time:
             params["start_time"] = start_time
         if end_time:

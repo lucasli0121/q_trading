@@ -1,15 +1,23 @@
 """
 Author: liguoqiang
 Date: 2026-08-02
-Description: 策略工作流测试 —— 覆盖策略加载、状态机、分钟行情处理、
-    订单去重/资金回滚、信号记录、盘前选股与定时任务。
-    除真实策略类加载外，所有 API 副作用均 mock，避免污染生产数据。
+Description: 策略工作流**真实链路**集成测试（默认跳过）。
+
+⚠️ 风险说明：本文件不做任何 mock —— `setUp` 里用的是带真实 admin token 的
+`ApiClient` 和真实的 `TradeManager`，`test_process_bar_buy_creates_order_once`
+会 `wf.start()`（连接生产 MQTT、加载真实用户策略）后投喂真实分钟行情，
+进而可能**在服务端产生真实订单**。因此默认跳过，只有显式开启才运行：
+
+    Q_TRADING_RUN_LIVE_TESTS=1 python -m pytest tests/test_strategy_workflow_hangle_bar.py
+
+（文件名 `hangle_bar` 是历史笔误，为免影响既有调用方暂不改名。）
 """
 
 from __future__ import annotations
 
 from configparser import ConfigParser
 import json
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -25,7 +33,13 @@ from mq.mqtt_client import MqttTopic
 from trade.manager import TradeManager, TradeExecutionResult
 from workflow.strategy_workflow import StrategyState, StrategyWorkflow
 
+LIVE_TESTS_ENV = "Q_TRADING_RUN_LIVE_TESTS"
 
+
+@unittest.skipUnless(
+    os.getenv(LIVE_TESTS_ENV),
+    f"真实链路集成测试，需 {LIVE_TESTS_ENV}=1 才运行（可能产生真实订单）",
+)
 class TestStrategyWorkflowHandlerBar(unittest.TestCase):
     def setUp(self) -> None:
         self._admin_client: ApiClient = ApiClient()

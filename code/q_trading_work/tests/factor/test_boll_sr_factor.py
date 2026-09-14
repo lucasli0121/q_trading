@@ -40,7 +40,9 @@ class TestBollSRFactor(unittest.TestCase):
         self.assertTrue(factor.calculate(self._make_df(n=10)).empty)
 
     def test_score_is_float_and_bounded(self) -> None:
-        factor = BollSRFactor(timeperiod=15, tolerance=0.02)
+        # 原用例传入已移除的 tolerance= 参数；现行构造签名为
+        # (timeperiod, nbdevup, nbdevdn)，同步更新。
+        factor = BollSRFactor(timeperiod=15, nbdevup=2, nbdevdn=2)
         df = self._make_df()
         score = factor.score(df)
         self.assertIsInstance(score, float)

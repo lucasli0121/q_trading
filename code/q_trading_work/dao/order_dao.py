@@ -40,6 +40,10 @@ class OrderDao:
     status: str
     create_time: str
     action: str
+    # 客户端幂等键（P1-17）：格式 {user_strategy_id}:{code}:{action}:{yyyyMMddHHmmss}:{uuid8}。
+    # 服务端若支持则作为唯一键去重；不支持时由 TradeManager 按此键做本地去重，
+    # 避免「创建订单超时 → 重试」把同一笔委托提交两次。
+    client_order_id: str
 
     def __init__(
         self,
@@ -56,6 +60,7 @@ class OrderDao:
         status: str = OrderStatus.ENTRUST.value,
         create_time: str = "",
         action: str = "",
+        client_order_id: str = "",
     ) -> None:
         """初始化订单对象。"""
         self.id = id
@@ -71,6 +76,7 @@ class OrderDao:
         self.status = status
         self.create_time = create_time
         self.action = action
+        self.client_order_id = client_order_id
 
     def from_db(self, data: dict[str, Any]) -> None:
         """从数据库字典填充对象字段。"""
@@ -87,6 +93,7 @@ class OrderDao:
         self.status = data.get("status", OrderStatus.ENTRUST.value)
         self.create_time = data.get("create_time", data.get("time", ""))
         self.action = data.get("action", "")
+        self.client_order_id = str(data.get("client_order_id", "") or "")
 
     def to_db(self) -> dict[str, Any]:
         """转换为 MongoDB 存储字典。"""
@@ -103,4 +110,5 @@ class OrderDao:
             "status": self.status,
             "create_time": self.create_time,
             "action": self.action,
+            "client_order_id": self.client_order_id,
         }

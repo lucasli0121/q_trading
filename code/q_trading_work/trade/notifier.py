@@ -37,8 +37,8 @@ class TradeNotifier:
         notifier.notify("买入信号: code=000001", recipient="策略名", user_strategy_id="us1")
     """
 
-    # 用户偏好缓存（user_id → preferences dict），避免重复 API 调用
-    _preferences_cache: dict[str, dict[str, Any]] = {}
+    # 用户偏好缓存 TTL（秒）。超过 TTL 后重新拉取，使前端修改推送配置能生效。
+    PREFERENCES_TTL_SECONDS: float = 300.0
 
     def __init__(
         self,
@@ -57,6 +57,12 @@ class TradeNotifier:
         self._config_path: str = _cfg_path
         self._api_client: Any = api_client
         self._cache_lock = threading.Lock()
+        # P1-29：偏好缓存改为**实例属性** + TTL。
+        # 原来 `_preferences_cache` 挂在类上，所有 TradeNotifier 实例共享同一份、
+        # 且一旦写入永不过期 —— 用户在前端关掉/改掉推送地址后，
+        # 进程重启前都不会生效；不同实例之间还会互相污染。
+        # 结构：user_id -> (写入时间 monotonic, 偏好字典)
+        self._preferences_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
         # 从配置文件读取 webhook 地址
         self._enterprise_wechat_webhook_url: str | None = self._load_webhook_url(
@@ -217,29 +223,51 @@ class TradeNotifier:
         return self._enterprise_wechat_webhook_url
 
     def _load_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """加载指定用户的偏好设置（带缓存）。
+        """加载指定用户的偏好设置（实例级缓存 + TTL）。
+
+        P1-29 / P2-24：
+        - 缓存条目带写入时间，超过 `PREFERENCES_TTL_SECONDS`（默认 300s）重新拉取，
+          使前端修改推送配置后能自动生效，无需重启进程。
+        - **HTTP 调用在锁外执行**，锁内只做缓存读取与写回；原实现把
+          `PreferenceApi.get_by_user_id` 放在 `with self._cache_lock` 内，
+          一个慢请求会阻塞所有用户的通知推送。
+        - 空结果同样缓存（负缓存），避免偏好为空的用户每次推送都打一次接口。
 
         :param user_id: 用户 ID
-        :return: 偏好字典
+        :return: 偏好字典（未获取到返回空字典）
         """
-        with self._cache_lock:
-            if user_id in self._preferences_cache:
-                return self._preferences_cache[user_id]
-            if self._api_client is None:
-                return {}
-            try:
-                from api.preference import PreferenceApi
+        import time
 
-                prefs: dict[str, Any] = PreferenceApi(
-                    self._api_client
-                ).get_by_user_id(user_id)
-                self.logger.debug(f"获取用户偏好结果:{prefs}")
-                if prefs:
-                    self._preferences_cache[user_id] = prefs
-                    return prefs
-            except Exception as e:
-                self.logger.error(f"获取用户微信推送配置出错:{e}")
+        now: float = time.monotonic()
+        # 1) 锁内只读缓存
+        with self._cache_lock:
+            entry: tuple[float, dict[str, Any]] | None = self._preferences_cache.get(
+                user_id
+            )
+        if entry is not None and (now - entry[0]) < self.PREFERENCES_TTL_SECONDS:
+            return dict(entry[1])
+
+        if self._api_client is None:
             return {}
+
+        # 2) 锁外做网络 IO
+        prefs: dict[str, Any] = {}
+        try:
+            from api.preference import PreferenceApi
+
+            loaded: dict[str, Any] = PreferenceApi(
+                self._api_client
+            ).get_by_user_id(user_id)
+            self.logger.debug("获取用户偏好结果:%s", loaded)
+            if loaded:
+                prefs = loaded
+        except Exception as e:
+            self.logger.error("获取用户微信推送配置出错:%s", e)
+
+        # 3) 锁内写回
+        with self._cache_lock:
+            self._preferences_cache[user_id] = (now, prefs)
+        return dict(prefs)
 
     # ---- 公开接口 ----
 

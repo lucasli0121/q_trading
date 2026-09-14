@@ -160,6 +160,10 @@ def _collect_params(collector: dict[str, dict[str, Any]]) -> dict[str, dict[str,
 
 # 对话框装饰高度（头部 + 标签栏 + 底部按钮 + 对话框边距），用于计算内容区视口上限
 _DIALOG_CHROME_PX: int = 260
+# 对话框卡片最小高度，避免内容较少时对话框过小显得局促
+# （同时受视口高度约束，小屏下不会溢出）
+_DIALOG_MIN_HEIGHT_PX: int = 600
+_DIALOG_VIEWPORT_MARGIN_PX: int = 80
 # 参数面板高度估算常量（需与 _render_params_container 的行高/间距保持一致）
 _PARAM_ROW_HEIGHT_PX: int = 60         # 单个参数行高度（dense 输入框 + 上下 padding + 冗余）
 _PARAM_GROUP_HEADER_PX: int = 44       # 分组标题高度（文字行高 + margin-top + 冗余）
@@ -412,7 +416,12 @@ def show_strategies_page() -> None:
             rows.append({
                 "us_id": str(us.get("_id", "") or us.get("id", "")),
                 "sid": sid,
-                "name": str(tpl.get("name", "") or sid or "未命名策略"),
+                # 用户自定义名称原始值（user_strategy.name，可能为空），
+                # 供编辑对话框回填；展示用的 name 走下面的回退链
+                "custom_name": str(us.get("name", "") or ""),
+                # 优先显示用户自定义名称（user_strategy.name），
+                # 历史数据未设置自定义名称时回退策略模板名
+                "name": str(us.get("name") or tpl.get("name", "") or sid or "未命名策略"),
                 "description": str(tpl.get("description", "") or ""),
                 "stype": str(tpl.get("strategy_type", "") or "-"),
                 "total_profit": total_profit_str,
@@ -937,18 +946,10 @@ def show_strategies_page() -> None:
             all_strategies = AppContext().strategy_api.list()
         except Exception:
             logger.warning("查询策略列表失败", exc_info=True)
-        # 已关联的策略（同一用户不能重复关联同一全局策略）→ 排除出创建列表
-        associated_ids: set[str] = set()
-        user_strategies: list[dict[str, Any]] = UserStrategyManager().list_user_strategies()
-        for us in user_strategies:
-            sid: str = str(us.get("strategy_id", ""))
-            if sid:
-                associated_ids.add(sid)
         strategy_name_map: dict[str, dict[str, Any]] = {
             str(s.get("name", "")): s
             for s in all_strategies
             if s.get("name", "")
-            and str(s.get("_id", "") or s.get("id", "")) not in associated_ids
         }
         all_pools_list: list[dict[str, Any]] = []
         try:
@@ -963,7 +964,9 @@ def show_strategies_page() -> None:
         with ui.dialog() as dialog, ui.card().classes("w-[600px] max-w-[95vw] gap-0").style(
                 f"background-color: {card_bg}; border: 1px solid {border_color}; "
                 f"border-radius: 12px; padding: 0; "
-                f"display: flex; flex-direction: column;"
+                f"display: flex; flex-direction: column; "
+                f"min-height: min(calc(100vh - {_DIALOG_VIEWPORT_MARGIN_PX}px), "
+                f"{_DIALOG_MIN_HEIGHT_PX}px);"
             ):
                 # ---- 头部 ----
                 with ui.row().classes("w-full items-center justify-between").style(
@@ -1023,6 +1026,18 @@ def show_strategies_page() -> None:
                                         .props("outlined dense").style(
                                             "flex: 1; min-width: 100px; border-bottom: 1px solid {border_color}"
                                         )
+                                    )
+
+                                # 自定义名称（user_strategy.name，必填，列表按此名称展示）
+                                with ui.row().classes("w-full gap-1 items-center").style("padding: 8px 24px 0;"):
+                                    ui.label("* 自定义名称").classes("w-[20%] text-xs").style(
+                                        field_label_style,
+                                    )
+                                    custom_name_input: ui.input = (
+                                        ui.input(placeholder="请输入策略自定义名称")
+                                        .classes("flex-1")
+                                        .props("outlined dense")
+                                        .style(input_style)
                                     )
 
                                 # 选中后显示策略类型和描述（只读）
@@ -1137,6 +1152,10 @@ def show_strategies_page() -> None:
                         if not name_value:
                             ui.notify("请选择策略名称", type="warning")
                             return
+                        custom_name: str = str(custom_name_input.value or "").strip()
+                        if not custom_name:
+                            ui.notify("请输入策略自定义名称", type="warning")
+                            return
                         tpl = strategy_name_map.get(name_value, {})
                         strategy_id: str = str(tpl.get("_id", "") or tpl.get("id", ""))
                         if not strategy_id:
@@ -1162,6 +1181,7 @@ def show_strategies_page() -> None:
                                 strategy_params=_collect_params(
                                     param_state.get("collector", {})
                                 ),
+                                name=custom_name,
                             )
                             user_strategy_id = result.get("_id", result.get("id", ""))
                             UserStrategyManager().update_user_strategy(user_strategy_id, result)
@@ -1237,7 +1257,9 @@ def show_strategies_page() -> None:
             card = ui.card().classes("w-[600px] max-w-[95vw] gap-0").style(
                 f"background-color: {card_bg}; border: 1px solid {border_color}; "
                 f"border-radius: 12px; padding: 0; "
-                f"display: flex; flex-direction: column;"
+                f"display: flex; flex-direction: column; "
+                f"min-height: min(calc(100vh - {_DIALOG_VIEWPORT_MARGIN_PX}px), "
+                f"{_DIALOG_MIN_HEIGHT_PX}px);"
             )
             with card:
                 # ---- 头部 ----
@@ -1259,9 +1281,23 @@ def show_strategies_page() -> None:
                     # ---- 策略 tab：股票池 + 资金配置 ----
                     with ui.tab_panel("策略").classes("p-0"):  # noqa: SIM117
                         with ui.scroll_area().classes("w-full").style(
-                            f"max-height: min(calc(100vh - {_DIALOG_CHROME_PX}px), 300px);"
+                            f"max-height: min(calc(100vh - {_DIALOG_CHROME_PX}px), 360px);"
                         ):
                             with ui.column().classes("w-full gap-3").style("padding: 20px 24px;"):
+                                # 自定义名称（user_strategy.name，列表显示用）
+                                with ui.row().classes("w-full gap-1 items-center"):
+                                    ui.label("* 自定义名称").classes("w-[20%] text-xs").style(
+                                        field_label_style,
+                                    )
+                                    custom_name_input: ui.input = ui.input(
+                                        # 历史数据可能未设置自定义名称，回退列表当前显示的名称
+                                        value=str(
+                                            row.get("custom_name", "")
+                                            or row.get("name", "")
+                                            or ""
+                                        ),
+                                        placeholder="请输入策略自定义名称",
+                                    ).props("outlined dense").style(input_style)
                                 # 股票池
                                 with ui.row().classes("w-full gap-1 items-center"):
                                     ui.label("* 股票池").classes("w-[20%] text-xs").style(
@@ -1322,6 +1358,10 @@ def show_strategies_page() -> None:
 
                     def _save() -> None:
                         """保存修改的用户策略关联并刷新列表。"""
+                        custom_name: str = str(custom_name_input.value or "").strip()
+                        if not custom_name:
+                            ui.notify("请输入策略自定义名称", type="warning")
+                            return
                         pool_name: str = str(pool_select.value or "").strip()
                         if not pool_name:
                             ui.notify("请选择股票池", type="warning")
@@ -1334,11 +1374,14 @@ def show_strategies_page() -> None:
                             params = _collect_params(param_state.get("collector", {}))
                             AppContext().user_strategy_api.update(
                                 user_strategy_id=row["us_id"],
+                                name=custom_name,
                                 pool_id=pool_id,
                                 initial_amount=float(capital_input.value or 0.0),
                                 max_stock_count=int(max_stock_count_input.value or 0),
                                 strategy_params=params,
                             )
+                            row["custom_name"] = custom_name
+                            row["name"] = custom_name
                             row["pool_id"] = pool_id
                             row["initial_amount"] = float(capital_input.value or 0.0)
                             row["max_stock_count"] = int(max_stock_count_input.value or 0)

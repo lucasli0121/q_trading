@@ -60,6 +60,24 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._pool_api = MagicMock()
         self.wf._stock_info_api = MagicMock()
         self.wf._trade_manager = MagicMock()
+        # 通知器隔离：避免测试真的走 HTTP 拉取用户偏好
+        self.wf._notifier = MagicMock()
+
+    def _patch_load_positions(self, positions: dict) -> MagicMock:
+        """把 `_load_positions` 替换为「返回持仓并写回 state.positions」的桩。
+
+        真实实现会把结果写回 ``state.positions``（见 `_load_positions`），
+        而卖出占位 `_reserve_sell_order` 正是从 ``state.positions`` 读取持仓
+        （P2-24 的 reserve/commit 拆分后，`_process_bar` 不再把返回值传给它）。
+        因此桩必须模拟这一副作用，否则卖出路径会被误判为「无持仓」。
+        """
+        def _side_effect(state: StrategyState, force_refresh: bool = False) -> dict:
+            state.positions = dict(positions)
+            return dict(positions)
+
+        mock = MagicMock(side_effect=_side_effect)
+        self.wf._load_positions = mock
+        return mock
 
     def _fake_instance(self, signal: str = "BUY") -> MagicMock:
         instance = MagicMock()
@@ -181,6 +199,138 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.assertEqual(loaded[0].status, "running")
         self.assertEqual(loaded[0].available_cash, 100000.0)
         self.assertEqual(self.wf.get_all_strategies()["us1"].user_strategy_id, "us1")
+
+    # ---- 多实例分片：按 service_name 只加载本实例负责的 user_strategy ----
+
+    def _strategy_fixture(self, user_strategy_ids: list[str]) -> None:
+        """装配 1 个策略模板 + 若干 user_strategy，供分片过滤用例复用。"""
+        self.wf._strategy_api.list.return_value = [
+            {
+                "id": "s1",
+                "name": "强势反弹策略",
+                "class_path": "strategy.strong_rebound_strategy",
+                "class_name": "StrongReboundStrategy",
+            }
+        ]
+        self.wf._user_strategy_api.list_all.return_value = [
+            {
+                "id": uid,
+                "strategy_id": "s1",
+                "status": "running",
+                "pool_id": "",
+                "initial_amount": 100000.0,
+                "max_stock_count": 4,
+            }
+            for uid in user_strategy_ids
+        ]
+        self.wf._user_strategy_api.get_latest_execution.return_value = {}
+        self.wf._workflow_service_api = MagicMock()
+        # 用例不需要真的等待重试间隔
+        self.wf.SERVICE_ASSIGN_RETRY_INTERVAL_SECONDS = 0.0
+
+    def test_service_sharding_loads_only_assigned_user_strategies(self) -> None:
+        """后台把 us1 分配给本实例：us2 必须被排除，否则多实例会重复下单。"""
+        self._strategy_fixture(["us1", "us2"])
+        self.wf._service_name = "workflow_service_1"
+        self.wf._workflow_service_api.list_by_service.return_value = [
+            {"service_name": "workflow_service_1", "user_strategy_ids": ["us1"]}
+        ]
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual([s.user_strategy_id for s in loaded], ["us1"])
+        self.wf._workflow_service_api.list_by_service.assert_called_once_with(
+            "workflow_service_1"
+        )
+        # 命中文档接口时不再回退
+        self.wf._workflow_service_api.list.assert_not_called()
+
+    def test_service_sharding_falls_back_to_query_param_api(self) -> None:
+        """主接口无数据（老版本后台）时回退到 ?service_name= 查询。"""
+        self._strategy_fixture(["us1", "us2"])
+        self.wf._service_name = "workflow_service_1"
+        self.wf._workflow_service_api.list_by_service.return_value = []
+        self.wf._workflow_service_api.list.return_value = [
+            {"service_name": "workflow_service_1", "user_strategy_ids": ["us2"]}
+        ]
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual([s.user_strategy_id for s in loaded], ["us2"])
+        self.wf._workflow_service_api.list.assert_called_once_with(
+            service_name="workflow_service_1"
+        )
+
+    def test_service_sharding_falls_back_when_primary_api_errors(self) -> None:
+        """主接口报错（如后台无该路径返回 404）时同样回退到查询参数形式。"""
+        self._strategy_fixture(["us1"])
+        self.wf._service_name = "workflow_service_1"
+        self.wf._workflow_service_api.list_by_service.side_effect = Exception("404")
+        self.wf._workflow_service_api.list.return_value = [
+            {"service_name": "workflow_service_1", "user_strategy_ids": ["us1"]}
+        ]
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual([s.user_strategy_id for s in loaded], ["us1"])
+        self.wf._workflow_service_api.list.assert_called_once_with(
+            service_name="workflow_service_1"
+        )
+
+    def test_service_sharding_fail_closed_when_assignment_unavailable(self) -> None:
+        """分配关系查不到时宁可空转，也不能退化成「加载全部策略」。"""
+        self._strategy_fixture(["us1", "us2"])
+        self.wf._service_name = "workflow_service_1"
+        self.wf._workflow_service_api.list_by_service.side_effect = Exception(
+            "api down"
+        )
+        self.wf._workflow_service_api.list.side_effect = Exception("api down")
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual(loaded, [])
+        self.assertEqual(self.wf._user_strategy_api.list_all.call_count, 0)
+
+    def test_service_sharding_retries_then_succeeds(self) -> None:
+        """启动瞬间后台未就绪：重试后拿到分配关系即正常加载。"""
+        self._strategy_fixture(["us1"])
+        self.wf._service_name = "workflow_service_1"
+        self.wf._workflow_service_api.list_by_service.side_effect = [
+            Exception("not ready"),
+            [{"service_name": "workflow_service_1", "user_strategy_ids": ["us1"]}],
+        ]
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual([s.user_strategy_id for s in loaded], ["us1"])
+        self.assertEqual(
+            self.wf._workflow_service_api.list_by_service.call_count, 2
+        )
+
+    def test_no_service_name_loads_all_user_strategies(self) -> None:
+        """未配置 service_name（单实例兼容模式）：不过滤，加载全部。"""
+        self._strategy_fixture(["us1", "us2"])
+        self.wf._service_name = ""
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual(sorted(s.user_strategy_id for s in loaded), ["us1", "us2"])
+        self.wf._workflow_service_api.list_by_service.assert_not_called()
+
+    def test_collect_user_strategy_ids_handles_field_shapes(self) -> None:
+        records = [
+            {"user_strategy_ids": ["us1", "us2"]},
+            {"user_strategy_id": "us3"},
+            {"us_id": "us4"},
+            {"user_strategy_ids": []},
+            "junk",  # 非 dict 记录应被忽略
+            {},
+        ]
+        self.assertEqual(
+            self.wf._collect_user_strategy_ids(records),  # type: ignore[arg-type]
+            {"us1", "us2", "us3", "us4"},
+        )
+        self.assertEqual(self.wf._collect_user_strategy_ids([]), set())
 
     def test_load_execution_data_populates_positions(self) -> None:
         state = make_state(cash=0.0, status="stopped")
@@ -344,90 +494,95 @@ class TestStrategyWorkflow(unittest.TestCase):
 
     # ---- 行情处理与订单去重 ----
 
+    def _patch_submit(self, ok: bool = True) -> MagicMock:
+        """把 `_submit_trade`（最深层的提交边界）替换为桩。
+
+        P2-24 之后 `_process_bar` 走「锁内 `_reserve_*_order` 占位 +
+        锁外 `_commit_reserved_order` 提交」，因此断言点下沉到 `_submit_trade`
+        才能同时覆盖占位与提交两段逻辑。
+        """
+        self.wf._save_trade_signal = MagicMock()
+        self.wf._save_runlog = MagicMock()
+        self.wf._submit_trade = MagicMock(return_value=ok)
+        return self.wf._submit_trade
+
     def test_process_bar_buy_creates_order_once(self) -> None:
         instance = self._fake_instance("BUY")
         state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
-        self.wf._load_positions = MagicMock(return_value={})
-        self.wf._save_trade_signal = MagicMock()
-        self.wf._create_buy_order = MagicMock()
+        self._patch_load_positions({})
+        submit = self._patch_submit()
 
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_buy_order.assert_called_once()
+        submit.assert_called_once()
 
         # 已有在途订单时不再下单
         state.pending_codes.add("000001")
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_buy_order.assert_called_once()
+        submit.assert_called_once()
 
     def test_process_bar_skips_buy_when_holding(self) -> None:
         instance = self._fake_instance("BUY")
         state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
-        self.wf._load_positions = MagicMock(
-            return_value={"000001": {"quantity": 100}}
-        )
-        self.wf._save_trade_signal = MagicMock()
-        self.wf._create_buy_order = MagicMock()
+        self._patch_load_positions({"000001": {"quantity": 100}})
+        submit = self._patch_submit()
 
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_buy_order.assert_not_called()
+        submit.assert_not_called()
 
     def test_process_bar_sell_respects_pending(self) -> None:
         instance = self._fake_instance("SELL")
         state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
-        self.wf._load_positions = MagicMock(
-            return_value={"000001": {"cost_price": 10.0, "quantity": 100}}
+        self._patch_load_positions(
+            {"000001": {"cost_price": 10.0, "quantity": 100}}
         )
-        self.wf._save_trade_signal = MagicMock()
-        self.wf._create_sell_order = MagicMock()
+        submit = self._patch_submit()
 
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_sell_order.assert_called_once()
+        submit.assert_called_once()
+        order = submit.call_args.args[0]
+        self.assertEqual(order.action, "卖出")
+        self.assertEqual(order.entrust_quantity, 100)
 
         state.pending_codes.add("000001")
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_sell_order.assert_called_once()
+        submit.assert_called_once()
 
     def test_process_bar_not_running_skipped(self) -> None:
         instance = self._fake_instance("BUY")
         state = make_state(status="stopped", instance=instance)
         self.wf._user_strategies["sid"] = [state]
-        self.wf._save_trade_signal = MagicMock()
-        self.wf._create_buy_order = MagicMock()
+        submit = self._patch_submit()
 
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_buy_order.assert_not_called()
+        submit.assert_not_called()
 
     def test_process_tick_buy(self) -> None:
         instance = self._fake_instance("BUY")
         state = make_state(instance=instance)
         self.wf._user_strategies["sid"] = [state]
-        self.wf._load_positions = MagicMock(return_value={})
-        self.wf._save_trade_signal = MagicMock()
-        self.wf._create_buy_order = MagicMock()
+        self._patch_load_positions({})
+        submit = self._patch_submit()
 
         self.wf._process_tick(state, "000001", {})
-        self.wf._create_buy_order.assert_called_once()
+        submit.assert_called_once()
 
         state.pending_codes.add("000001")
         self.wf._process_tick(state, "000001", {})
-        self.wf._create_buy_order.assert_called_once()
+        submit.assert_called_once()
 
     def test_process_bar_max_stock_count(self) -> None:
         instance = self._fake_instance("BUY")
         state = make_state(instance=instance)
         state.max_stock_count = 1
         self.wf._user_strategies["sid"] = [state]
-        self.wf._load_positions = MagicMock(
-            return_value={"600519": {"quantity": 100}}
-        )
-        self.wf._save_trade_signal = MagicMock()
-        self.wf._create_buy_order = MagicMock()
+        self._patch_load_positions({"600519": {"quantity": 100}})
+        submit = self._patch_submit()
 
         self.wf._process_bar(state, "000001", {})
-        self.wf._create_buy_order.assert_not_called()
+        submit.assert_not_called()
 
     # ---- 订单创建与回滚 ----
 
@@ -563,7 +718,9 @@ class TestStrategyWorkflow(unittest.TestCase):
             mock_mqtt.publish.return_value = True
             mock_ctx.return_value.mqtt_client = mock_mqtt
             result = self.wf._save_trade_signal(
-                "sid", "000001", {"signal": "BUY", "current_price": 10.5}
+                "sid", "us1", "000001",
+                {"signal": "BUY", "current_price": 10.5},
+                strategy_name="强势反弹策略",
             )
             self.assertTrue(result)
             self.assertTrue(mock_mqtt.publish.called)
@@ -571,8 +728,12 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.assertEqual(call_args.args[0], MqttTopic.STOCK_TRADING_SIGNAL)
             payload = json.loads(call_args.args[1])
             self.assertEqual(payload["strategy_id"], "sid")
+            self.assertEqual(payload["user_strategy_id"], "us1")
+            # P1-21：策略名由调用方传入，不再逐信号回查 /api/strategy/get
+            self.assertEqual(payload["strategy_name"], "强势反弹策略")
             self.assertEqual(payload["stock_code"], "000001")
             self.assertEqual(payload["action"], "买入")
+            self.wf._strategy_api.get_by_id.assert_not_called()
 
     def test_save_trade_signal_buy_suppressed_by_filter(self) -> None:
         """连续相同买入方向且时间间隔 < 10分钟 → 信号被抑制。"""
@@ -587,7 +748,9 @@ class TestStrategyWorkflow(unittest.TestCase):
             mock_mqtt.publish.return_value = True
             mock_ctx.return_value.mqtt_client = mock_mqtt
             result = self.wf._save_trade_signal(
-                "sid", "000001", {"signal": "BUY", "current_price": 10.5}
+                "sid", "us1", "000001",
+                {"signal": "BUY", "current_price": 10.5},
+                strategy_name="强势反弹策略",
             )
             # 间隔 3 分钟 < 10 分钟 → 抑制
             self.assertFalse(result)
@@ -606,7 +769,9 @@ class TestStrategyWorkflow(unittest.TestCase):
             mock_mqtt.publish.return_value = True
             mock_ctx.return_value.mqtt_client = mock_mqtt
             result = self.wf._save_trade_signal(
-                "sid", "000001", {"signal": "SELL", "current_price": 12.0}
+                "sid", "us1", "000001",
+                {"signal": "SELL", "current_price": 12.0},
+                strategy_name="强势反弹策略",
             )
             self.assertTrue(result)
             self.assertTrue(mock_mqtt.publish.called)
@@ -615,7 +780,10 @@ class TestStrategyWorkflow(unittest.TestCase):
             payload = json.loads(call_args.args[1])
             self.assertEqual(payload["action"], "卖出")
             self.assertAlmostEqual(payload["profit_rate"], 20.0)
-            self.assertAlmostEqual(payload["profit_amount"], 2.0)
+            # P1-15：信号记录不再写 profit_amount（每股差价 ≠ 收益金额）
+            self.assertNotIn("profit_amount", payload)
+            # 卖出盈亏只用于展示，不再回传服务端信号表
+            self.assertNotIn("profit_amount", self.wf._trade_signal_api.add.call_args.kwargs)
 
     # ---- 盘前任务与生命周期 ----
 
@@ -631,12 +799,16 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._stock_info_api.get_by_industry.return_value = [{"code": "600519"}]
         self.wf._strategy_select_stock_api = MagicMock()
         self.wf._save_runlog = MagicMock()
+        # 让测试与运行日期无关：恒视为交易日（否则周末执行会提前 return）
+        self.wf.xshg = MagicMock()
+        self.wf.xshg.is_session.return_value = True
 
         self.wf.daily_before_trading()
 
+        # P1-20/P2-25：改为按用户策略逐个选股，选股结果按 user_strategy_id 归属
         instance.select.assert_called_once()
         self.wf._strategy_select_stock_api.add.assert_called_once_with(
-            "sid", ["000001"]
+            "us1", ["000001"]
         )
         self.wf._save_runlog.assert_called()
 
@@ -646,10 +818,26 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._strategy_instances = {"sid": instance}
         self.wf._user_strategies = {"sid": [state]}
         self.wf._stock_info_api.get_hot_industries.return_value = []
+        self.wf.xshg = MagicMock()
+        self.wf.xshg.is_session.return_value = True
 
         self.wf.daily_before_trading()
 
         instance.select.assert_not_called()
+
+    def test_daily_before_trading_skips_holiday(self) -> None:
+        """非交易日（周末/节假日）直接跳过，且不查询热门行业。"""
+        instance = MagicMock()
+        state = make_state(instance=instance)
+        self.wf._strategy_instances = {"sid": instance}
+        self.wf._user_strategies = {"sid": [state]}
+        self.wf.xshg = MagicMock()
+        self.wf.xshg.is_session.return_value = False
+
+        self.wf.daily_before_trading()
+
+        instance.select.assert_not_called()
+        self.wf._stock_info_api.get_hot_industries.assert_not_called()
 
     def test_on_start_and_on_stop(self) -> None:
         self.wf.load_strategies_from_db = MagicMock()
@@ -851,6 +1039,8 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._create_sell_order = MagicMock()
         self.wf._process_bar(state, "000001", {})  # 不在股票池
         self.wf._create_sell_order.assert_not_called()
+        # X2：不在用户股票池内的信号既不写库也不推送
+        self.wf._save_trade_signal.assert_not_called()
 
         state.stock_pool = []
         self.wf._process_bar(state, "000001", {})  # 无持仓跳过卖出
@@ -865,9 +1055,67 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._create_buy_order = MagicMock()
         self.wf._process_tick(state, "000001", {})  # 不在股票池
         self.wf._create_buy_order.assert_not_called()
+        # X2：不在用户股票池内的信号不写库、不推送
+        self.wf._save_trade_signal.assert_not_called()
 
         instance.handle_tick_bar.return_value = (False, {"reason": "no"})
         self.wf._process_tick(state, "000001", {})  # 未匹配
+
+    def test_process_bar_out_of_pool_filters_before_signal(self) -> None:
+        """X2：股票池过滤前移到 `_save_trade_signal` 之前（关键顺序约束）。"""
+        instance = self._fake_instance("BUY")
+        state = make_state(pool=["600519"], instance=instance)
+        self.wf._user_strategies["sid"] = [state]
+        self.wf._save_trade_signal = MagicMock(return_value=True)
+        self.wf._load_positions = MagicMock(return_value={})
+        self.wf._reserve_buy_order = MagicMock()
+        self.wf._commit_reserved_order = MagicMock()
+
+        self.wf._process_bar(state, "000001", {})
+
+        self.wf._save_trade_signal.assert_not_called()
+        self.wf._load_positions.assert_not_called()
+        self.wf._reserve_buy_order.assert_not_called()
+
+    def test_process_bar_blacklisted_filters_before_signal(self) -> None:
+        """X2：黑名单命中同样在信号写入前被拦下。"""
+        instance = self._fake_instance("BUY")
+        state = make_state(instance=instance)
+        state.blacklist_codes = {"000001"}
+        self.wf._user_strategies["sid"] = [state]
+        self.wf._save_trade_signal = MagicMock(return_value=True)
+
+        self.wf._process_bar(state, "000001", {})
+
+        self.wf._save_trade_signal.assert_not_called()
+
+    def test_is_signal_in_user_scope_semantics(self) -> None:
+        """`_is_signal_in_user_scope`：空池放行、非空池过滤、黑名单过滤。"""
+        state = make_state(pool=[], instance=self._fake_instance("BUY"))
+        self.assertTrue(self.wf._is_signal_in_user_scope(state, "000001"))
+
+        state.stock_pool = ["600519"]
+        self.assertFalse(self.wf._is_signal_in_user_scope(state, "000001"))
+        self.assertTrue(self.wf._is_signal_in_user_scope(state, "600519"))
+
+        state.stock_pool = []
+        state.blacklist_codes = {"000001"}
+        self.assertFalse(self.wf._is_signal_in_user_scope(state, "000001"))
+
+    def test_reload_stock_pool_excludes_blacklist(self) -> None:
+        """重载股票池时同样剔除黑名单（与 update_strategy_stock_pool 一致）。"""
+        state = make_state(instance=self._fake_instance("BUY"))
+        state.pool_id = "p1"
+        state.blacklist_codes = {"600519"}
+        self.wf._pool_api = MagicMock()
+        self.wf._pool_api.get_by_id.return_value = {"name": "池子"}
+        self.wf._pool_api.get_stocks.return_value = [
+            {"code": "600519"}, {"code": "000001"},
+        ]
+
+        self.wf._reload_stock_pool(state)
+
+        self.assertEqual(state.stock_pool, ["000001"])
 
     def test_save_trade_signal_latest_missing_and_errors(self) -> None:
         self.wf._trade_signal_api = MagicMock()
@@ -879,7 +1127,7 @@ class TestStrategyWorkflow(unittest.TestCase):
             # 卖出但查不到最近买入 → 盈亏为 0
             self.wf._trade_signal_api.latest.return_value = None
             self.wf._save_trade_signal(
-                "sid", "000001", {"signal": "SELL", "current_price": 12.0}
+                "sid", "us1", "000001", {"signal": "SELL", "current_price": 12.0}
             )
             payload = json.loads(mock_mqtt.publish.call_args.args[1])
             self.assertEqual(payload["profit_rate"], 0.0)
@@ -890,7 +1138,7 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.wf._trade_signal_api.latest.side_effect = Exception("api down")
             self.wf._trade_signal_api.add.reset_mock()
             self.wf._save_trade_signal(
-                "sid", "000001", {"signal": "SELL", "current_price": 12.0}
+                "sid", "us1", "000001", {"signal": "SELL", "current_price": 12.0}
             )
             self.wf._trade_signal_api.add.assert_called()
 
@@ -899,7 +1147,7 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.wf._trade_signal_api.latest.return_value = None
             self.wf._trade_signal_api.add.side_effect = Exception("api down")
             result = self.wf._save_trade_signal(
-                "sid", "000001", {"signal": "BUY", "current_price": 12.0}
+                "sid", "us1", "000001", {"signal": "BUY", "current_price": 12.0}
             )
             self.assertFalse(result)
 
@@ -914,16 +1162,13 @@ class TestStrategyWorkflow(unittest.TestCase):
 
     def test_create_sell_order_branches(self) -> None:
         state = make_state(cash=5000.0)
-        self.wf._load_positions = MagicMock(return_value={})
         self.wf._submit_trade = MagicMock(return_value=True)
         self.wf._save_runlog = MagicMock()
-        # 无持仓
+        # 无持仓：state.positions 为空 → 占位阶段直接返回
         self.wf._create_sell_order(state, "000001", 10.0, {"current_price": 12.0})
         self.wf._submit_trade.assert_not_called()
         # 有持仓但价格无效
-        self.wf._load_positions = MagicMock(
-            return_value={"000001": {"cost_price": 10.0, "quantity": 100}}
-        )
+        state.positions = {"000001": {"cost_price": 10.0, "quantity": 100}}
         self.wf._create_sell_order(state, "000001", 10.0, {"current_price": 0})
         self.wf._submit_trade.assert_not_called()
         # 在途去重
@@ -934,7 +1179,50 @@ class TestStrategyWorkflow(unittest.TestCase):
         state.pending_codes.clear()
         self.wf._create_sell_order(state, "000001", 10.0, {"current_price": 12.0})
         self.wf._submit_trade.assert_called_once()
+        order = self.wf._submit_trade.call_args.args[0]
+        self.assertEqual(order.entrust_quantity, 100)
+        self.assertEqual(order.action, "卖出")
         self.wf._save_runlog.assert_called_once()
+
+    def test_create_sell_order_respects_t1_sellable_quantity(self) -> None:
+        """X3：卖出数量按 T+1 可卖部分收敛；全部当日买入则不生成订单。"""
+        bar_time = "2026-07-15 10:00:00"
+        state = make_state(cash=5000.0)
+        self.wf._submit_trade = MagicMock(return_value=True)
+        self.wf._save_runlog = MagicMock()
+
+        # 100 股全部为当日买入（t1_day == 行情日）→ 当日不可卖，不生成订单
+        state.positions = {
+            "000001": {
+                "cost_price": 10.0, "quantity": 100,
+                "t1_qty": 100, "t1_day": "2026-07-15",
+            }
+        }
+        self.wf._create_sell_order(
+            state, "000001", 10.0, {"current_price": 12.0}, stock_time=bar_time
+        )
+        self.wf._submit_trade.assert_not_called()
+
+        # 部分当日买入 → 数量收敛为总量 - 当日买入量
+        state.positions["000001"]["t1_qty"] = 40
+        state.pending_codes.clear()
+        self.wf._create_sell_order(
+            state, "000001", 10.0, {"current_price": 12.0}, stock_time=bar_time
+        )
+        order = self.wf._submit_trade.call_args.args[0]
+        self.assertEqual(order.entrust_quantity, 60)
+
+        # 冻结日早于行情日 → 已解禁，无需扣减
+        state.positions["000001"]["t1_qty"] = 40
+        state.positions["000001"]["t1_day"] = "2026-07-14"
+        state.pending_codes.clear()
+        self.wf._submit_trade.reset_mock()
+        self.wf._create_sell_order(
+            state, "000001", 10.0, {"current_price": 12.0}, stock_time=bar_time
+        )
+        self.assertEqual(
+            self.wf._submit_trade.call_args.args[0].entrust_quantity, 100
+        )
 
     def test_submit_trade_with_on_complete_callback(self) -> None:
         state = make_state()
@@ -979,12 +1267,13 @@ class TestStrategyWorkflow(unittest.TestCase):
             class_name="y",
         )
         self.assertEqual(self.wf._load_positions(empty, force_refresh=True), {})
-        # API 异常
+        # API 异常 → 返回 None（P1-18：持仓未知，调用方必须 fail-closed，
+        # 不能当成「无持仓」，否则会把已有持仓当新标的重复买入）
         state.positions = {}
         self.wf._user_strategy_api.get_latest_execution.side_effect = Exception(
             "api down"
         )
-        self.assertEqual(self.wf._load_positions(state, force_refresh=True), {})
+        self.assertIsNone(self.wf._load_positions(state, force_refresh=True))
 
     def test_save_runlog_no_id_and_error(self) -> None:
         empty = StrategyState(
@@ -1007,6 +1296,12 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._user_strategies = {"sid": [state]}
         self.wf._admin_client.post.return_value = {"code": 0}
         self.wf._save_runlog = MagicMock()
+        # 副作用隔离：选股结果落库与本地缓存均 mock，避免污染生产数据；
+        # 同时固定为交易日，否则周末执行会提前 return、分支根本不会被覆盖
+        self.wf._strategy_select_stock_api = MagicMock()
+        self.wf._cache = MagicMock()
+        self.wf.xshg = MagicMock()
+        self.wf.xshg.is_session.return_value = True
 
         # 热门行业查询失败
         self.wf._stock_info_api.get_hot_industries.side_effect = Exception("api down")

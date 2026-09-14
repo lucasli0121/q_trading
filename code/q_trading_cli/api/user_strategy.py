@@ -51,6 +51,7 @@ class UserStrategyApi:
         initial_amount: float = 0.0,
         max_stock_count: int = 0,
         strategy_params: dict[str, Any] | None = None,
+        name: str = "",
     ) -> dict[str, Any]:
         """创建用户策略关联。
 
@@ -60,6 +61,7 @@ class UserStrategyApi:
         :param initial_amount: 初始资金（元）
         :param max_stock_count: 最大持仓数量，默认 0 表示不限制
         :param strategy_params: 策略运行参数（可选）
+        :param name: 个人策略自定义名称（可选，建议必填以便列表区分同名模板）
         :return: 包含 user_strategy 信息的字典
         """
         body: dict[str, Any] = {
@@ -68,6 +70,8 @@ class UserStrategyApi:
             "total_profit": 0,
             "max_stock_count": max_stock_count,
         }
+        if name:
+            body["name"] = name
         if pool_id:
             body["pool_id"] = pool_id
         if initial_amount:
@@ -120,8 +124,9 @@ class UserStrategyApi:
         max_stock_count: int | None = None,
         total_profit: float | None = None,
         strategy_params: dict[str, Any] | None = None,
+        name: str | None = None,
     ) -> str:
-        """修改用户策略关联（状态、股票池、初始资金、最大持仓等）。
+        """修改用户策略关联（名称、状态、股票池、初始资金、最大持仓等）。
 
         支持的状态值: running(运行中) / stopped(已停止) / paused(已暂停)
 
@@ -132,6 +137,7 @@ class UserStrategyApi:
         :param max_stock_count: 最大持仓数量（可选，None 表示不修改）
         :param total_profit: 累计盈利（可选，None 表示不修改）
         :param strategy_params: 策略运行参数（可选，None 表示不修改）
+        :param name: 个人策略自定义名称（可选，None 表示不修改）
         :return: 操作结果提示信息
         """
         body: dict[str, Any] = {}
@@ -147,6 +153,8 @@ class UserStrategyApi:
             body["total_profit"] = total_profit
         if strategy_params is not None:
             body["strategy_params"] = strategy_params
+        if name is not None:
+            body["name"] = name
         result: Any = self._client.patch(
             f"/api/user_strategy/{user_strategy_id}", body
         )

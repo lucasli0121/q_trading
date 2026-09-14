@@ -51,6 +51,10 @@ class OrderApi:
                 "create_time": order.create_time,
                 "action": order.action,
             }
+            # P1-17：幂等键仅在非空时下发，避免服务端未支持该字段时因严格校验报错
+            client_order_id: str = str(getattr(order, "client_order_id", "") or "")
+            if client_order_id:
+                payload["client_order_id"] = client_order_id
             return payload
 
         payload = {
@@ -67,6 +71,9 @@ class OrderApi:
             "create_time": order.get("create_time") or order.get("time", ""),
             "action": order.get("action", "买入"),
         }
+        client_order_id: str = str(order.get("client_order_id", "") or "")
+        if client_order_id:
+            payload["client_order_id"] = client_order_id
         return payload
 
     @staticmethod
@@ -86,6 +93,7 @@ class OrderApi:
             "status": payload.get("status", "委托"),
             "create_time": payload.get("create_time", payload.get("time", "")),
             "action": payload.get("action", "买入"),
+            "client_order_id": payload.get("client_order_id", ""),
         }
 
     def create(
@@ -103,6 +111,7 @@ class OrderApi:
         create_time: str = "",
         time: str | None = None,
         action: str = "买入",
+        client_order_id: str = "",
     ) -> dict[str, Any]:
         """创建订单。
 
@@ -119,6 +128,7 @@ class OrderApi:
         :param create_time: 订单创建时间
         :param time: 兼容后端字段名，优先用于创建时间
         :param action: 交易方向
+        :param client_order_id: 客户端幂等键（P1-17）；为空时不下发该字段
         :return: 创建结果字典
         """
         effective_time: str = time or create_time
@@ -136,6 +146,8 @@ class OrderApi:
             "create_time": effective_time,
             "action": action,
         }
+        if client_order_id:
+            body["client_order_id"] = client_order_id
         result: Any = self._client.post("/api/order/create", body)
         if isinstance(result, dict) and result:
             return self._from_api_payload(result)

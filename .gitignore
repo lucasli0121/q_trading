@@ -67,6 +67,12 @@ cert/
 Thumbs.db
 .fleet/
 
+# ===== 本地工具 / 会话数据（不应提交） =====
+.workbuddy/
+.nicegui/
+.claude/
+.opencode/
+
 # ===== 第三方库（完整副本，可用 pip 安装，不提交） =====
 code/qlib/
 code/akshare/

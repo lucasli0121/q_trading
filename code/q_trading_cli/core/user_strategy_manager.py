@@ -59,13 +59,19 @@ class UserStrategyManager(metaclass=Singleton):
         """更新指定用户策略的信息。
 
         :param user_strategy_id: 用户策略 ID
-        :param strategy_info: 用户策略详细信息
+        :param strategy_info: 用户策略信息（合并写入，未提供的字段保持原值）
+
+        注意：采用合并而非整体替换。调用方可能只传入展示用的行数据
+        （仅含 us_id/sid/name 等），整体替换会丢掉 _id/strategy_id/status
+        等原始字段，导致依赖这些字段的页面（如策略选股）取不到策略。
         """
         if app.is_started:
             has_updated = False
             for i, strategy in enumerate(app.storage.user["user_strategies"]):
                 if str(strategy.get("_id", strategy.get("id", ""))) == user_strategy_id:
-                    app.storage.user["user_strategies"][i] = strategy_info
+                    merged: dict[str, Any] = dict(strategy)
+                    merged.update(strategy_info)
+                    app.storage.user["user_strategies"][i] = merged
                     has_updated = True
                     break
             if not has_updated:

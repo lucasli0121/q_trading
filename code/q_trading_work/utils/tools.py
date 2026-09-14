@@ -70,6 +70,37 @@ def load_service_name() -> str:
         return ""
 
 
+def load_enable_handle_tick() -> bool:
+    """从 cfg/stock.cfg [workflow] 节读取 enable_handle_tick。
+
+    实时 tick 通道默认 **关闭**：两个内置策略的 `check_tick_buy` / `check_tick_sell`
+    都未实现（恒返回 False），无差别派发只会用空转任务占满线程池并延迟分钟信号。
+    将来策略实现 tick 逻辑后，把该项改为 true 即可恢复派发。
+
+    :return: 是否启用 tick 派发；未配置时返回 False
+    """
+    try:
+        cp = ConfigParser()
+        cp.read(resource_path("cfg/stock.cfg"), encoding="utf-8")
+        return cp.getboolean("workflow", "enable_handle_tick", fallback=False)
+    except Exception:
+        return False
+
+
+def load_order_queue_size() -> int:
+    """从 cfg/stock.cfg [workflow] 节读取 order_queue_size（线程池队列上限）。
+
+    :return: 队列最大长度；未配置或非法时返回 512
+    """
+    try:
+        cp = ConfigParser()
+        cp.read(resource_path("cfg/stock.cfg"), encoding="utf-8")
+        size: int = cp.getint("workflow", "order_queue_size", fallback=512)
+        return size if size > 0 else 512
+    except Exception:
+        return 512
+
+
 def load_admin_token() -> str:
     """从 cfg/stock.cfg 读取 admin_token。
 

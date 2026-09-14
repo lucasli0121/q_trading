@@ -2,14 +2,17 @@
 """
 Author: liguoqiang
 Date: 2026-09-07
-Description: 策略选股页面 — 顶部 Tab 为用户策略名称，点击 Tab 查询该策略当日选股内容。
+Description: 策略选股页面 — 顶部 Tab 为用户策略，点击 Tab 查询该策略当日选股内容。
   数据来源：
-  - Tab 列表：user_strategy_api.list() 拿用户策略关联，每条取 strategy_id，
-    strategy_api.get_by_id() 补策略名作 Tab（用户拥有的策略均展示，不论今日是否有选股）。
-  - 选股行情：strategy_select_stock_api.list(strategy_id=xxx, 当天) 返回
+  - Tab 列表：user_strategy_api.list() 拿用户策略关联，每条取自身 ID
+    （_id/id）作为 user_strategy_id；显示名称优先用 user_strategy.name
+    （自定义名称），未设置时回退策略模板名。
+  - 选股行情：strategy_select_stock_api.list(user_strategy_id=xxx, 当天) 返回
     StrategySelectStockWithRtItem，已自带实时行情字段（name/price/
     change_percent/change_amount/turnover/high/low/open/preclose 等）；
     仅动态市盈率（ttm_pe）与利润增长率（net_profit_growth_rate）需 finance_api 补充。
+  注意：选股结果以 user_strategy_id（用户策略实例）关联，不再使用 strategy_id
+  （策略模板 ID）。
   颜色遵循 theme 新约定：positive=#f87171 红=涨，negative=#34d399 绿=跌
   （中国股市红涨绿跌）。切换 Tab/刷新均有加载进度显示，401 静默等待跳转登录。
 """
@@ -44,9 +47,12 @@ def _sf(value: Any) -> float:
 
 
 def _today_range() -> tuple[str, str]:
-    """获取当天起止时间字符串（YYYY-MM-DD 00:00:00 / 23:59:59）。
+    """获取当天起止时间字符串。
 
-    :return: (当天起始时间, 当天结束时间)
+    注意：数据库 create_time 只保存日期（YYYY-MM-DD），不带时分秒，
+    后端文档写的 "YYYY-MM-DD HH:MM:SS" 有误，故此处只传日期。
+
+    :return: (当天日期, 当天日期)，格式 YYYY-MM-DD
     """
     today: str = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
     return f"{today}", f"{today}"
@@ -70,23 +76,14 @@ def show_strategy_select_page() -> None:
     user_strategies: list[dict[str, Any]] = []
     user_strategies = UserStrategyManager().list_user_strategies()
 
-    # 去重保序提取 strategy_id（同一策略模板可能被用户关联多次）
-    strategy_ids: list[str] = []
-    seen: set[str] = set()
-    for us in user_strategies:
-        sid: str = str(us.get("strategy_id", "") or "")
-        if sid and sid not in seen:
-            seen.add(sid)
-            strategy_ids.append(sid)
-
-    # ---- 2. 为每个 strategy_id 补充策略名称 ----
+    # ---- 2. 为每个策略模板补充名称（仅当该用户策略未设置自定义名称时用到） ----
     name_cache: dict[str, str] = {}
 
-    def _get_strategy_name(strategy_id: str) -> str:
-        """获取策略名称（带缓存，失败回退 ID）。
+    def _get_template_name(strategy_id: str) -> str:
+        """获取策略模板名称（带缓存，失败回退 ID）。
 
         :param strategy_id: 策略模板 ID
-        :return: 策略名称
+        :return: 策略模板名称
         """
         if not strategy_id:
             return "未命名策略"
@@ -105,46 +102,72 @@ def show_strategy_select_page() -> None:
         name_cache[strategy_id] = name
         return name
 
-    tab_labels: list[str] = [_get_strategy_name(sid) for sid in strategy_ids]
-    active_tab: str = tab_labels[0] if tab_labels else ""
-    active_sid: str = strategy_ids[0] if strategy_ids else ""
+    def _get_display_name(us: dict[str, Any]) -> str:
+        """获取用户策略的展示名称。
+
+        优先 user_strategy.name（自定义名称），未设置时回退策略模板名，
+        历史数据兜底为"未命名策略"。
+
+        :param us: 用户策略记录
+        :return: 展示名称
+        """
+        custom: str = str(us.get("name", "") or "").strip()
+        if custom:
+            return custom
+        sid: str = str(us.get("strategy_id", "") or "")
+        if not sid:
+            return "未命名策略"
+        return _get_template_name(sid)
+
+    # Tab 项：(用户策略 ID, 展示名称)。按用户策略实例逐个展示，
+    # 同一策略模板可关联多次，各自独立选股，故不去重。
+    tab_items: list[tuple[str, str]] = []
+    for us in user_strategies:
+        us_id: str = str(us.get("_id", "") or us.get("id", "") or "")
+        if us_id:
+            tab_items.append((us_id, _get_display_name(us)))
+
+    active_us_id: str = tab_items[0][0] if tab_items else ""
+    active_tab: str = tab_items[0][1] if tab_items else ""
 
     state: dict[str, Any] = {
         "quotes": [], "active_tab": active_tab,
-        "active_sid": active_sid, "loading": False,
+        "active_sid": active_us_id, "loading": False,
     }
 
-    # 行情缓存：strategy_id -> list[dict]，避免重复请求
+    # 行情缓存：user_strategy_id -> list[dict]，避免重复请求
     quotes_cache: dict[str, list[dict[str, Any]]] = {}
 
-    def _load_quotes(strategy_id: str) -> list[dict[str, Any]]:
-        """查询指定策略当日选股行情（list 接口直接传 strategy_id）。
+    def _load_quotes(user_strategy_id: str) -> list[dict[str, Any]]:
+        """查询指定用户策略当日选股行情（list 接口直接传 user_strategy_id）。
 
         list 返回的 StrategySelectStockWithRtItem 已含 name/price/
         change_percent/change_amount/turnover 等实时行情字段，
         仅动态市盈率（ttm_pe）与利润增长率（net_profit_growth_rate）
         需通过 finance_api 补充。
 
-        :param strategy_id: 策略模板 ID
+        :param user_strategy_id: 用户策略 ID（UserStrategy 记录 ID）
         :return: 行情数据列表
         """
-        if not strategy_id:
+        if not user_strategy_id:
             return []
-        if strategy_id in quotes_cache:
-            return quotes_cache[strategy_id]
+        if user_strategy_id in quotes_cache:
+            return quotes_cache[user_strategy_id]
         start_time, end_time = _today_range()
         try:
             data: list[dict[str, Any]] = AppContext().strategy_select_stock_api.list(
-                strategy_id=strategy_id, start_time=start_time, end_time=end_time,
+                user_strategy_id=user_strategy_id, start_time=start_time, end_time=end_time,
             )
         except UnauthorizedError:
-            logger.debug("查询策略「%s」选股未授权（401），等待跳转登录", strategy_id)
+            logger.debug("查询策略「%s」选股未授权（401），等待跳转登录", user_strategy_id)
             return []
         except httpx.HTTPStatusError as e:
-            logger.warning("查询策略「%s」选股失败: %s", strategy_id, e.response.text, exc_info=True)
+            logger.warning(
+                "查询策略「%s」选股失败: %s", user_strategy_id, e.response.text, exc_info=True
+            )
             return []
         except Exception:
-            logger.warning("查询策略「%s」选股失败", strategy_id, exc_info=True)
+            logger.warning("查询策略「%s」选股失败", user_strategy_id, exc_info=True)
             return []
         if not data:
             return []
@@ -185,24 +208,25 @@ def show_strategy_select_page() -> None:
                 logger.debug("加载利润数据未授权（401），等待跳转登录")
             except Exception:
                 logger.warning("加载利润数据失败", exc_info=True)
-        quotes_cache[strategy_id] = uniq
-        return quotes_cache[strategy_id]
+        quotes_cache[user_strategy_id] = uniq
+        return quotes_cache[user_strategy_id]
 
-    async def on_tab_switch(strategy_id: str) -> None:
+    async def on_tab_switch(user_strategy_id: str, tab_name: str) -> None:
         """切换策略 Tab 并加载对应选股行情（异步，显示加载进度）。
 
-        :param strategy_id: 策略模板 ID
+        :param user_strategy_id: 用户策略 ID（UserStrategy 记录 ID）
+        :param tab_name: Tab 展示名称
         """
-        state["active_sid"] = strategy_id
-        state["active_tab"] = _get_strategy_name(strategy_id)
+        state["active_sid"] = user_strategy_id
+        state["active_tab"] = tab_name
         state["loading"] = True
         tab_bar.refresh()
         table_panel.refresh()
         await asyncio.sleep(0)
         loop = asyncio.get_running_loop()
         # 切换 Tab 时强制重新拉取（行情可能已更新）
-        quotes_cache.pop(strategy_id, None)
-        state["quotes"] = await loop.run_in_executor(None, _load_quotes, strategy_id)
+        quotes_cache.pop(user_strategy_id, None)
+        state["quotes"] = await loop.run_in_executor(None, _load_quotes, user_strategy_id)
         state["loading"] = False
         table_panel.refresh()
 
@@ -221,8 +245,8 @@ def show_strategy_select_page() -> None:
         table_panel.refresh()
 
     # 初始加载首个策略行情
-    if active_sid:
-        state["quotes"] = _load_quotes(active_sid)
+    if active_us_id:
+        state["quotes"] = _load_quotes(active_us_id)
 
     # ---- 顶部栏 ----
     with ui.row().classes("w-full items-center justify-between").style(
@@ -248,20 +272,20 @@ def show_strategy_select_page() -> None:
             with ui.row().classes("w-full items-center gap-4").style(
                 f"border-bottom: 1px solid {border_color}; margin-bottom: 24px;"
             ):
-                if tab_labels:
-                    for i, label in enumerate(tab_labels):
-                        sid: str = strategy_ids[i]
-                        is_active: bool = (label == state["active_tab"])
+                if tab_items:
+                    for us_id, label in tab_items:
+                        # 用 user_strategy_id 判重（同名策略可能关联多次）
+                        is_active: bool = (us_id == state["active_sid"])
                         if is_active:
                             ui.label(label).classes("text-sm font-bold").style(
                                 "color: #60a5fa; border-bottom: 2px solid #3b82f6; "
                                 "padding: 12px 24px; cursor: pointer;"
-                            ).on("click", lambda _s=sid: on_tab_switch(_s))
+                            ).on("click", lambda _u=us_id, _l=label: on_tab_switch(_u, _l))
                         else:
                             ui.label(label).classes("text-sm").style(
                                 f"color: {muted}; border-bottom: 2px solid transparent; "
                                 "padding: 12px 24px; cursor: pointer;"
-                            ).on("click", lambda _s=sid: on_tab_switch(_s))
+                            ).on("click", lambda _u=us_id, _l=label: on_tab_switch(_u, _l))
                 else:
                     ui.label("暂无策略，请先在策略列表中添加策略").classes("text-sm").style(
                         f"color: {muted}; padding: 12px 24px;"

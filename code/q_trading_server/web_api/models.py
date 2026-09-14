@@ -211,11 +211,14 @@ class PositionItemModel(BaseModel):
     code: str = Field(default="", description="股票代码")
     name: str = Field(default="", description="股票名称")
     quantity: int = Field(default=0, description="持仓数量（股）")
-    cost_price: float = Field(default=0.0, description="成本价")
+    cost_price: float = Field(default=0.0, description="成本价（不含手续费的成交均价）")
     current_price: float = Field(default=0.0, description="当前价")
     profit_rate: float = Field(default=0.0, description="个股收益率")
     profit_amount: float = Field(default=0.0, description="个股收益金额")
     buy_time: str = Field(default="", description="买入时间")
+    fee: float = Field(default=0.0, description="累计买入手续费（资金占用 = quantity * cost_price + fee）")
+    t1_qty: int = Field(default=0, description="当日买入、T+1 尚不可卖的数量")
+    t1_day: str = Field(default="", description="T+1 归属交易日")
 
 
 class StrategyExecutionSaveRequest(BaseModel):

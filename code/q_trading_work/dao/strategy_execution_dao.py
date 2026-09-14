@@ -22,11 +22,17 @@ class PositionItem:
     code: str = ""  # 股票代码
     name: str = ""  # 股票名称
     quantity: int = 0  # 持仓数量（股）
-    cost_price: float = 0.0  # 成本价
+    cost_price: float = 0.0  # 成本价（不含手续费的成交均价）
     current_price: float = 0.0  # 当前价
     profit_rate: float = 0.0  # 个股收益率
     profit_amount: float = 0.0  # 个股收益金额
     buy_time: str = ""  # 买入时间
+    # 累计买入手续费（P0-26）：成本价保持纯成交价，手续费单独累计，
+    # 资金占用 = quantity * cost_price + fee，卖出时按卖出比例分摊扣减。
+    fee: float = 0.0
+    # 当日买入、T+1 尚不可卖的数量与归属交易日（X3）
+    t1_qty: int = 0
+    t1_day: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典
@@ -42,6 +48,9 @@ class PositionItem:
             "profit_rate": self.profit_rate,
             "profit_amount": self.profit_amount,
             "buy_time": self.buy_time,
+            "fee": self.fee,
+            "t1_qty": self.t1_qty,
+            "t1_day": self.t1_day,
         }
 
     @classmethod
@@ -60,6 +69,9 @@ class PositionItem:
             profit_rate=to_float(data.get("profit_rate", 0.0)),
             profit_amount=to_float(data.get("profit_amount", 0.0)),
             buy_time=data.get("buy_time", ""),
+            fee=to_float(data.get("fee", 0.0)),
+            t1_qty=int(data.get("t1_qty", 0) or 0),
+            t1_day=str(data.get("t1_day", "") or ""),
         )
 
 

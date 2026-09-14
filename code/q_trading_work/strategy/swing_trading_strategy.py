@@ -178,8 +178,12 @@ class SwingTradingStrategy(BaseStrategy):
         return self._check_sell_conditions(code, position, stock_data)
 
     def _before_minute_route(self, code: str, stock_data: dict[str, Any]) -> None:
-        """分钟路由前保存分钟行情缓存。"""
-        self._save_minute_cache(code, stock_data)
+        """分钟路由前钩子。
+
+        注意：分钟行情缓存已改为由 `StrategyWorkflow` 单点写入 UserStrategyCache
+        （每个 code 只写一次），策略侧只读，因此这里不再写入。
+        """
+        return
 
     def before_trading(self, trade_date: str, stock_codes: list[str], **kwargs: Any) -> None:
         """
@@ -196,29 +200,63 @@ class SwingTradingStrategy(BaseStrategy):
             self._save_sr_points(code, sr_df)
 
     def _get_code_prev_sr_point(self, code: str, trade_date: str) -> pd.DataFrame:
+        """计算当天（基于前一日日线）的经典枢轴支撑/阻力位。
+
+        **返回值统一为 DataFrame**：`InDaySRFactor.calculate` 在日线数据不足
+        （新股、停牌复牌、数据缺口）时返回的是浮点 `0.0` 而不是 DataFrame，
+        若原样返回，调用方 `_save_sr_points` 会在 `sr_df.empty` 处抛
+        `AttributeError: 'float' object has no attribute 'empty'`；
+        而 `_save_sr_points` 又是在 `before_trading` 的股票池循环里被调用，
+        单只股票数据不足就会中断整个池子的盘前准备。
+        因此这里收敛为「拿不到点位就返回空表」，由下游按「无点位」处理。
+
+        :param code: 股票代码
+        :param trade_date: 交易日 YYYY-MM-DD
+        :return: 枢轴点位表；数据不足时返回空 DataFrame
+        """
         inday_sr_factor = InDaySRFactor()  # 确保因子已注册
-        stock_df = self.load_his_daily_data(code, trade_date, inday_sr_factor.days)  # 计算当天支撑位和阻力位，确保因子已注册
-        return inday_sr_factor.calculate(stock_df)
+        # 计算当天支撑位和阻力位，确保因子已注册
+        stock_df: pd.DataFrame = self.load_his_daily_data(
+            code, trade_date, inday_sr_factor.days
+        )
+        sr_df: Any = inday_sr_factor.calculate(stock_df)
+        if not isinstance(sr_df, pd.DataFrame):
+            self.logger.warning(
+                "[%s] code=%s 日线数据不足（%s），无法计算当天支撑/阻力位，跳过",
+                self.strategy_name, code, trade_date,
+            )
+            return pd.DataFrame()
+        return sr_df
     
+    def _sr_points_key(self, code: str) -> str:
+        """当天支撑/阻力位缓存 key。
+
+        key 必须包含 user_strategy_id：per-user 策略实例各写一份，若只用
+        `策略名:代码` 做 key，多用户会并发互相覆盖（原 P1-9 遗留问题）。
+        用户策略 ID 为空（如回测）时退化为 `default`，保持单实例场景可用。
+
+        :param code: 股票代码
+        :return: Redis key
+        """
+        owner: str = self.user_strategy_id or "default"
+        return f"{self.strategy_name}:sr_points:{owner}:{code}"
+
     def _save_sr_points(self, code: str, sr_df: pd.DataFrame) -> None:
         if sr_df.empty:
             return
-        if self._redis_enabled:
+        if self._cache.redis_enabled:
             redis_exec: RedisExec = AppContext().redis_exec
-            key: str = f"{self.strategy_name}:sr_points:{code}"
             value: str = sr_df.to_json(orient="records", date_format="iso")
-            if redis_exec.set_key_string(key, value, ex=self.MINUTE_CACHE_TTL):
+            if redis_exec.set_key_string(self._sr_points_key(code), value, ex=self._cache.MINUTE_CACHE_TTL):
                 return
         self._inday_sr_points[code] = sr_df
 
     def _get_sr_points(self, code: str) -> pd.DataFrame:
-        df: pd.DataFrame = pd.DataFrame()
-        if self._redis_enabled:
+        if self._cache.redis_enabled:
             redis_exec: RedisExec = AppContext().redis_exec
-            key: str = f"{self.strategy_name}:sr_points:{code}"
-            value: str|None = redis_exec.get_key_string(key)
+            value: str|None = redis_exec.get_key_string(self._sr_points_key(code))
             if value:
-                df = pd.DataFrame.from_records(json.loads(value))
+                df: pd.DataFrame = pd.DataFrame.from_records(json.loads(value))
                 if not df.empty:
                     return df
         df = self._inday_sr_points.get(code, pd.DataFrame())

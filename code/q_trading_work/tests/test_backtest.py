@@ -54,13 +54,14 @@ class SimpleMomentumStrategy(BaseStrategy):
     ) -> None:
         pass
 
-    def handle_minute_bar(
-        self, code: str, position: dict[str, Any], stock_data: dict[str, Any]
-    ) -> tuple[bool, dict[str, Any]]:
-        """按 StrategyWorkflow 契约：有持仓走卖出检查，无持仓走买入检查。"""
-        if position:
-            return self.check_minute_sell(code, position, stock_data)
-        return self.check_minute_buy(code, stock_data)
+    # 说明：本类**不再重载** `handle_minute_bar`，直接沿用 BaseStrategy 的生产契约
+    #   `if code in select_stocks and len(position) == 0: 买入; 否则落到卖出检查`
+    #
+    # 历史实现为 `if position: 卖出 else: 买入`，那是「按持仓有无切换方向」的旧契约。
+    # 回测引擎按 X1 与实盘 `_process_bar` 对齐、恒传空持仓 `{}`，
+    # 于是旧契约下 `position` 恒为假值 → 卖出分支永远不可达 →
+    # 分钟回测卖出信号永不触发（这正是 `test_run_minute_with_stub_data` 曾失败的根因）。
+    # 改为继承基类后，桩策略与真实策略走同一套路由，测试才验证到生产行为。
 
     def handle_tick_bar(
         self, code: str, position: dict[str, Any], stock_data: dict[str, Any]

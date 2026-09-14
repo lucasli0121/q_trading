@@ -421,6 +421,22 @@ class BacktestEngine:
             return self._run_minute(strategy)
         return self._run_daily(strategy)
 
+    def _run_minute(self, strategy: Any) -> tuple[list[TradeResult], BacktestSummary]:
+        """分钟频回测入口：关闭缓存 Redis 持久化后执行，结束后恢复。
+
+        回测是离线计算：历史日期写入实盘共用 Redis 既无意义又会污染缓存，
+        还可能让 `_get_minute_cache` 读到实盘当日行情，因此这里临时关闭
+        `UserStrategyCache` 的 Redis 通道，只使用进程内快照。
+        """
+        from core.user_strategy_cache import UserStrategyCache
+
+        cache: UserStrategyCache = UserStrategyCache()
+        cache.set_redis_enabled(False)
+        try:
+            return self._run_minute_inner(strategy)
+        finally:
+            cache.set_redis_enabled(True)
+
     def _bind_strategy_id(self, strategy: Any) -> None:
         """按策略名称查询策略模板，将 strategy_id 回填到策略实例。
 
@@ -602,7 +618,7 @@ class BacktestEngine:
             profit_pct=result["profit_pct"],
         )
 
-    def _run_minute(
+    def _run_minute_inner(
         self, strategy: Any
     ) -> tuple[list[TradeResult], BacktestSummary]:
         """分钟频回测：逐日模拟每天开盘前操作。
@@ -681,6 +697,15 @@ class BacktestEngine:
                         state,
                     )
                 )
+
+            # 释放当日分钟行情内存快照：长周期回测逐日累计会占用大量内存，
+            # 且跨日数据本就不应复用（缓存 key 含日期）
+            try:
+                from core.user_strategy_cache import UserStrategyCache
+
+                UserStrategyCache().clear_minute_day(day)
+            except Exception as exc:
+                self.logger.debug("清理当日分钟行情缓存失败 day=%s: %s", day, exc)
 
         # 按买入日期排序
         all_trades.sort(key=lambda t: t.buy_date)
@@ -779,13 +804,39 @@ class BacktestEngine:
 
         StrategyWorkflow 每日盘前会把 select 结果保存到服务端，
         handle_minute_bar 再按选股列表路由买入/卖出检查；回测中不落库，
-        直接写入策略缓存以模拟同样的路由效果。
+        直接写入 `UserStrategyCache` 的选股缓存以模拟同样的路由效果
+        （缓存改动后策略侧的选股列表统一由 UserStrategyCache 提供，
+        不再使用旧的 `_select_stocks_set` / `_select_stocks_date` 实例属性）。
+
+        :param strategy: 策略实例
+        :param matched_codes: 当日命中的股票代码
+        :param day: 交易日 YYYY-MM-DD
         """
         try:
-            strategy._select_stocks_set = set(matched_codes)
-            strategy._select_stocks_date = day
+            from core.user_strategy_cache import UserStrategyCache
+
+            usid: str = str(getattr(strategy, "user_strategy_id", "") or "")
+            UserStrategyCache().save_select_stocks(usid, day[:10], set(matched_codes))
         except Exception as exc:
             self.logger.debug("注入策略选股列表失败: %s", exc)
+
+    def _push_minute_bar_to_cache(self, code: str, bar: dict[str, Any]) -> None:
+        """把当前分钟K线写入缓存，供策略内部读取（与实盘 workflow 写入方式一致）。
+
+        实盘链路由 `StrategyWorkflow.handle_bar` 单点写入分钟行情，
+        策略的 `_get_minute_cache` 才能取到数据；回测必须做同样的事，
+        否则量能/VWAP/趋势类因子会拿到空列表（策略改由 workflow 统一写入后，
+        旧的 `_before_minute_route` 写入点已移除）。
+
+        :param code: 股票代码
+        :param bar: 当前分钟K线
+        """
+        try:
+            from core.user_strategy_cache import UserStrategyCache
+
+            UserStrategyCache().push_minute_bar(code, bar)
+        except Exception as exc:
+            self.logger.debug("写入分钟行情缓存失败 code=%s: %s", code, exc)
 
     def _run_minute_for_stock(
         self,
@@ -799,8 +850,14 @@ class BacktestEngine:
     ) -> list[TradeResult]:
         """分钟回测单只股票单个交易日：按 StrategyWorkflow 模式处理分钟K线。
 
-        每根K线调用一次策略的 handle_minute_bar（无持仓时传入空持仓，
-        有持仓时传入 cost_price/buy_time 等持仓信息），根据返回信号：
+        每根K线：
+        1. 先写入分钟行情缓存（与实盘 workflow 单点写入一致，供策略内部因子读取）；
+        2. 再调用策略的 handle_minute_bar 取信号。**按 X1 决策统一传空持仓 `{}`**，
+           与实盘 `_process_bar` 口径一致（实盘以「尽可能产出信号」为目标，
+           不向策略暴露真实持仓）；买卖的实际执行由本方法按自己维护的
+           `in_position` / `cost_price` 状态完成，因此回测的交易撮合逻辑不受影响，
+           只有「传给策略的持仓视图」与实盘对齐 —— 这样回测信号集合才与实盘可比。
+
         - BUY 且当前无持仓 → 以当前分钟价格买入建仓
         - SELL 且当前有持仓 → 以当前分钟价格卖出平仓，生成一笔交易
         持仓状态（in_position/cost_price/buy_time）通过 state 跨交易日保留。
@@ -834,20 +891,11 @@ class BacktestEngine:
                 current_bar: dict[str, Any] = cast(
                     "dict[str, Any]", df.iloc[i].to_dict()
                 )
-                # 持仓信息：无持仓传空字典，有持仓传成本价/买入时间等
-                # （与策略卖出检查约定一致，如 _check_sell_conditions 读取 cost_price/buy_time）
-                position: dict[str, Any] = (
-                    {
-                        "cost_price": cost_price,
-                        "buy_time": buy_time,
-                        "quantity": 100,
-                    }
-                    if in_position
-                    else {}
-                )
+                # X1：与实盘一致，始终传空持仓给策略
+                self._push_minute_bar_to_cache(code, current_bar)
 
                 matched, extra = self._check_minute_bar(
-                    strategy, code, position, current_bar
+                    strategy, code, {}, current_bar
                 )
                 if not matched:
                     continue
