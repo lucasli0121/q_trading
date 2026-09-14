@@ -368,6 +368,74 @@ class TestBacktestEngine(unittest.TestCase):
         self.assertGreater(trade.sell_price, 0)
         self.assertGreaterEqual(buy_calls["n"], 1)
 
+    def test_minute_backtest_always_passes_empty_position(self) -> None:
+        """X1 契约：回测调用策略时恒传空持仓 `{}`，与实盘 `_process_bar` 口径一致。
+
+        回测自己用 `position_states` 记录持仓来完成撮合，但**不向策略暴露持仓**——
+        买入成交后引擎已处于持仓状态，后续每根K线仍必须传 `{}` 给策略。
+        若这里退化成传真实持仓，回测信号集合会再次与实盘分叉。
+        """
+        rows = [
+            {
+                "code": "000001",
+                "create_time": f"2026-07-15 09:{30 + i:02d}:00",
+                "price": 10.0 + i * 0.1,
+                "open": 10.0,
+                "close": 10.0 + i * 0.1,
+                "high": 10.0 + i * 0.1,
+                "low": 10.0,
+                "volume": 1000 + i,
+            }
+            for i in range(40)
+        ]
+        minute_df = pd.DataFrame(rows)
+        config = BacktestConfig(
+            stock_codes=["000001"],
+            start_date="2026-07-15 09:30:00",
+            end_date="2026-07-15 15:00:00",
+            signal_window=5,
+            frequency="minute",
+        )
+        engine = BacktestEngine(config=config)
+        engine._fetch_stock_data = MagicMock(return_value=minute_df)
+        engine._fetch_benchmark_data = MagicMock(return_value=pd.DataFrame())
+
+        strategy = SimpleMomentumStrategy()
+        strategy.select = MagicMock(return_value=[{"code": "000001", "matched": True}])
+        strategy.before_trading = MagicMock()
+
+        # 首根K线买入建仓 → 引擎进入持仓状态，之后每根K线都会走卖出检查
+        buy_calls = {"n": 0}
+
+        def check_buy(code: str, bar: dict[str, Any]):
+            buy_calls["n"] += 1
+            if buy_calls["n"] == 1:
+                return True, {"signal": "BUY", "current_price": bar.get("price", 0)}
+            return False, {"reason": "仅首根K线触发买入"}
+
+        seen_positions: list[Any] = []
+
+        def check_sell(code: str, position: dict[str, Any], bar: dict[str, Any]):
+            seen_positions.append(position)
+            return False, {"reason": "卖出条件不满足"}
+
+        strategy.check_minute_buy = check_buy
+        strategy.check_minute_sell = check_sell
+
+        engine.run(strategy)
+
+        # 持仓后仍继续检查卖出 ⇒ 断言确实覆盖了「引擎有持仓」的场景
+        self.assertGreater(
+            buy_calls["n"], 1, "应至少有一根K线在持仓状态下调用策略"
+        )
+        self.assertTrue(seen_positions, "check_minute_sell 应至少被调用一次")
+        for position in seen_positions:
+            self.assertEqual(
+                position,
+                {},
+                f"回测必须传空持仓给策略（X1），实际收到: {position!r}",
+            )
+
     # ---- 结果保存 ----
 
     def test_save_results_success(self) -> None:

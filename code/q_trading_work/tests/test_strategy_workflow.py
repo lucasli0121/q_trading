@@ -573,6 +573,28 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._process_tick(state, "000001", {})
         submit.assert_called_once()
 
+    def test_process_bar_and_tick_pass_empty_position_to_strategy(self) -> None:
+        """D-1 / X1 契约：实盘链路恒传空持仓 `{}`，与回测口径一致。
+
+        即使 `state.positions` 里确有持仓，也不向策略暴露 —— 这是「信号优先」的刻意设计；
+        回测已按 X1 对齐同一口径（见 `test_backtest.py` 的同名用例）。
+        任一侧退化为传真实持仓，都会让回测信号集合与实盘分叉。
+        """
+        instance = self._fake_instance("BUY")
+        state = make_state(instance=instance)
+        self.wf._user_strategies["sid"] = [state]
+        # 关键：持仓已存在，仍必须传空字典
+        self._patch_load_positions({"000001": {"quantity": 100}})
+        self._patch_submit()
+
+        bar_data = {"price": 10.0}
+        self.wf._process_bar(state, "000001", bar_data)
+        instance.handle_minute_bar.assert_called_once_with("000001", {}, bar_data)
+
+        tick_data = {"price": 10.0}
+        self.wf._process_tick(state, "000001", tick_data)
+        instance.handle_tick_bar.assert_called_once_with("000001", {}, tick_data)
+
     def test_process_bar_max_stock_count(self) -> None:
         instance = self._fake_instance("BUY")
         state = make_state(instance=instance)

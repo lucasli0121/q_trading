@@ -1174,7 +1174,8 @@ class StrategyWorkflow(BaseWorkflow):
         系统定位是「尽可能产出买卖信号」的辅助决策工具：信号先行，订单与持仓
         都由信号派生，最终由交易员判断是否真的买卖。因此策略在实时链路下
         不依赖真实持仓运行，持仓状态只在后续下单环节（_load_positions）才参与判断。
-        回测链路会传真实持仓，两者口径差异属已知权衡。
+        回测链路（`backtest_engine._run_minute_for_stock`）已按 **X1 决策**对齐同一口径，
+        也恒传空持仓 —— 两侧信号集合可比，回测指标可代表实盘。
 
         并发安全：每个 StrategyState 持有独立锁（_lock），
         确保同一 state 在不同 code 并发处理时不产生竞态条件。
@@ -1192,7 +1193,7 @@ class StrategyWorkflow(BaseWorkflow):
             # 设计约定：此处有意传空持仓 {} —— 实时链路以「尽可能产出买卖信号」为目标，
             # 不依赖持仓状态，策略侧以「无持仓」语义运行（卖出基准由策略按最近 2 个
             # 交易日兜底），订单与持仓都产生在信号之后，最终由交易员判断，系统只做辅助建议。
-            # 注意：回测链路（backtest_engine）会传真实持仓，两者口径差异见审查报告。
+            # 回测链路（backtest_engine）已按 X1 对齐，同样恒传空持仓。
             matched, extra = instance.handle_minute_bar(code, {}, bar_data)
             # matched = True
             # extra["signal"] = "BUY"
