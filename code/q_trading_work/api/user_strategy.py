@@ -202,11 +202,17 @@ class UserStrategyApi:
     def get_latest_execution(self, user_strategy_id: str) -> dict[str, Any]:
         """查询最近一次的策略执行结果。
 
+        服务端在「该策略还没有任何执行记录」时返回 404 + {"detail": "未找到该策略的
+        执行结果"} —— 这是新策略的正常状态（调用方 `_load_execution_data` 会按
+        「无执行数据」兜底），因此这里声明 `allow_not_found=True` 把该 404 的日志
+        降为 DEBUG，避免污染 errors.log 造成误报。异常仍会抛出，由调用方兜底。
+
         :param user_strategy_id: 用户策略关联 ID
         :return: 最近一次策略执行结果字典，无记录时返回空字典
         """
         result: Any = self._client.get(
-            f"/api/user_strategy/{user_strategy_id}/execution/latest"
+            f"/api/user_strategy/{user_strategy_id}/execution/latest",
+            allow_not_found=True,
         )
         return dict(result) if result else {}
 

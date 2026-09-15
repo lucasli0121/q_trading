@@ -153,16 +153,22 @@ class ApiClient:
             raise ApiError(code, message)
         return resp_json.get("data")
 
-    def _handle_response(self, resp: httpx.Response) -> Any:
+    def _handle_response(
+        self, resp: httpx.Response, *, allow_not_found: bool = False
+    ) -> Any:
         """处理 HTTP 响应，自动拦截 401 并触发登录对话框。
 
         先调用 raise_for_status() 检查 HTTP 状态码：
         - 401 → 清除认证状态、弹出登录对话框，然后抛出 UnauthorizedError
-        - 其他 4xx/5xx → 抛出 httpx.HTTPStatusError（由调用方自行处理）
+        - 404 且 allow_not_found=True → 仅记 DEBUG 后抛出（调用方已声明「资源不存在」
+          是正常业务状态，例如查询尚未产生数据的「最新执行结果」）
+        - 其他 4xx/5xx → 记 ERROR（含响应体）后抛出 httpx.HTTPStatusError
 
         正常响应则解析 JSON 并返回 data 字段。
 
         :param resp: httpx 响应对象
+        :param allow_not_found: 是否把 404 视为可接受的正常状态（仅影响日志级别，
+            异常照旧抛出，仍由调用方决定如何兜底）
         :return: 解析后的 data 字段
         :raises UnauthorizedError: 401 未授权
         :raises ApiError: 业务错误
@@ -188,9 +194,32 @@ class ApiClient:
             # 否则上层只能看到 "422 Unprocessable Entity" 这类状态行，
             # 完全不知道是哪个字段不合格（2026-09-15 线上排查 trade_signal 422
             # 时就卡在这里 —— FastAPI 的校验详情其实就在响应体里）。
-            self._log_error_body(e)
+            if allow_not_found and e.response.status_code == 404:
+                # 「查无此资源」在部分接口上是正常业务状态（如某用户策略尚未产生
+                # 任何执行记录），调用方已显式声明可接受，因此降为 DEBUG，
+                # 避免把良性 404 记进 errors.log 造成误报
+                # （2026-09-15 部署设备实测：execution/latest 的 404 就是这种）。
+                self.logger.debug(
+                    "HTTP 404 %s（调用方声明为可接受）", self._request_url(e)
+                )
+            else:
+                self._log_error_body(e)
             raise
         return self._parse_response(resp.json())
+
+    @staticmethod
+    def _request_url(exc: httpx.HTTPStatusError) -> str:
+        """从异常中安全提取请求 URL，供日志使用。
+
+        :param exc: httpx 抛出的状态码异常
+        :return: 请求 URL，取不到时返回空字符串
+        """
+        try:
+            if exc.request is not None:
+                return str(exc.request.url)
+        except Exception:  # pragma: no cover - 防御性
+            pass
+        return ""
 
     def _log_error_body(self, exc: httpx.HTTPStatusError) -> None:
         """记录 HTTP 错误响应体（截断），便于定位 4xx/5xx 的具体原因。
@@ -201,16 +230,10 @@ class ApiClient:
             body_text: str = exc.response.text or ""
         except Exception:  # pragma: no cover - 防御性
             body_text = ""
-        request_url: str = ""
-        try:
-            if exc.request is not None:
-                request_url = str(exc.request.url)
-        except Exception:  # pragma: no cover - 防御性
-            request_url = ""
         self.logger.error(
             "HTTP %s %s 响应体: %s",
             exc.response.status_code,
-            request_url,
+            self._request_url(exc),
             body_text.strip()[:500] or "<empty>",
         )
 
@@ -235,18 +258,26 @@ class ApiClient:
             pass
 
 
-    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        allow_not_found: bool = False,
+    ) -> Any:
         """发送 GET 请求。
 
         :param path: API 路径，如 /api/pool/list
         :param params: 查询参数字典
+        :param allow_not_found: 是否把 404 视为可接受的正常状态（仅降日志级别，
+            异常仍会抛出）。适用于「查询单个资源可能不存在」的接口。
         :return: 解析后的 data 字段
         :raises ApiError: 业务错误
         :raises httpx.HTTPStatusError: HTTP 错误
         """
         self.logger.debug("GET %s params=%s", path, params)
         resp = self._client.get(path, params=params, headers=self._build_headers())
-        return self._handle_response(resp)
+        return self._handle_response(resp, allow_not_found=allow_not_found)
 
     def post(self, path: str, json_data: dict[str, Any] | None = None) -> Any:
         """发送 POST 请求。
