@@ -184,8 +184,35 @@ class ApiClient:
                 if self._get_effective_token() is not None:
                     self._on_401()
                 raise UnauthorizedError(detail or "登录已过期，请重新登录") from e
+            # 其余 4xx/5xx：把响应体写进日志。
+            # 否则上层只能看到 "422 Unprocessable Entity" 这类状态行，
+            # 完全不知道是哪个字段不合格（2026-09-15 线上排查 trade_signal 422
+            # 时就卡在这里 —— FastAPI 的校验详情其实就在响应体里）。
+            self._log_error_body(e)
             raise
         return self._parse_response(resp.json())
+
+    def _log_error_body(self, exc: httpx.HTTPStatusError) -> None:
+        """记录 HTTP 错误响应体（截断），便于定位 4xx/5xx 的具体原因。
+
+        :param exc: httpx 抛出的状态码异常
+        """
+        try:
+            body_text: str = exc.response.text or ""
+        except Exception:  # pragma: no cover - 防御性
+            body_text = ""
+        request_url: str = ""
+        try:
+            if exc.request is not None:
+                request_url = str(exc.request.url)
+        except Exception:  # pragma: no cover - 防御性
+            request_url = ""
+        self.logger.error(
+            "HTTP %s %s 响应体: %s",
+            exc.response.status_code,
+            request_url,
+            body_text.strip()[:500] or "<empty>",
+        )
 
     def _on_401(self) -> None:
         """401 响应时的处理：清除认证 token 并记录日志。

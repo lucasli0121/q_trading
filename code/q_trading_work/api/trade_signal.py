@@ -12,6 +12,32 @@ from typing import Any
 from api.client import ApiClient
 
 
+def _as_text(value: Any) -> str:
+    """把任意值归一化成字符串，保证请求体符合服务端 `str` 字段契约。
+
+    背景（2026-09-15 线上 422）：`swing_trading_strategy` 曾把
+    `extra["reason"] = (f"..."),` 写成了单元素 tuple，JSON 序列化后变成数组，
+    服务端 `TradeSignalCreateRequest.reason: str` 校验报 422，整条交易信号
+    （含 MQTT 推送与订单创建判定）全部被丢弃。为让「上游给脏值」不再演变成
+    「信号全丢」，这里在 API 边界统一兜底：
+
+    - None → `""`
+    - str → 原样返回
+    - tuple / list → 用 ", " 连接各元素（保留原因内容，丢掉的只是错误容器类型）
+    - 其他 → `str(value)`
+
+    :param value: 任意待归一化的值
+    :return: 可直接写入 JSON 请求体的字符串
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (tuple, list)):
+        return ", ".join(_as_text(item) for item in value)
+    return str(value)
+
+
 class TradeSignalApi:
     """交易信号 API 客户端。
 
@@ -52,15 +78,17 @@ class TradeSignalApi:
         :param reason: 信号原因说明（可选）
         :return: 保存结果字典
         """
+        # 服务端 TradeSignalCreateRequest 的 str 字段不接受 null / 数组，
+        # 这里统一归一化，避免上游脏值导致整条信号保存 422（详见 _as_text）。
         body: dict[str, Any] = {
-            "strategy_id": strategy_id,
-            "user_strategy_id": user_strategy_id,
-            "stock_code": stock_code,
+            "strategy_id": _as_text(strategy_id),
+            "user_strategy_id": _as_text(user_strategy_id),
+            "stock_code": _as_text(stock_code),
             "trade_price": trade_price,
-            "action": action,
+            "action": _as_text(action),
             "profit_rate": round(profit_rate, 2),
             "profit_amount": round(profit_amount, 2),
-            "reason": reason,
+            "reason": _as_text(reason),
         }
         result: Any = self._client.post("/api/trade_signal/add", body)
         return dict(result) if result else {}

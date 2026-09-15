@@ -1432,6 +1432,14 @@ class StrategyWorkflow(BaseWorkflow):
         action: str = "买入" if signal_type == "BUY" else "卖出"
         profit_rate: float = 0.0
         reason: str = extra.get("reason", "")
+        if not isinstance(reason, str):
+            # 防御（2026-09-15 线上 422 根因）：历史 bug 曾把 reason 写成单元素
+            # tuple（`extra["reason"] = (f"..."),`，多了一个逗号），reason 会污染
+            # 日志与 MQTT 载荷。这里统一转成文本；API 边界也会再归一化一次。
+            if isinstance(reason, (tuple, list)):
+                reason = ", ".join(str(item) for item in reason)
+            else:
+                reason = str(reason or "")
         # P1-21：优先用调用方传入的策略名；仅在缺失时兜底查询
         if not strategy_name:
             strategy_name = str(extra.get("strategy_name", ""))

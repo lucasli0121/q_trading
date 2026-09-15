@@ -435,7 +435,7 @@ class SwingTradingStrategy(BaseStrategy):
                 extra["signal"] = "SELL"
                 extra["reason"] = (
                     f"条件满足: 因子返回的分值满足卖出条件, 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}"
-                ),
+                )
                 extra["current_price"] = current_price
                 extra["score"] = inday_score + boll_score
                 extra["create_time"] = create_time

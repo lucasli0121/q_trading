@@ -809,6 +809,39 @@ class TestStrategyWorkflow(unittest.TestCase):
             # 卖出盈亏只用于展示，不再回传服务端信号表
             self.assertNotIn("profit_amount", self.wf._trade_signal_api.add.call_args.kwargs)
 
+    def test_save_trade_signal_flattens_tuple_reason(self) -> None:
+        """回归（2026-09-15 线上 422）：reason 是 tuple 时不得污染请求体与 MQTT 载荷。
+
+        历史 bug：`swing_trading_strategy` 把 `extra["reason"] = (f"..."),`
+        写成了单元素 tuple，JSON 序列化成数组后被服务端 str 字段校验拒绝（422），
+        整条信号被丢弃。
+        """
+        self.wf._trade_signal_api = MagicMock()
+        self.wf._trade_signal_api.latest.return_value = None  # 无历史信号，不过滤
+        with patch("workflow.strategy_workflow.AppContext") as mock_ctx:
+            mock_mqtt = MagicMock()
+            mock_mqtt.publish.return_value = True
+            mock_ctx.return_value.mqtt_client = mock_mqtt
+            result = self.wf._save_trade_signal(
+                "sid", "us1", "000001",
+                {
+                    "signal": "BUY",
+                    "current_price": 10.5,
+                    "reason": ("条件满足: 布林带分值 -1.20",),
+                },
+                strategy_name="波段交易策略",
+            )
+            self.assertTrue(result)
+
+        # 1) API 边界收到的是字符串
+        add_kwargs = self.wf._trade_signal_api.add.call_args.kwargs
+        self.assertIsInstance(add_kwargs["reason"], str)
+        self.assertEqual(add_kwargs["reason"], "条件满足: 布林带分值 -1.20")
+        # 2) MQTT 载荷里的 reason 也必须是字符串，而不是数组
+        payload = json.loads(mock_mqtt.publish.call_args.args[1])
+        self.assertIsInstance(payload["reason"], str)
+        self.assertEqual(payload["reason"], "条件满足: 布林带分值 -1.20")
+
     # ---- 盘前任务与生命周期 ----
 
     def test_daily_before_trading(self) -> None:
