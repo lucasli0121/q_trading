@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from api.client import ApiClient
+import httpx
+
+from api.client import ApiClient, is_not_found
 
 
 class UserStrategyApi:
@@ -202,18 +204,35 @@ class UserStrategyApi:
     def get_latest_execution(self, user_strategy_id: str) -> dict[str, Any]:
         """查询最近一次的策略执行结果。
 
-        服务端在「该策略还没有任何执行记录」时返回 404 + {"detail": "未找到该策略的
-        执行结果"} —— 这是新策略的正常状态（调用方 `_load_execution_data` 会按
-        「无执行数据」兜底），因此这里声明 `allow_not_found=True` 把该 404 的日志
-        降为 DEBUG，避免污染 errors.log 造成误报。异常仍会抛出，由调用方兜底。
+        **404 = 该策略尚无任何执行记录，收敛为空字典**，按「无持仓、资金本地推算」
+        处理。这不是容错，而是修一个死锁：
+
+        - 执行记录的唯一来源是订单成交后由 `TradeManager` 写入；
+        - 而订单是否创建，取决于调用方 `_load_positions` 能否读到持仓；
+        - 若把 404 当「取数失败」→ 跳过下单 → 永远没有执行记录 → 永远 404。
+
+        2026-09-24 线上实测 `user_strategy_id=6aab518ad097eabd87115e90`（波段交易策略）
+        即为该状态：14 条交易信号、**0 条订单**、0 条执行记录，新策略下不了第一单。
+
+        真实故障（超时 / 5xx / 连接失败 / 401）照旧上抛，由调用方 fail-closed。
+        该 404 的日志已由 `allow_not_found=True` 降为 DEBUG，不污染 errors.log。
 
         :param user_strategy_id: 用户策略关联 ID
         :return: 最近一次策略执行结果字典，无记录时返回空字典
         """
-        result: Any = self._client.get(
-            f"/api/user_strategy/{user_strategy_id}/execution/latest",
-            allow_not_found=True,
-        )
+        try:
+            result: Any = self._client.get(
+                f"/api/user_strategy/{user_strategy_id}/execution/latest",
+                allow_not_found=True,
+            )
+        except httpx.HTTPStatusError as exc:
+            if not is_not_found(exc):
+                raise
+            self.logger.debug(
+                "user_strategy_id=%s 尚无执行记录（服务端 404 表示无数据，按无持仓处理）",
+                user_strategy_id,
+            )
+            return {}
         return dict(result) if result else {}
 
     def delete_execution(self, user_strategy_id: str) -> str:

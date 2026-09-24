@@ -40,6 +40,23 @@ class UnauthorizedError(Exception):
         super().__init__(message)
 
 
+def is_not_found(exc: BaseException) -> bool:
+    """判断异常是否为 HTTP 404。
+
+    服务端在部分接口上用 404 表达「该资源尚无数据」（例如某用户策略还没有任何
+    执行记录、某股票还没有任何交易信号），这与「请求出错」是两种不同语义。
+    这类接口的包装方法（`UserStrategyApi.get_latest_execution`、
+    `TradeSignalApi.latest`）用本函数把 404 与真实故障区分开：
+    前者收敛为空数据，后者照旧上抛交给调用方 fail-closed。
+
+    :param exc: 待判定的异常
+    :return: True 表示该异常是 HTTP 404
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    return exc.response is not None and exc.response.status_code == 404
+
+
 class ApiClient:
     """统一的 HTTP API 客户端。
 

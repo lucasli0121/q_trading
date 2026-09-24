@@ -450,6 +450,7 @@ class TestTradeManager(unittest.TestCase):
         self.assertEqual(pos["quantity"], 100)
 
     def test_update_strategy_execution_api_error(self) -> None:
+        """取数故障不抛异常，但必须留 WARNING：此时执行记录会以零持仓重建。"""
         manager = self._manager(TradeCostConfig())
         manager._user_strategy_api = MagicMock()
         manager._user_strategy_api.get_latest_execution.side_effect = Exception(
@@ -457,7 +458,13 @@ class TestTradeManager(unittest.TestCase):
         )
         order = _buy_order()
         manager.execute_order(order)
-        manager._update_strategy_execution(order)  # 不应抛异常
+        with self.assertLogs("trade.manager", level="WARNING") as cm:
+            manager._update_strategy_execution(order)  # 不应抛异常
+
+        self.assertTrue(
+            any("已有持仓可能丢失" in r.getMessage() for r in cm.records),
+            "取数故障导致持仓截断的风险必须以 WARNING 暴露（DEBUG 运维看不到）",
+        )
 
     def test_update_strategy_execution_save_error(self) -> None:
         manager = self._manager(TradeCostConfig())

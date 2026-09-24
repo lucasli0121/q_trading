@@ -12,10 +12,22 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
+import httpx
+
+from api.user_strategy import UserStrategyApi
 from dao.order_dao import OrderDao, OrderStatus
 from mq.mqtt_client import MqttTopic
 from trade.manager import TradeExecutionResult
 from workflow.strategy_workflow import StrategyState, StrategyWorkflow
+
+
+def _http_status_error(status: int) -> httpx.HTTPStatusError:
+    """构造真实的 httpx.HTTPStatusError（`is_not_found` 依赖 response.status_code）。"""
+    request = httpx.Request("GET", "http://127.0.0.1:1/api/x")
+    response = httpx.Response(
+        status, json={"detail": "x"}, request=request
+    )
+    return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
 
 
 class FakeScheduler:
@@ -607,6 +619,29 @@ class TestStrategyWorkflow(unittest.TestCase):
 
         self.wf._process_bar(state, "000001", {})
         submit.assert_not_called()
+
+    def test_process_bar_skip_reason_is_info_visible(self) -> None:
+        """买单被拦下时，原因必须进 INFO 日志 —— 否则「有信号、无订单」无从排查。
+
+        2026-09-24 线上就是如此：`max_stock_count=0`（按 `_parse_max_stock_count`
+        语义 = 不允许新建持仓）把该策略的买单全部拦掉，而这条日志原本是 DEBUG，
+        而 info.log 只收 INFO 及以上 ⇒ 运维侧完全看不到。
+        """
+        instance = self._fake_instance("BUY")
+        state = make_state(instance=instance)
+        state.max_stock_count = 0
+        self.wf._user_strategies["sid"] = [state]
+        self._patch_load_positions({})
+        submit = self._patch_submit()
+
+        with self.assertLogs("workflow.strategy_workflow", level="INFO") as cm:
+            self.wf._process_bar(state, "000001", {})
+
+        submit.assert_not_called()
+        self.assertTrue(
+            any("已达上限" in r.getMessage() for r in cm.records),
+            "阻断原因必须记 INFO（DEBUG 不进 info.log）",
+        )
 
     # ---- 订单创建与回滚 ----
 
@@ -1427,6 +1462,121 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf.daily_before_trading()
 
         instance.select.assert_not_called()
+
+
+class TestNoExecutionRecordUnblocksFirstOrder(unittest.TestCase):
+    """2026-09-24 线上事故回归：404「尚无执行记录」不得阻断新策略的第一单。
+
+    事故现场（`user_strategy_id=6aab518ad097eabd87115e90`，波段交易策略）实测：
+    14 条交易信号、**0 条订单**、0 条执行记录。链路为
+
+        服务端 `/execution/latest` 返回 404（该策略还没有任何执行记录）
+          → `_load_positions` 捕获异常返回 None
+          → `_process_bar` 判定「持仓未知」fail-closed 跳过下单
+          → 执行记录的唯一来源就是订单成交 ⇒ 永远 404（自锁）
+
+    修复后：该 404 在 `UserStrategyApi.get_latest_execution` 收敛为 `{}`
+    （= 无记录 = 空持仓），只有真实取数故障才 fail-closed。
+    """
+
+    def setUp(self) -> None:
+        self.wf = StrategyWorkflow(pool_size=2)
+        self.wf._admin_client = MagicMock()
+        self.wf._strategy_api = MagicMock()
+        self.wf._pool_api = MagicMock()
+        self.wf._stock_info_api = MagicMock()
+        self.wf._trade_manager = MagicMock()
+        self.wf._notifier = MagicMock()
+
+    def _wire_execution_api(self, status: int) -> None:
+        """把 `_user_strategy_api` 换成真实包装类 + 恒抛指定状态码的假 client。
+
+        用真实 `UserStrategyApi` 而非 MagicMock，才能覆盖「404 判定」这段真逻辑
+        —— 缺陷恰恰出在这里。
+        """
+        client = MagicMock()
+        client.get.side_effect = _http_status_error(status)
+        self.wf._user_strategy_api = UserStrategyApi(client)
+
+    def test_404_is_empty_positions_not_fetch_failure(self) -> None:
+        """404 → 返回空持仓 `{}`（不是 None），资金按本地口径推算。"""
+        self._wire_execution_api(404)
+        state = make_state(cash=1000000.0)
+
+        positions = self.wf._load_positions(state, force_refresh=True)
+
+        self.assertEqual(positions, {})
+        self.assertIsNotNone(positions)
+        self.assertEqual(state.positions, {})
+        self.assertEqual(state.available_cash, 1000000.0)
+
+    def test_404_noted_once_at_info(self) -> None:
+        """「尚无执行记录」是正常状态：INFO 提示一次即可，不逐信号刷屏。"""
+        self._wire_execution_api(404)
+        state = make_state(cash=1000000.0)
+
+        with self.assertLogs("workflow.strategy_workflow", level="INFO") as cm:
+            self.wf._load_positions(state, force_refresh=True)
+            self.wf._load_positions(state, force_refresh=True)
+
+        noted = [r for r in cm.records if "尚无执行记录" in r.getMessage()]
+        self.assertEqual(len(noted), 1)
+
+    def test_500_still_fail_closed(self) -> None:
+        """真实取数故障（5xx）必须照旧返回 None ⇒ 调用方 fail-closed。"""
+        self._wire_execution_api(500)
+        state = make_state(cash=1000000.0)
+
+        with self.assertLogs("workflow.strategy_workflow", level="WARNING"):
+            self.assertIsNone(self.wf._load_positions(state, force_refresh=True))
+
+    def test_first_buy_order_goes_through(self) -> None:
+        """端到端：404 → 无持仓 → 第一笔买单被真正创建（修复前被 fail-closed 掐掉）。"""
+        self._wire_execution_api(404)
+        instance = MagicMock()
+        instance.strategy_name = "波段交易策略"
+        instance.handle_minute_bar.return_value = (
+            True,
+            {"signal": "BUY", "current_price": 10.0},
+        )
+        state = make_state(cash=1000000.0, instance=instance)
+        state.max_stock_count = 4
+        self.wf._user_strategies["sid"] = [state]
+        self.wf._save_trade_signal = MagicMock(return_value=True)
+        self.wf._save_runlog = MagicMock()
+        submit = MagicMock(return_value=True)
+        self.wf._submit_trade = submit
+
+        self.wf._process_bar(state, "000001", {})
+
+        submit.assert_called_once()
+        order = submit.call_args.args[0]
+        self.assertEqual(order.action, "买入")
+        # 单笔上限 10 万元 / 10 元 = 10000 股（整手）
+        self.assertEqual(order.entrust_quantity, 10000)
+
+    def test_first_buy_order_blocked_on_real_failure(self) -> None:
+        """对照组：同一场景下把 404 换成 500，买单必须被拦下（fail-closed 未被削弱）。"""
+        self._wire_execution_api(500)
+        instance = MagicMock()
+        instance.strategy_name = "波段交易策略"
+        instance.handle_minute_bar.return_value = (
+            True,
+            {"signal": "BUY", "current_price": 10.0},
+        )
+        state = make_state(cash=1000000.0, instance=instance)
+        state.max_stock_count = 4
+        self.wf._user_strategies["sid"] = [state]
+        self.wf._save_trade_signal = MagicMock(return_value=True)
+        self.wf._save_runlog = MagicMock()
+        submit = MagicMock(return_value=True)
+        self.wf._submit_trade = submit
+
+        with self.assertLogs("workflow.strategy_workflow", level="WARNING"):
+            self.wf._process_bar(state, "000001", {})
+
+        submit.assert_not_called()
+        self.assertEqual(state.pending_codes, set())
 
 
 if __name__ == "__main__":

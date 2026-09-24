@@ -317,8 +317,16 @@ class TradeManager:
         try:
             exec_data = self._user_strategy_api.get_latest_execution(user_strategy_id)
         except Exception:
-            self.logger.debug(
-                "加载最近执行记录失败 user_strategy_id=%s", user_strategy_id, exc_info=True
+            # 走到这里说明是真实取数故障（「尚无执行记录」的 404 已在上层收敛为 {}）。
+            # 后果不只是日志：exec_data 为空 ⇒ 下面会以「零持仓」为基础重建这条执行
+            # 记录，**原有持仓会从新记录里消失**（只剩本次成交的那只）。
+            # 因此必须用 WARNING 让它可见（DEBUG 只进文件不进聚合视图，运维看不到），
+            # 便于发生后对账。是否要改成 fail-closed（宁可记录滞后也不写残缺记录）
+            # 属于账务口径决策，待确认。
+            self.logger.warning(
+                "加载最近执行记录失败，本次执行记录将以零持仓为基础重建"
+                "（已有持仓可能丢失，请对账）user_strategy_id=%s",
+                user_strategy_id, exc_info=True,
             )
 
         execution = StrategyExecutionDao(user_strategy_id=user_strategy_id)

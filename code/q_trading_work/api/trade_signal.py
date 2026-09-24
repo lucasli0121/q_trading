@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from api.client import ApiClient
+import httpx
+
+from api.client import ApiClient, is_not_found
 
 
 def _as_text(value: Any) -> str:
@@ -102,6 +104,13 @@ class TradeSignalApi:
     ) -> dict[str, Any]:
         """查询最近一次交易信号。
 
+        服务端在「该股票还没有该类信号」时返回 404 + {"detail": "未找到交易信号"}，
+        这是**正常业务状态**（首次买入前查历史买入信号、从未卖出的股票查历史卖出
+        信号都会命中），因此 404 收敛为空字典、日志降为 DEBUG。
+
+        调用方 `_save_trade_signal` 用它计算卖出收益率、以及信号风暴过滤的
+        价格比较，两者都只把空结果当「无历史可比对」处理。
+
         :param strategy_id: 策略模板 ID
         :param stock_code: 股票代码
         :param action: 交易方向筛选（可选，买入/卖出，不传则不过滤方向）
@@ -114,10 +123,17 @@ class TradeSignalApi:
         }
         if action:
             params["action"] = action
-        result: Any = self._client.get(
-            "/api/trade_signal/latest",
-            params=params,
-        )
+        try:
+            result: Any = self._client.get(
+                "/api/trade_signal/latest",
+                params=params,
+                allow_not_found=True,
+            )
+        except httpx.HTTPStatusError as exc:
+            if not is_not_found(exc):
+                raise
+            self.logger.debug("无历史交易信号（服务端 404 表示无数据）: %s", params)
+            return {}
         return dict(result) if result else {}
 
     def delete(self, signal_id: str) -> str:

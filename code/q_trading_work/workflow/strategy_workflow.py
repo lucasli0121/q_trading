@@ -70,6 +70,8 @@ class StrategyState:
     available_cash: float = 0.0  # 剩余可用资金（初始资金 + 已实现盈利 - 持仓成本）
     pending_codes: set[str] = field(default_factory=set)  # 在途订单股票代码（去重）
     blacklist_codes: set[str] = field(default_factory=set)  # 用户黑名单股票代码（策略信号/选股时过滤）
+    # 是否已提示过「该用户策略尚无执行记录」（仅用于日志去重，见 _load_positions）
+    no_execution_record_noted: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)  # 线程安全锁，保护并发访问
 
 
@@ -384,7 +386,13 @@ class StrategyWorkflow(BaseWorkflow):
         return max(available, 0.0)
 
     def _load_execution_data(self, state: StrategyState) -> None:
-        """加载策略执行数据，填充初始资金、持仓和剩余资金。"""
+        """加载策略执行数据，填充初始资金、持仓和剩余资金。
+
+        「无执行记录」（新策略）与「取数失败」都只影响启动时的一次性初始化：
+        两者都回退到本地资金口径计算，不阻塞策略运行（下单前的持仓判定由
+        `_load_positions` 把关，那里才做 fail-closed）。区别在于日志级别——
+        前者是正常状态（DEBUG），后者是真故障（WARNING）。
+        """
         if not state.user_strategy_id:
             return
         try:
@@ -392,12 +400,21 @@ class StrategyWorkflow(BaseWorkflow):
                 state.user_strategy_id
             )
         except Exception as exc:
-            self.logger.debug("加载策略 %s 执行数据失败: %s", state.strategy_name, exc)
+            # 真实故障（超时/5xx/连接失败）；「无执行记录」的 404 已在 API 层收敛为 {}，
+            # 不会走到这里。启动阶段故障只降级为本地资金推算，不阻塞策略运行。
+            self.logger.warning(
+                "加载策略执行数据失败（回退本地资金口径）%s: %s",
+                state.strategy_name, exc,
+            )
             # 即使 API 异常，也确保 available_cash 被初始化
             state.available_cash = self._calc_available_cash(state)
             return
         if not exec_data:
             # 无执行数据时（新策略），仍需要初始化 available_cash
+            self.logger.debug(
+                "策略 %s 尚无执行记录，按初始资金口径初始化可用资金",
+                state.strategy_name,
+            )
             state.available_cash = self._calc_available_cash(state)
             return
         # initial_amount 优先使用 UserStrategyDao 的值（已在 state 初始化时设置），
@@ -1234,20 +1251,25 @@ class StrategyWorkflow(BaseWorkflow):
             # 订单提交（HTTP）在锁外执行，避免一个慢请求阻塞该用户所有股票。
             reserved: tuple[OrderDao, float] | None = None
             with state._lock:
+                # 下面每个「跳过」分支都必须记 INFO：信号已写库/MQTT 已推送，但订单
+                # 没创建 —— 这是「信号成功却无持仓」的唯一解释来源。原来记 DEBUG，
+                # 而 cfg/log.yaml 的 info.log 是 INFO 级，等于对运维完全不可见
+                # （2026-09-24 线上就是这个现象：只能看到信号，看不到为什么没下单）。
                 if signal_type == "BUY":
                     if code in positions:
-                        self.logger.debug(
+                        self.logger.info(
                             "[%s] code=%s 已有持仓，跳过买入",
                             state.strategy_name, code,
                         )
                     elif code in state.pending_codes:
-                        self.logger.debug(
+                        self.logger.info(
                             "[%s] code=%s 已有在途买入订单，跳过",
                             state.strategy_name, code,
                         )
                     elif self._is_position_limit_reached(state, positions):
-                        self.logger.debug(
-                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入",
+                        self.logger.info(
+                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入"
+                            "（max_stock_count=0 表示不允许新建持仓）",
                             state.strategy_name, code,
                             len(positions), state.max_stock_count,
                         )
@@ -1255,12 +1277,12 @@ class StrategyWorkflow(BaseWorkflow):
                         reserved = self._reserve_buy_order(state, code, extra)
                 elif signal_type == "SELL":
                     if code not in positions:
-                        self.logger.debug(
+                        self.logger.info(
                             "[%s] code=%s 无持仓，跳过卖出",
                             state.strategy_name, code,
                         )
                     elif code in state.pending_codes:
-                        self.logger.debug(
+                        self.logger.info(
                             "[%s] code=%s 已有在途卖出订单，跳过",
                             state.strategy_name, code,
                         )
@@ -1275,8 +1297,8 @@ class StrategyWorkflow(BaseWorkflow):
                             stock_time=bar_data.get("create_time", ""),
                         )
                 else:
-                    self.logger.debug(
-                        "[%s] code=%s 信号类型未知: %s",
+                    self.logger.warning(
+                        "[%s] code=%s 信号类型未知，跳过下单: %r",
                         state.strategy_name, code, signal_type,
                     )
 
@@ -1343,25 +1365,50 @@ class StrategyWorkflow(BaseWorkflow):
 
             # P2-24：锁内判定 + 占位，锁外提交
             reserved: tuple[OrderDao, float] | None = None
+            # 分支结构与 _process_bar 完全对齐（含每个「跳过」的 INFO 原因日志）：
+            # 信号已写库/已推送却没有订单时，必须能从日志看到是哪一条规则拦下的。
             with state._lock:
-                if signal_type == "BUY" and code not in positions and code not in state.pending_codes:
-                    if self._is_position_limit_reached(state, positions):
-                        self.logger.debug(
-                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入",
+                if signal_type == "BUY":
+                    if code in positions:
+                        self.logger.info(
+                            "[%s] code=%s 已有持仓，跳过买入", state.strategy_name, code,
+                        )
+                    elif code in state.pending_codes:
+                        self.logger.info(
+                            "[%s] code=%s 已有在途买入订单，跳过", state.strategy_name, code,
+                        )
+                    elif self._is_position_limit_reached(state, positions):
+                        self.logger.info(
+                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入"
+                            "（max_stock_count=0 表示不允许新建持仓）",
                             state.strategy_name, code,
                             len(positions), state.max_stock_count,
                         )
                     else:
                         reserved = self._reserve_buy_order(state, code, extra)
-                elif signal_type == "SELL" and code in positions and code not in state.pending_codes:
-                    pos = positions[code]
-                    # 与 _process_bar 保持一致：T+1 仅提示不拦截（设计约定 D-2）
-                    self._log_t1_advisory(
-                        state, code, pos, tick_data.get("create_time", "")
-                    )
-                    reserved = self._reserve_sell_order(
-                        state, code, float(pos.get("cost_price", 0)), extra,
-                        stock_time=tick_data.get("create_time", ""),
+                elif signal_type == "SELL":
+                    if code not in positions:
+                        self.logger.info(
+                            "[%s] code=%s 无持仓，跳过卖出", state.strategy_name, code,
+                        )
+                    elif code in state.pending_codes:
+                        self.logger.info(
+                            "[%s] code=%s 已有在途卖出订单，跳过", state.strategy_name, code,
+                        )
+                    else:
+                        pos = positions[code]
+                        # 与 _process_bar 保持一致：T+1 仅提示不拦截（设计约定 D-2）
+                        self._log_t1_advisory(
+                            state, code, pos, tick_data.get("create_time", "")
+                        )
+                        reserved = self._reserve_sell_order(
+                            state, code, float(pos.get("cost_price", 0)), extra,
+                            stock_time=tick_data.get("create_time", ""),
+                        )
+                else:
+                    self.logger.warning(
+                        "[%s] code=%s 信号类型未知，跳过下单: %r",
+                        state.strategy_name, code, signal_type,
                     )
 
             if reserved is not None:
@@ -1972,10 +2019,18 @@ class StrategyWorkflow(BaseWorkflow):
     ) -> dict[str, dict[str, Any]] | None:
         """加载策略的当前持仓信息。
 
-        :return: code → 持仓信息 的映射；
-                 **拉取失败返回 None**（P1-18）。调用方必须把 None 视为
-                 「持仓未知」并 fail-closed，绝不能当成「无持仓」处理，
-                 否则会把已有持仓当成新标的重复买入。
+        三种结果必须严格区分（2026-09-24 线上事故的根因就在前两者被混为一谈）：
+
+        1. **无执行记录** → 返回 `{}`（空持仓）。服务端在「该策略还没有任何执行
+           记录」时返回 404，`UserStrategyApi.get_latest_execution` 已把它收敛成
+           空字典。这是新策略的正常初始状态，可以下单。
+        2. **取数失败** → 返回 `None`（P1-18 fail-closed）。调用方必须把 None 视为
+           「持仓未知」并跳过下单，绝不能当成「无持仓」，否则会把已有持仓当成新
+           标的重复买入。
+        3. 正常返回 → code → 持仓信息 的映射。
+
+        若把 (1) 也当 (2) 处理会形成**死锁**：执行记录只能由订单成交后写入，而
+        订单又要先读到持仓才创建 ⇒ 新策略永远下不了第一单，永远 404。
         """
         if not force_refresh and state.positions:
             return dict(state.positions)
@@ -1986,6 +2041,16 @@ class StrategyWorkflow(BaseWorkflow):
             exec_data: dict[str, Any] = self._user_strategy_api.get_latest_execution(
                 state.user_strategy_id
             )
+            if not exec_data and not state.no_execution_record_noted:
+                # 首次发现「尚无执行记录」时提示一次：该策略此前从未成交，
+                # 系统按空持仓 + 初始资金运行，第一笔订单成交后即会出现执行记录。
+                state.no_execution_record_noted = True
+                self.logger.info(
+                    "[%s] user_strategy_id=%s 尚无执行记录，按空持仓处理"
+                    "（初始资金 %.2f，成交后会自动产生执行记录）",
+                    state.strategy_name, state.user_strategy_id,
+                    state.initial_amount,
+                )
             positions_list: list[dict[str, Any]] = exec_data.get("positions", [])
             positions: dict[str, dict[str, Any]] = {
                 p.get("code", ""): p for p in positions_list if p.get("code")
@@ -2001,8 +2066,10 @@ class StrategyWorkflow(BaseWorkflow):
                 state.available_cash = self._calc_available_cash(state)
             return positions
         except Exception as exc:
+            # 只有真实取数故障才会走到这里（超时 / 5xx / 连接失败）；
+            # 「无执行记录」的 404 已在 API 层收敛为 {}，不会触发 fail-closed。
             self.logger.warning(
-                "加载持仓信息失败 user_strategy_id=%s: %s",
+                "加载持仓信息失败（取数故障，本次跳过下单）user_strategy_id=%s: %s",
                 state.user_strategy_id, exc,
             )
             return None
