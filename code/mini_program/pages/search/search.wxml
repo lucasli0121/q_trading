@@ -1,0 +1,156 @@
+<view class="root {{themeClass}}">
+  <q-navbar title="搜索与筛选" statusBarHeight="{{statusBarHeight}}" />
+
+  <scroll-view class="page-body" scroll-y>
+    <!-- 标签 -->
+    <view class="seg">
+      <view class="seg-item {{tab === 'quote' ? 'seg-item--on' : ''}}" data-key="quote" bindtap="onTab">
+        按代码 / 名称
+      </view>
+      <view class="seg-item {{tab === 'screen' ? 'seg-item--on' : ''}}" data-key="screen" bindtap="onTab">
+        按财务条件
+      </view>
+    </view>
+
+    <!-- ==================== 搜索 -->
+    <block wx:if="{{tab === 'quote'}}">
+      <view class="search">
+        <view class="search-icon"></view>
+        <input
+          class="search-input"
+          value="{{keyword}}"
+          placeholder="输入代码 / 名称 / 拼音首字母"
+          placeholder-class="input-ph"
+          confirm-type="search"
+          bindinput="onKeyword"
+          bindconfirm="doSearch"
+        />
+        <text wx:if="{{keyword}}" class="s-clear" catchtap="clearKeyword">清空</text>
+      </view>
+      <view class="btn btn-primary btn-block s-go" bindtap="doSearch">搜索</view>
+
+      <view wx:if="{{searching}}" class="loading-box">
+        <view class="spinner"></view>
+        <text class="c-tertiary t-sm">正在搜索...</text>
+      </view>
+
+      <q-empty
+        wx:elif="{{searched && !quoteRows.length}}"
+        type="empty"
+        title="没有找到匹配的股票"
+        desc="试试输入 6 位代码（如 600519）或名称关键字"
+      />
+
+      <view wx:elif="{{quoteRows.length}}" class="result-list">
+        <view
+          wx:for="{{quoteRows}}"
+          wx:key="code"
+          class="card r-card"
+          data-code="{{item.code}}"
+          bindtap="goStock"
+          hover-class="r-card--hover"
+        >
+          <view class="row between">
+            <view class="flex1">
+              <view class="row gap-xs">
+                <text class="num t-lg t-bold">{{item.code}}</text>
+                <text class="c-tertiary t-sm ellipsis">{{item.name}}</text>
+              </view>
+              <view class="row gap-sm r-sub">
+                <text class="c-tertiary t-2xs">换手 {{item.turnoverText}}</text>
+                <text class="c-tertiary t-2xs">PE {{item.peText}}</text>
+                <text class="c-tertiary t-2xs">利润增长 {{item.growthText}}</text>
+              </view>
+            </view>
+            <view class="r-price">
+              <text class="num t-lg t-bold {{item.priceTone === 'up' ? 'c-up' : (item.priceTone === 'down' ? 'c-down' : 'c-second')}}">{{item.price}}</text>
+              <text class="num t-sm {{item.tone === 'up' ? 'c-up' : (item.tone === 'down' ? 'c-down' : 'c-second')}}">{{item.pctText}}</text>
+              <text class="num t-2xs c-tertiary">{{item.amtText}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <q-empty wx:elif="{{!searched}}" type="empty" title="搜索股票" desc="输入代码 / 名称 / 拼音，回车即可搜索" compact />
+    </block>
+
+    <!-- ==================== 条件筛选 -->
+    <block wx:else>
+      <view class="card card-pad">
+        <view class="sec-title">市值范围（亿元）</view>
+        <view class="row gap-sm">
+          <input class="input flex1" type="digit" value="{{capMin}}" data-key="capMin"
+                 placeholder="下限" placeholder-class="input-ph" bindinput="onField" />
+          <text class="c-tertiary">~</text>
+          <input class="input flex1" type="digit" value="{{capMax}}" data-key="capMax"
+                 placeholder="上限" placeholder-class="input-ph" bindinput="onField" />
+        </view>
+
+        <view class="sec-title">市盈率 PE（TTM）</view>
+        <view class="row gap-sm">
+          <input class="input flex1" type="digit" value="{{peMin}}" data-key="peMin"
+                 placeholder="下限" placeholder-class="input-ph" bindinput="onField" />
+          <text class="c-tertiary">~</text>
+          <input class="input flex1" type="digit" value="{{peMax}}" data-key="peMax"
+                 placeholder="上限" placeholder-class="input-ph" bindinput="onField" />
+        </view>
+
+        <view class="sec-title">利润率（%）</view>
+        <view class="row gap-sm">
+          <input class="input flex1" type="digit" value="{{marginMin}}" data-key="marginMin"
+                 placeholder="下限，如 15" placeholder-class="input-ph" bindinput="onField" />
+          <text class="c-tertiary">~</text>
+          <input class="input flex1" type="digit" value="{{marginMax}}" data-key="marginMax"
+                 placeholder="上限" placeholder-class="input-ph" bindinput="onField" />
+        </view>
+
+        <view class="row gap-sm s-actions">
+          <view class="btn btn-secondary flex1" bindtap="resetScreen">重置</view>
+          <view class="btn btn-primary flex1" bindtap="doScreen">开始筛选</view>
+        </view>
+
+        <view class="hint">留空表示不限制。市值单位为亿元，利润率按百分比填写（15 表示 15%）。</view>
+      </view>
+
+      <view wx:if="{{screening}}" class="loading-box">
+        <view class="spinner"></view>
+        <text class="c-tertiary t-sm">正在筛选...</text>
+      </view>
+
+      <q-empty
+        wx:elif="{{screened && !screenRows.length}}"
+        type="empty"
+        title="没有符合条件的股票"
+        desc="适当放宽市值 / PE / 利润率区间后重试"
+      />
+
+      <view wx:elif="{{screenRows.length}}" class="card r-table">
+        <view class="tbl-hd">
+          <text class="sf-code">代码 / 名称</text>
+          <text class="sf-min">PE</text>
+          <text class="sf-min">市值</text>
+          <text class="sf-min">利润率</text>
+        </view>
+        <view
+          wx:for="{{screenRows}}"
+          wx:key="code"
+          class="tbl-row"
+          data-code="{{item.code}}"
+          bindtap="goStock"
+          hover-class="list-row-hover"
+        >
+          <view class="sf-code">
+            <text class="num t-sm t-bold">{{item.code}}</text>
+            <text class="c-tertiary t-2xs ellipsis">{{item.name}}</text>
+          </view>
+          <text class="sf-min num t-xs">{{item.peText}}</text>
+          <text class="sf-min num t-xs">{{item.capText}}</text>
+          <text class="sf-min num t-xs">{{item.marginText}}</text>
+        </view>
+        <view class="tbl-note">报告期 {{screenRows[0].reportDate}} · 共 {{screenRows.length}} 只</view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

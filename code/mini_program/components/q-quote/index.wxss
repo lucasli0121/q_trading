@@ -1,0 +1,105 @@
+.quote {
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-bottom: 1rpx solid var(--color-border-divider);
+  background-color: var(--color-bg-surface);
+}
+
+.quote:last-child {
+  border-bottom: none;
+}
+
+.quote--hover {
+  background-color: var(--color-bg-subtle);
+}
+
+.quote-line {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--metric-space-sm);
+}
+
+.quote-line--sub {
+  margin-top: 12rpx;
+  flex-wrap: wrap;
+  gap: 4rpx 0;
+}
+
+.quote-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.quote-code {
+  font-size: var(--metric-font-size-lg);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: 1rpx;
+}
+
+.quote-name {
+  margin-top: 2rpx;
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+.quote-score {
+  width: 96rpx;
+  text-align: center;
+}
+
+.quote-price {
+  text-align: right;
+  min-width: 160rpx;
+}
+
+.quote-price-v {
+  font-size: var(--metric-font-size-xl);
+  font-weight: 700;
+}
+
+.quote-pct {
+  margin-top: 2rpx;
+  font-size: var(--metric-font-size-md);
+  font-weight: 600;
+}
+
+/* 第二行的指标：每个占 1/4 宽 */
+.quote-kv {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6rpx;
+  width: 25%;
+  min-width: 0;
+}
+
+.quote-k {
+  font-size: var(--metric-font-size-2xs);
+  color: var(--color-text-tertiary);
+  flex: none;
+}
+
+.quote-v {
+  font-size: var(--metric-font-size-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-action {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88rpx;
+  height: 44rpx;
+  padding: 0 16rpx;
+  border: 1rpx solid var(--color-brand-primary);
+  border-radius: var(--metric-radius-sm);
+  font-size: var(--metric-font-size-xs);
+  font-weight: 600;
+  color: var(--color-brand-link);
+  flex: none;
+}

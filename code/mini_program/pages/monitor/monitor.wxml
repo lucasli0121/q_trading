@@ -1,0 +1,101 @@
+<view class="root {{themeClass}}">
+  <q-navbar title="策略监控" statusBarHeight="{{statusBarHeight}}" />
+
+  <scroll-view class="page-body" scroll-y>
+    <!-- 实时状态 -->
+    <view class="live {{liveOk ? 'live--on' : 'live--off'}}">
+      <view class="live-dot"></view>
+      <text class="live-text">{{liveText}}</text>
+      <text class="live-hint">近 {{retentionHours}} 小时窗口</text>
+    </view>
+
+    <!-- 统计卡 -->
+    <view class="row gap-sm">
+      <view class="stat-card">
+        <view class="stat-k">全部信号</view>
+        <view class="stat-v num">{{statAll}}</view>
+      </view>
+      <view class="stat-card">
+        <view class="stat-k">买入信号</view>
+        <view class="stat-v num c-up">{{statBuy}}</view>
+      </view>
+    </view>
+    <view class="row gap-sm" style="margin-top: 16rpx;">
+      <view class="stat-card">
+        <view class="stat-k">卖出信号</view>
+        <view class="stat-v num c-down">{{statSell}}</view>
+      </view>
+      <view class="stat-card">
+        <view class="stat-k">今日信号</view>
+        <view class="stat-v num c-brand">{{statToday}}</view>
+      </view>
+    </view>
+
+    <!-- 筛选 -->
+    <view class="row gap-xs filter-bar">
+      <view
+        wx:for="{{filters}}"
+        wx:key="*this"
+        class="chip {{filter === item ? 'chip--active' : ''}}"
+        data-key="{{item}}"
+        bindtap="onFilter"
+      >{{item}}</view>
+    </view>
+
+    <!-- 信号列表 -->
+    <q-empty wx:if="{{loading}}" type="loading" />
+    <q-empty
+      wx:elif="{{!rows.length}}"
+      type="empty"
+      title="暂无交易信号"
+      desc="策略触发买入 / 卖出后会实时出现在这里"
+      action="重新加载"
+      bind:action="retry"
+    />
+
+    <view wx:else class="sig-list">
+      <view wx:for="{{rows}}" wx:key="key" class="card sig-card">
+        <view class="row between sig-hd">
+          <text class="num t-sm c-second">{{item.time}}</text>
+          <text class="t-sm t-medium {{item.actionTone === 'up' ? 'c-up' : (item.actionTone === 'down' ? 'c-down' : 'c-second')}}">
+            {{item.action}}
+          </text>
+        </view>
+
+        <view class="row between sig-mid">
+          <view
+            class="sig-code"
+            data-code="{{item.code}}"
+            bindtap="goStock"
+            hover-class="sig-code--hover"
+          >
+            <text class="num t-lg t-bold">{{item.code}}</text>
+            <text class="tag tag-neutral">查看行情</text>
+          </view>
+          <view class="sig-nums">
+            <text class="num t-base">成交 {{item.price}}</text>
+            <text class="num t-base {{item.rateTone === 'up' ? 'c-up' : (item.rateTone === 'down' ? 'c-down' : 'c-second')}}">
+              盈利率 {{item.rateText}}
+            </text>
+            <text class="num t-base {{item.amountTone === 'up' ? 'c-up' : (item.amountTone === 'down' ? 'c-down' : 'c-second')}}">
+              盈亏额 {{item.amountText}}
+            </text>
+          </view>
+        </view>
+
+        <view class="row between sig-ft">
+          <text
+            wx:if="{{item.strategyId}}"
+            class="c-brand t-xs ellipsis flex1"
+            data-id="{{item.strategyId}}"
+            bindtap="goStrategy"
+          >{{item.strategyName}}</text>
+          <text wx:else class="c-tertiary t-xs ellipsis flex1">{{item.strategyName}}</text>
+          <text class="c-tertiary t-xs ellipsis-2 sig-reason">{{item.reason}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

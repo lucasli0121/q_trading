@@ -1,0 +1,121 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="黑名单股票管理"
+    statusBarHeight="{{statusBarHeight}}"
+    action="添加股票"
+    bind:action="openAdd"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <!-- 提示横幅 -->
+    <view class="banner">
+      <view class="banner-title">提示：黑名单逻辑生效于所有策略</view>
+      <view class="banner-desc">
+        列入黑名单的股票将不会出现在任何自动筛选的股票池中，且策略信号触发时会自动过滤掉这些标的。
+      </view>
+    </view>
+
+    <!-- 搜索 -->
+    <view class="search bl-search">
+      <view class="search-icon"></view>
+      <input
+        class="search-input"
+        value="{{keyword}}"
+        placeholder="搜索已拉黑股票（代码 / 名称）"
+        placeholder-class="input-ph"
+        bindinput="onKeyword"
+      />
+      <text wx:if="{{keyword}}" class="bl-clear" catchtap="clearKeyword">清空</text>
+    </view>
+
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="list" rows="5" />
+
+    <block wx:else>
+      <q-empty
+        wx:if="{{!filtered.length}}"
+        type="empty"
+        title="{{rows.length ? '没有匹配的股票' : '黑名单为空'}}"
+        desc="{{rows.length ? '换个代码或名称试试' : '加入黑名单的股票会被所有策略自动过滤'}}"
+        action="{{rows.length ? '' : '添加股票'}}"
+        bind:action="openAdd"
+      />
+
+      <view wx:else class="bl-list">
+        <view wx:for="{{filtered}}" wx:key="code" class="card bl-card">
+          <view class="row between">
+            <view class="row gap-sm flex1">
+              <text class="num t-lg t-bold">{{item.code}}</text>
+              <text class="c-tertiary t-sm ellipsis">{{item.name}}</text>
+            </view>
+            <view
+              class="btn btn-danger btn-sm"
+              data-code="{{item.code}}"
+              bindtap="onRemove"
+            >移除名单</view>
+          </view>
+
+          <view class="bl-meta">
+            <view class="bl-kv">
+              <text class="bl-k">拉黑时间</text>
+              <text class="num t-xs c-second">{{item.addTime}}</text>
+            </view>
+            <view class="bl-kv">
+              <text class="bl-k">用户</text>
+              <text class="t-xs c-second">{{item.user}}</text>
+            </view>
+            <view class="bl-kv bl-kv--full">
+              <text class="bl-k">拉黑原因</text>
+              <text class="t-xs {{item.hasReason ? 'c-second' : 'c-tertiary'}} bl-reason">{{item.reason}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+
+  <!-- 添加对话框 -->
+  <view wx:if="{{showAdd}}" class="scrim" bindtap="closeAdd"></view>
+  <view wx:if="{{showAdd}}" class="sheet">
+    <view class="sheet-hd">
+      <text class="t-lg t-bold">添加股票</text>
+      <text class="sheet-close" bindtap="closeAdd">✕</text>
+    </view>
+
+    <view class="sheet-bd">
+      <view class="field-label">股票代码 <text class="c-up">*</text></view>
+      <textarea
+        class="textarea"
+        value="{{addCodes}}"
+        data-key="addCodes"
+        placeholder="多个代码用逗号分隔，例如：000002,600000,002460（中英文逗号均可）"
+        placeholder-class="input-ph"
+        maxlength="500"
+        bindinput="onAddField"
+      />
+
+      <view class="field-label" style="margin-top: 24rpx;">拉黑原因</view>
+      <textarea
+        class="textarea"
+        value="{{addReason}}"
+        data-key="addReason"
+        placeholder="可选，例如：财务造假、ST 风险等"
+        placeholder-class="input-ph"
+        maxlength="200"
+        bindinput="onAddField"
+      />
+
+      <view wx:if="{{addError}}" class="field-error">{{addError}}</view>
+    </view>
+
+    <view class="footer-bar sheet-ft">
+      <view class="btn btn-secondary flex1" bindtap="closeAdd">取消</view>
+      <view class="btn btn-primary flex1 {{adding ? 'btn-disabled' : ''}}" bindtap="submitAdd">
+        {{adding ? '提交中...' : '确认添加'}}
+      </view>
+    </view>
+    <view style="height: 160rpx;"></view>
+  </view>
+</view>

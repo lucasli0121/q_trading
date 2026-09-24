@@ -1,0 +1,16 @@
+<!-- 自定义 TabBar：h78pt，其中底部 34pt 为安全区（用 env 变量自适应） -->
+<view class="tabbar" style="{{themeStyle}}">
+  <view class="tabbar-inner">
+    <view
+      wx:for="{{tabs}}"
+      wx:key="path"
+      class="tab {{selected === index ? 'tab--active' : ''}}"
+      data-index="{{index}}"
+      bindtap="onTap"
+    >
+      <view class="tab-icon tab-icon--{{item.icon}}"></view>
+      <view class="tab-text">{{item.text}}</view>
+    </view>
+  </view>
+  <view class="tabbar-safe"></view>
+</view>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>公众号可粘贴版 - ADX 趋势因子的边界缺陷</title>
+<style>
+  body { margin: 0; padding: 24px 0; background: #ffffff; }
+  .wrap { max-width: 677px; margin: 0 auto; padding: 0 16px; }
+  .tip { max-width: 677px; margin: 0 auto 24px; padding: 12px 16px; background: #fffbe6; border: 1px solid #ffe58f; border-radius: 6px; font: 14px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #614700; }
+</style>
+</head>
+<body>
+
+<div class="tip">
+  <b>使用说明</b>(这段不会粘进公众号,复制时请从下面的标题开始):<br>
+  1. 用浏览器打开本文件 → 从「ADX 趋势因子:数据不足时…」标题开始,拖选到文末免责声明;<br>
+  2. Ctrl/Cmd + C 复制 → 粘贴进公众号编辑器,样式随行内样式一起带入,排版基本不变;<br>
+  3. 公众号标题请单独在编辑器顶部填写(正文里这段大标题可删掉)。
+</div>
+
+<section class="wrap">
+
+  <section style="font-size: 22px; font-weight: bold; line-height: 1.5; color: #1a1a1a; margin: 0 0 24px 0; text-align: left;">
+    ADX 趋势因子:数据不足时会把上涨判成下跌
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    <span style="font-family: Consolas, Monaco, monospace; font-size: 15px; color: #c7254e; background: #f9f2f4; padding: 1px 4px; border-radius: 3px;">factor/adx_trend_factor.py</span> 里的一个边界缺陷。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    ADX 用于判断趋势强度:±DI 判断方向,ADX 判断强度,两者需要配对使用。ADX 的公式取的是 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">|+DI − (-DI)|</span> 的绝对值,只反映多空力量差距,不区分方向,因此单独看 ADX 没有意义。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 12px 0; letter-spacing: 0.4px;">
+    核心代码如下:
+  </section>
+
+  <section style="background: #f7f8fa; border-left: 3px solid #b8c4d9; border-radius: 4px; padding: 14px 16px; margin: 0 0 22px 0; overflow-x: auto;">
+    <pre style="margin: 0; font-family: Consolas, Monaco, 'Courier New', monospace; font-size: 13px; line-height: 1.75; color: #24292e; white-space: pre-wrap; word-break: break-all;">adx      = talib.ADX(highs, lows, closes, timeperiod=period)
+plus_di  = talib.PLUS_DI(highs, lows, closes, timeperiod=period)
+minus_di = talib.MINUS_DI(highs, lows, closes, timeperiod=period)
+
+current_adx, current_plus, current_minus = adx[-1], plus_di[-1], minus_di[-1]
+
+direction = 'up' if current_plus &gt; current_minus else 'down'
+
+if current_adx &gt; threshold:
+    strength = 'strong'
+elif current_adx &gt; 20:
+    strength = 'moderate'
+else:
+    strength = 'weak/sideways'</pre>
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 14px 0; letter-spacing: 0.4px;">
+    打分规则是方向系数乘以强度系数,再归一到 ±10:
+  </section>
+
+  <section style="margin: 0 0 18px 0; overflow-x: auto;">
+    <table style="border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.6; font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;">
+      <thead>
+        <tr>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">方向</th>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">强度</th>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">得分</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">up</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">strong</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">10.0</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">up</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">moderate</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">7.5</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">up</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">weak/sideways</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">2.5</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">down</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">strong</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">−10.0</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">down</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">moderate</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">−7.5</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">down</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">weak/sideways</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">−2.5</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 30px 0; letter-spacing: 0.4px;">
+    需要说明的是,该因子的返回值不会为 0。方向只有 up/down 两种,强度系数最低为 0.5,所以横盘震荡时因子必然给出 ±2.5 中的一个。如果下游用 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px; color: #c7254e; background: #f9f2f4; padding: 1px 4px; border-radius: 3px;">sum(score)</span> 与阈值比较,这部分会成为固定的偏移量。
+  </section>
+
+  <section style="font-size: 19px; font-weight: bold; line-height: 1.5; color: #1a1a1a; margin: 0 0 18px 0;">
+    数据不足时方向判定错误
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    talib 的 ADX 需要 <b>2 × period</b> 根 K 线才能产生第一个有效值。实测各周期所需 K 线数:period 7 → 14 根、10 → 20、<b>14 → 28</b>、15 → 30、20 → 40、25 → 50。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    因子类的默认参数是 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px; color: #c7254e; background: #f9f2f4; padding: 1px 4px; border-radius: 3px;">days=15</span>,即输入 K 线少于 30 根时 ADX 为 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">NaN</span>。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 10px 0; letter-spacing: 0.4px;">
+    代码中没有长度校验,<span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">NaN</span> 会直接进入后续比较:
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 8px 0; padding-left: 4px; letter-spacing: 0.4px;">
+    · <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">NaN &gt; 25</span> 与 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">NaN &gt; 20</span> 均为 False,强度落到 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">else</span> 分支,取值为 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">weak/sideways</span>;
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; padding-left: 4px; letter-spacing: 0.4px;">
+    · <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">NaN &gt; NaN</span> 为 False,方向落到 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">else</span> 分支,取值为 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">down</span>。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    这两个 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">else</span> 分支分别是「下跌」和「震荡」的取值,数据不足这一状态因此被判定为「下跌 + 震荡」。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 14px 0; letter-spacing: 0.4px;">
+    用真实因子类实测(参数 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">days=15</span>,输入单调上涨序列):
+  </section>
+
+  <section style="margin: 0 0 18px 0; overflow-x: auto;">
+    <table style="border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.6; font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;">
+      <thead>
+        <tr>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">K 线数</th>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">adx</th>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">判定方向</th>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">判定强度</th>
+          <th style="border: 1px solid #dfe3e8; padding: 8px 10px; background: #f5f6f8; color: #1a1a1a; font-weight: bold; text-align: center;">得分</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">5</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">NaN</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #d4380d; text-align: center; font-weight: bold;">down ✗</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">weak/sideways</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #d4380d; text-align: center; font-weight: bold;">−2.50</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">15</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">NaN</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #d4380d; text-align: center; font-weight: bold;">down ✗</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">weak/sideways</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #d4380d; text-align: center; font-weight: bold;">−2.50</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">20</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">NaN</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #237804; text-align: center;">up ✓</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">weak/sideways</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">2.50</td>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">30</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">100.0</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #237804; text-align: center;">up ✓</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">strong</td>
+          <td style="border: 1px solid #dfe3e8; padding: 8px 10px; color: #333333; text-align: center;">10.00</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    输入 5 根和 15 根 K 线时,因子把连续上涨的序列判定为 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">down</span>,得分 −2.5。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    容易触发该问题的是次新股(上市不足 30 个交易日)、长期停牌后复牌的股票,以及取数只得到部分数据的场景。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 12px 0; letter-spacing: 0.4px;">
+    修复方式是在 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">calculate()</span> 入口增加长度检查:
+  </section>
+
+  <section style="background: #f7f8fa; border-left: 3px solid #b8c4d9; border-radius: 4px; padding: 14px 16px; margin: 0 0 22px 0; overflow-x: auto;">
+    <pre style="margin: 0; font-family: Consolas, Monaco, 'Courier New', monospace; font-size: 13px; line-height: 1.75; color: #24292e; white-space: pre-wrap; word-break: break-all;">def calculate(self, stock_array):
+    # ADX 需要 2×period 根K线,不足时 talib 返回 NaN
+    if len(stock_array) &lt; 2 * self.days:
+        return {"trend": "", "level": "", "adx": 0.0, "+DI": 0.0, "-DI": 0.0}
+    return self.adx_trend(stock_array, period=self.days)
+
+def score(self, stock_array):
+    result = self.calculate(stock_array)
+    if not result.get("trend"):   # 数据不足 → 返回 0,不走 else 分支
+        return 0.0
+    ...</pre>
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 30px 0; letter-spacing: 0.4px;">
+    处理原则是:数据不足与看空是两种不同状态,不应共用同一个返回值。这一点与取数链路的处理一致:取数失败、无数据、不满足条件需要分别标识,不能合并处理。
+  </section>
+
+  <section style="font-size: 19px; font-weight: bold; line-height: 1.5; color: #1a1a1a; margin: 0 0 18px 0;">
+    另外两个问题
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 18px 0; letter-spacing: 0.4px;">
+    <b><span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">threshold</span> 参数只对 strong 判定生效。</b>判断 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">strong</span> 时使用了 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">threshold</span>,判断 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">moderate</span> 时使用的 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">20</span> 是硬编码值。调整 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">threshold</span> 不会改变「震荡 / 非震荡」这条分界线。
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 30px 0; letter-spacing: 0.4px;">
+    <b>基类与子类的方法签名不一致。</b>基类为 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">BaseFactor.score(stocks, total_score=10.0)</span>,子类为 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">score(stock_array)</span>,缺少 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">total_score</span> 参数。当前所有调用点都只传一个参数,不会报错;但如果按基类签名传参,会触发 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">TypeError</span>。
+  </section>
+
+  <section style="font-size: 19px; font-weight: bold; line-height: 1.5; color: #1a1a1a; margin: 0 0 18px 0;">
+    小结
+  </section>
+
+  <section style="font-size: 16px; line-height: 1.9; color: #333333; margin: 0 0 30px 0; letter-spacing: 0.4px;">
+    这类问题不会抛出异常,也不会写入错误日志。数据不足时 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">NaN</span> 穿过比较运算、落入 <span style="font-family: Consolas, Monaco, monospace; font-size: 15px;">else</span> 分支,输出的是一组格式合法但结论相反的因子值。
+  </section>
+
+  <section style="background: #f7f8fa; border-radius: 4px; padding: 14px 16px; margin: 0 0 20px 0;">
+    <section style="font-size: 14px; line-height: 1.8; color: #6b7280; letter-spacing: 0.3px;">
+      <b>免责声明</b>:本文为技术实现分享,涉及因子逻辑与代码均为工程实践讨论,<b>不构成任何投资建议</b>。文中数据来自合成序列实测,不代表真实市场表现。股市有风险,投资需谨慎。
+    </section>
+  </section>
+
+</section>
+
+</body>
+</html>

@@ -1,0 +1,41 @@
+.st {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6rpx;
+  height: 40rpx;
+  padding: 0 14rpx;
+  border-radius: var(--metric-radius-full);
+  font-size: var(--metric-font-size-xs);
+  font-weight: 600;
+  background-color: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.st--down {
+  color: var(--color-market-down);
+  background-color: var(--color-status-success-bg);
+}
+
+.st--up {
+  color: var(--color-market-up);
+  background-color: var(--color-market-up-bg);
+}
+
+.st--warn {
+  color: var(--color-accent-warning);
+  background-color: var(--color-bg-subtle);
+}
+
+.st-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  background-color: currentColor;
+  animation: st-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes st-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.3; transform: scale(0.75); }
+}

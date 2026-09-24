@@ -1,0 +1,135 @@
+/* 创建 / 编辑股票池 */
+
+.card + .card { margin-top: var(--metric-space-md); }
+
+.form-body { padding: var(--metric-space-md) var(--metric-space-lg) var(--metric-space-lg); }
+
+.field-label {
+  margin: var(--metric-space-md) 0 var(--metric-space-xs);
+  font-size: var(--metric-font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.form-body > .field-label:first-child { margin-top: 0; }
+
+.empty-inline {
+  margin: var(--metric-space-md) var(--metric-space-lg);
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+.hint {
+  margin-top: var(--metric-space-md);
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.7;
+}
+
+/* ---------------------------------------------------------- 行业 chips */
+.chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--metric-space-xs);
+  padding: var(--metric-space-md) var(--metric-space-lg) var(--metric-space-lg);
+}
+
+/* ---------------------------------------------------------- 股票列表 */
+.stock-list {
+  max-height: 720rpx;
+  overflow-y: auto;
+}
+
+.stock-row {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-sm);
+  padding: var(--metric-space-sm) var(--metric-space-lg);
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.stock-row:last-child { border-bottom: none; }
+
+.ck {
+  width: 40rpx;
+  height: 40rpx;
+  flex: none;
+  border-radius: var(--metric-radius-tag);
+  border: 2rpx solid var(--color-border-control);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--metric-font-size-sm);
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+}
+
+.ck--on {
+  border-color: var(--color-brand-primary);
+  background-color: var(--color-brand-primary);
+  color: var(--color-text-on-brand);
+}
+
+.sc-name { margin-left: var(--metric-space-xs); }
+
+.pending-note {
+  padding: var(--metric-space-sm) var(--metric-space-lg);
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-accent-warning);
+  background-color: var(--color-bg-subtle);
+}
+
+/* ---------------------------------------------------------- 预览 */
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-sm);
+  padding: var(--metric-space-md) var(--metric-space-lg) 0;
+}
+
+.search-icon {
+  width: 26rpx;
+  height: 26rpx;
+  border: 3rpx solid var(--color-text-tertiary);
+  border-radius: 50%;
+  position: relative;
+  flex: none;
+}
+
+.search-icon::after {
+  content: '';
+  position: absolute;
+  right: -8rpx;
+  bottom: -6rpx;
+  width: 14rpx;
+  height: 3rpx;
+  background-color: var(--color-text-tertiary);
+  transform: rotate(45deg);
+}
+
+.pv-clear {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+}
+
+.preview-list { margin-top: var(--metric-space-md); }
+
+.loading-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--metric-space-sm);
+  padding: var(--metric-space-xl) 0;
+}
+
+.preview-ft {
+  padding: var(--metric-space-md) var(--metric-space-lg) var(--metric-space-lg);
+}
+
+/* ---------------------------------------------------------- 危险区 */
+.danger-card { border-color: var(--color-market-up); }
+
+.danger-hint { margin-top: 0; margin-bottom: var(--metric-space-md); }
+
+/* ---------------------------------------------------------- 底部 */
+.form-actions { margin-top: var(--metric-space-xl); }

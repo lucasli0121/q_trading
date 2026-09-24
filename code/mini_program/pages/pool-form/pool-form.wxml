@@ -1,0 +1,233 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="{{mode === 'create' ? '创建股票池' : '编辑股票池'}}"
+    statusBarHeight="{{statusBarHeight}}"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="card" rows="3" />
+
+    <block wx:else>
+      <!-- ① 基本信息 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">基本信息</text>
+          <text wx:if="{{readonlyBase}}" class="c-tertiary t-xs">名称和描述不支持修改</text>
+        </view>
+        <view class="form-body">
+          <view class="field-label">股票池名称 <text wx:if="{{!readonlyBase}}" class="c-up">*</text></view>
+          <input
+            class="input {{readonlyBase ? 'input--disabled' : ''}}"
+            value="{{name}}"
+            data-key="name"
+            disabled="{{readonlyBase}}"
+            placeholder="例如：核心持仓池"
+            placeholder-class="input-ph"
+            maxlength="30"
+            bindinput="onField"
+          />
+
+          <view class="field-label">描述</view>
+          <textarea
+            class="textarea {{readonlyBase ? 'input--disabled' : ''}}"
+            value="{{description}}"
+            data-key="description"
+            disabled="{{readonlyBase}}"
+            placeholder="可选，说明这个池的用途"
+            placeholder-class="input-ph"
+            maxlength="200"
+            bindinput="onField"
+          />
+        </view>
+      </view>
+
+      <!-- ② 当前股票（编辑模式） -->
+      <view wx:if="{{mode === 'edit'}}" class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">当前股票（{{currentStocks.length}} 只）</text>
+          <view
+            class="btn btn-danger btn-sm {{checkedCount ? '' : 'btn-disabled'}}"
+            bindtap="onRemoveChecked"
+          >移除选中</view>
+        </view>
+
+        <q-empty wx:if="{{!currentStocks.length}}" type="empty" title="池内暂无股票" compact />
+
+        <view wx:else class="stock-list">
+          <view
+            wx:for="{{currentStocks}}"
+            wx:key="code"
+            class="stock-row"
+            data-i="{{index}}"
+            bindtap="onToggleCurrent"
+          >
+            <view class="ck {{item.checked ? 'ck--on' : ''}}">{{item.checked ? '✓' : ''}}</view>
+            <view class="flex1">
+              <text class="num t-base t-bold">{{item.code}}</text>
+              <text class="c-tertiary t-xs sc-name">{{item.name}}</text>
+            </view>
+            <text class="num t-sm">{{item.price}}</text>
+            <text class="num t-sm {{item.tone === 'up' ? 'c-up' : (item.tone === 'down' ? 'c-down' : 'c-second')}}">{{item.pctText}}</text>
+          </view>
+        </view>
+
+        <view wx:if="{{pendingRemove.length}}" class="pending-note">
+          已剔除 {{pendingRemove.length}} 只，点「保存修改」生效
+        </view>
+      </view>
+
+      <!-- ③ 所属行业 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">所属行业</text>
+          <text class="c-tertiary t-xs">可多选</text>
+        </view>
+        <view wx:if="{{!industries.length}}" class="empty-inline">暂无热门行业数据</view>
+        <view wx:else class="chip-wrap">
+          <view
+            wx:for="{{industries}}"
+            wx:key="*this"
+            class="chip {{selectedIndustries.indexOf(item) >= 0 ? 'chip--active' : ''}}"
+            data-name="{{item}}"
+            bindtap="toggleIndustry"
+          >{{item}}</view>
+        </view>
+      </view>
+
+      <!-- ④ 自动筛选条件 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">自动筛选条件</text>
+          <text class="c-tertiary t-xs" bindtap="resetConditions">重置条件</text>
+        </view>
+        <view class="form-body">
+          <view class="field-label">市值范围（亿元）</view>
+          <view class="row gap-sm">
+            <input class="input flex1" type="digit" value="{{capMin}}" data-key="capMin"
+                   placeholder="下限" placeholder-class="input-ph" bindinput="onField" />
+            <text class="c-tertiary">~</text>
+            <input class="input flex1" type="digit" value="{{capMax}}" data-key="capMax"
+                   placeholder="上限" placeholder-class="input-ph" bindinput="onField" />
+          </view>
+
+          <view class="field-label">PE 市盈率（TTM）</view>
+          <view class="row gap-sm">
+            <input class="input flex1" type="digit" value="{{peMin}}" data-key="peMin"
+                   placeholder="下限" placeholder-class="input-ph" bindinput="onField" />
+            <text class="c-tertiary">~</text>
+            <input class="input flex1" type="digit" value="{{peMax}}" data-key="peMax"
+                   placeholder="上限" placeholder-class="input-ph" bindinput="onField" />
+          </view>
+
+          <view class="hint">留空表示不限制。筛选条件只用于「算出候选股票」，不会随股票池一起保存。</view>
+        </view>
+      </view>
+
+      <!-- ⑤ 手动追加股票 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">追加股票</text>
+          <text class="c-tertiary t-xs">手动追加的股票无视筛选条件</text>
+        </view>
+        <view class="form-body">
+          <textarea
+            class="textarea"
+            value="{{manualCodes}}"
+            data-key="manualCodes"
+            placeholder="多个代码用逗号分隔，例如：600519,000001（中英文逗号均可）"
+            placeholder-class="input-ph"
+            maxlength="1000"
+            bindinput="onField"
+          />
+          <view class="hint">
+            ⚠️ 创建股票池时必须至少填写一只股票，或先设置行业 / 筛选条件后从预览中勾选追加。
+          </view>
+        </view>
+      </view>
+
+      <!-- ⑥ 预览 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">实时预览结果</text>
+          <text class="c-tertiary t-xs">共 {{previewCount}} 只</text>
+        </view>
+
+        <view class="preview-bar">
+          <view class="search flex1">
+            <view class="search-icon"></view>
+            <input
+              class="search-input"
+              value="{{previewKeyword}}"
+              placeholder="按代码或名称过滤"
+              placeholder-class="input-ph"
+              bindinput="onPreviewKeyword"
+            />
+            <text wx:if="{{previewKeyword}}" class="pv-clear" catchtap="clearPreviewKeyword">清空</text>
+          </view>
+          <view class="btn btn-secondary btn-sm" bindtap="refreshPreview">
+            {{previewLoading ? '加载中' : '刷新预览'}}
+          </view>
+        </view>
+
+        <view wx:if="{{previewLoading}}" class="loading-box">
+          <view class="spinner"></view>
+          <text class="c-tertiary t-sm">正在计算候选股票...</text>
+        </view>
+
+        <q-empty
+          wx:elif="{{!previewFiltered.length}}"
+          type="empty"
+          title="还没有预览结果"
+          desc="选择行业或设置筛选条件后点「刷新预览」"
+          compact
+        />
+
+        <view wx:else class="stock-list preview-list">
+          <view
+            wx:for="{{previewFiltered}}"
+            wx:key="code"
+            class="stock-row"
+            data-code="{{item.code}}"
+            bindtap="onPreviewToggleRow"
+          >
+            <view class="ck {{item.checked ? 'ck--on' : ''}}">{{item.checked ? '✓' : ''}}</view>
+            <text class="num t-base t-bold">{{item.code}}</text>
+            <text class="c-tertiary t-xs flex1 ellipsis">{{item.name}}</text>
+            <text wx:if="{{item.manual}}" class="tag tag-brand">已追加</text>
+          </view>
+        </view>
+
+        <view class="preview-ft">
+          <view class="btn btn-primary btn-block" bindtap="appendChecked">追加选中股票</view>
+        </view>
+      </view>
+
+      <!-- ⑦ 危险区（编辑模式） -->
+      <view wx:if="{{mode === 'edit'}}" class="card danger-card">
+        <view class="card-hd">
+          <text class="t-base t-medium c-up">危险区域</text>
+        </view>
+        <view class="form-body">
+          <view class="hint danger-hint">
+            删除股票池后不可恢复，引用该池的策略将失去股票来源。请谨慎操作。
+          </view>
+          <view
+            class="btn btn-danger btn-block {{removing ? 'btn-disabled' : ''}}"
+            bindtap="onDeletePool"
+          >{{removing ? '删除中...' : '删除股票池'}}</view>
+        </view>
+      </view>
+
+      <!-- 底部 -->
+      <view class="row gap-md form-actions">
+        <view class="btn btn-secondary flex1" bindtap="retry">重置</view>
+        <view class="btn btn-primary flex1 {{saving ? 'btn-disabled' : ''}}" bindtap="onSave">
+          {{saving ? '保存中...' : (mode === 'create' ? '保存股票池' : '保存修改')}}
+        </view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

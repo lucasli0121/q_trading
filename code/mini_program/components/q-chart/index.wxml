@@ -1,0 +1,12 @@
+<view class="chart" style="height: {{height}}rpx;">
+  <canvas
+    wx:if="{{ready}}"
+    type="2d"
+    id="qchart"
+    class="chart-canvas"
+  ></canvas>
+
+  <view wx:elif="{{!ready}}" class="chart-mask">
+    <view class="chart-empty-text">{{emptyText || '暂无图表数据'}}</view>
+  </view>
+</view>

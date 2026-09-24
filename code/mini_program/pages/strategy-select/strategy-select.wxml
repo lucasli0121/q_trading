@@ -1,0 +1,90 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="策略选股"
+    statusBarHeight="{{statusBarHeight}}"
+    actionIcon="refresh"
+    bind:actionicon="refresh"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <view class="sel-date">
+      <text class="c-tertiary t-xs">今日选股 · </text>
+      <text class="num t-sm c-second">{{today}}</text>
+    </view>
+
+    <!-- 策略标签 -->
+    <scroll-view wx:if="{{tabs.length}}" class="tab-scroll" scroll-x show-scrollbar="{{false}}">
+      <view class="tab-inner">
+        <view
+          wx:for="{{tabs}}"
+          wx:key="key"
+          class="chip {{activeId === item.key ? 'chip--active' : ''}}"
+          data-id="{{item.key}}"
+          bindtap="onTabTap"
+        >{{item.label}}</view>
+      </view>
+    </scroll-view>
+
+    <q-empty
+      wx:if="{{!tabs.length && !loading}}"
+      type="empty"
+      title="暂无策略"
+      desc="请先在「策略」列表中添加策略"
+      action="去创建策略"
+      bind:action="retry"
+    />
+
+    <q-empty wx:elif="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+
+    <view wx:elif="{{loading}}" class="loading-box">
+      <view class="spinner"></view>
+      <text class="c-tertiary t-sm">正在加载选股行情...</text>
+    </view>
+
+    <q-empty
+      wx:elif="{{!rows.length}}"
+      type="empty"
+      title="该策略今日暂无选股结果"
+      desc="策略运行并产生选股后，结果会显示在这里"
+    />
+
+    <!-- 选股表格 -->
+    <view wx:else class="tbl card">
+      <view class="tbl-hd sel-hd">
+        <text class="c-code">代码 / 名称</text>
+        <text class="c-min">评分</text>
+        <text class="c-min">最新价</text>
+        <text class="c-min">涨跌幅</text>
+      </view>
+      <view
+        wx:for="{{rows}}"
+        wx:key="code"
+        class="tbl-row sel-row"
+        data-code="{{item.code}}"
+        bindtap="goStock"
+        hover-class="list-row-hover"
+      >
+        <view class="c-code">
+          <text class="num t-base t-bold">{{item.code}}</text>
+          <text class="c-tertiary t-2xs ellipsis">{{item.name}}</text>
+        </view>
+        <text class="c-min num t-sm">{{item.score}}</text>
+        <text class="c-min num t-sm t-bold {{item.priceTone === 'up' ? 'c-up' : (item.priceTone === 'down' ? 'c-down' : 'c-second')}}">{{item.price}}</text>
+        <text class="c-min num t-sm t-bold {{item.tone === 'up' ? 'c-up' : (item.tone === 'down' ? 'c-down' : 'c-second')}}">{{item.pctText}}</text>
+      </view>
+
+      <!-- 次级指标 -->
+      <view class="sub-metrics">
+        <view wx:for="{{rows}}" wx:key="code" class="sub-row">
+          <text class="sub-code num">{{item.code}}</text>
+          <text class="sub-kv">涨跌额 <text class="num {{item.tone === 'up' ? 'c-up' : (item.tone === 'down' ? 'c-down' : 'c-second')}}">{{item.amtText}}</text></text>
+          <text class="sub-kv">换手 <text class="num">{{item.turnoverText}}</text></text>
+          <text class="sub-kv">PE <text class="num">{{item.peText}}</text></text>
+          <text class="sub-kv">利润增长 <text class="num">{{item.growthText}}</text></text>
+        </view>
+      </view>
+    </view>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

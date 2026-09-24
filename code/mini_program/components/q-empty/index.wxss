@@ -1,0 +1,127 @@
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 96rpx 32rpx;
+}
+
+.empty--compact {
+  padding: 48rpx 32rpx;
+}
+
+/* 圆形插画占位 */
+.empty-icon {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 50%;
+  background-color: var(--color-bg-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.empty-glyph {
+  position: relative;
+  width: 56rpx;
+  height: 44rpx;
+  border: 4rpx solid var(--color-text-tertiary);
+  border-radius: 6rpx;
+}
+
+.empty-glyph::before {
+  content: '';
+  position: absolute;
+  left: 10rpx;
+  right: 10rpx;
+  top: -16rpx;
+  height: 12rpx;
+  border: 4rpx solid var(--color-text-tertiary);
+  border-bottom: none;
+  border-radius: 6rpx 6rpx 0 0;
+}
+
+/* 错误：改用感叹号 */
+.empty-icon--error .empty-glyph {
+  width: 56rpx;
+  height: 56rpx;
+  border: none;
+  border-radius: 50%;
+  background-color: var(--color-market-up);
+}
+
+.empty-icon--error .empty-glyph::before {
+  border: none;
+  left: 25rpx;
+  right: auto;
+  top: 12rpx;
+  width: 6rpx;
+  height: 20rpx;
+  background-color: #FFFFFF;
+  border-radius: 3rpx;
+}
+
+.empty-icon--error .empty-glyph::after {
+  content: '';
+  position: absolute;
+  left: 25rpx;
+  top: 36rpx;
+  width: 6rpx;
+  height: 6rpx;
+  background-color: #FFFFFF;
+  border-radius: 50%;
+}
+
+/* 无网络：斜杠 */
+.empty-icon--offline .empty-glyph {
+  border-color: var(--color-text-tertiary);
+}
+
+.empty-icon--offline .empty-glyph::after {
+  content: '';
+  position: absolute;
+  left: -6rpx;
+  top: 18rpx;
+  width: 64rpx;
+  height: 4rpx;
+  background-color: var(--color-text-tertiary);
+  transform: rotate(-30deg);
+}
+
+/* 无权限：锁形 */
+.empty-icon--forbidden .empty-glyph {
+  width: 48rpx;
+  height: 38rpx;
+  border-radius: 6rpx;
+}
+
+.empty-icon--forbidden .empty-glyph::before {
+  left: 8rpx;
+  right: 8rpx;
+  top: -22rpx;
+  height: 22rpx;
+  border: 4rpx solid var(--color-text-tertiary);
+  border-bottom: none;
+  border-radius: 20rpx 20rpx 0 0;
+}
+
+.empty-title {
+  margin-top: 28rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.empty-desc {
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.empty-action {
+  margin-top: 32rpx;
+  min-width: 220rpx;
+}

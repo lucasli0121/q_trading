@@ -1,0 +1,152 @@
+/* 自定义 TabBar —— 总高 78pt = 内容 44pt(88rpx) + 底部安全区 34pt */
+
+.tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 800;
+  background-color: var(--tb-bg, #FFFFFF);
+  border-top: 1rpx solid var(--tb-border, #E5E7EB);
+}
+
+.tabbar-inner {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  height: 88rpx;
+}
+
+.tabbar-safe {
+  height: 68rpx;
+  /* 老版本基础库不支持 env() 时退化为固定 0 */
+  height: constant(safe-area-inset-bottom);
+  height: env(safe-area-inset-bottom);
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 88rpx;
+  gap: 4rpx;
+}
+
+.tab-text {
+  font-size: 20rpx;
+  line-height: 1;
+  color: var(--tb-color, #9CA3AF);
+}
+
+.tab--active .tab-text {
+  color: var(--tb-active, #2563EB);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------- 图标（纯 CSS 绘制，无需图片资源） */
+.tab-icon {
+  position: relative;
+  width: 40rpx;
+  height: 40rpx;
+  flex: none;
+  color: var(--tb-color, #9CA3AF);
+}
+
+.tab--active .tab-icon {
+  color: var(--tb-active, #2563EB);
+}
+
+/* 首页：屋顶三角 + 屋身 */
+.tab-icon--home::before {
+  content: '';
+  position: absolute;
+  left: 4rpx;
+  top: 2rpx;
+  width: 0;
+  height: 0;
+  border-left: 16rpx solid transparent;
+  border-right: 16rpx solid transparent;
+  border-bottom: 14rpx solid currentColor;
+}
+
+.tab-icon--home::after {
+  content: '';
+  position: absolute;
+  left: 10rpx;
+  top: 16rpx;
+  width: 20rpx;
+  height: 18rpx;
+  border: 3rpx solid currentColor;
+  border-top: none;
+  border-radius: 0 0 4rpx 4rpx;
+}
+
+/* 行情：三根高低不同的 K 线柱 */
+.tab-icon--quotes::before {
+  content: '';
+  position: absolute;
+  left: 5rpx;
+  bottom: 8rpx;
+  width: 6rpx;
+  height: 18rpx;
+  background-color: currentColor;
+  border-radius: 2rpx;
+  box-shadow: 12rpx 6rpx 0 0 currentColor, 24rpx -8rpx 0 0 currentColor;
+}
+
+.tab-icon--quotes::after {
+  content: '';
+  position: absolute;
+  left: 4rpx;
+  top: 6rpx;
+  width: 30rpx;
+  height: 3rpx;
+  background-color: currentColor;
+  border-radius: 2rpx;
+  box-shadow: 0 32rpx 0 0 currentColor;
+  opacity: 0.55;
+}
+
+/* 策略：2×2 网格 */
+.tab-icon--strategy::before {
+  content: '';
+  position: absolute;
+  left: 4rpx;
+  top: 4rpx;
+  width: 14rpx;
+  height: 14rpx;
+  border: 3rpx solid currentColor;
+  border-radius: 4rpx;
+  box-shadow: 18rpx 0 0 -3rpx var(--tb-bg, #FFFFFF),
+              18rpx 0 0 0 currentColor,
+              0 18rpx 0 -3rpx var(--tb-bg, #FFFFFF),
+              0 18rpx 0 0 currentColor,
+              18rpx 18rpx 0 -3rpx var(--tb-bg, #FFFFFF),
+              18rpx 18rpx 0 0 currentColor;
+}
+
+/* 我的：头 + 肩 */
+.tab-icon--profile::before {
+  content: '';
+  position: absolute;
+  left: 13rpx;
+  top: 3rpx;
+  width: 14rpx;
+  height: 14rpx;
+  border: 3rpx solid currentColor;
+  border-radius: 50%;
+}
+
+.tab-icon--profile::after {
+  content: '';
+  position: absolute;
+  left: 5rpx;
+  top: 22rpx;
+  width: 30rpx;
+  height: 15rpx;
+  border: 3rpx solid currentColor;
+  border-bottom: none;
+  border-radius: 16rpx 16rpx 0 0;
+}

@@ -1,0 +1,87 @@
+// ==========================================================================
+// QTrade Design Tokens — Light
+// 来源：Ardot 设计系统「QTrade 设计系统」
+//       https://ardot.tencent.com/file/726465434404942
+// 与 tokens.css 的 :root 段一致。Dark 版见 tokens-dark.scss。
+// ==========================================================================
+
+// --- color · 背景 ---
+$color-bg-base: #F9FAFBFF;            // 页面底色
+$color-bg-surface: #FFFFFFFF;         // 卡片 / 面板
+$color-bg-elevated: #FFFFFFFF;        // 顶栏 / 侧栏
+$color-bg-input: #F3F4F6FF;           // 输入槽 / 分段控件底
+$color-bg-subtle: #F1F5F9FF;          // 次级填充 / 内分隔
+$color-bg-scrim: #11182773;           // 遮罩层
+
+// --- color · 描边 ---
+$color-border-default: #E5E7EBFF;     // 卡片描边
+$color-border-control: #D1D5DBFF;     // 控件描边
+$color-border-divider: #F1F5F9FF;     // 卡内细分隔线
+
+// --- color · 文字 ---
+$color-text-primary: #111827FF;       // 正文 / 标题
+$color-text-secondary: #6B7280FF;     // 次要说明
+$color-text-tertiary: #9CA3AFFF;      // 弱化 / 占位符
+$color-text-on-brand: #FFFFFFFF;      // 主色底上的文字
+
+// --- color · 品牌 ---
+$color-brand-primary: #2563EBFF;      // 主色 / 主按钮
+$color-brand-link: #2563EBFF;         // 文字链
+$color-brand-wechat: #07C160FF;       // 微信品牌绿
+$color-accent-warning: #F59E0BFF;     // 强调 / 警示
+
+// --- color · 行情（A 股约定：涨红跌绿） ---
+$color-market-up: #DC2626FF;          // 涨 / 买入 / 盈利
+$color-market-down: #059669FF;        // 跌 / 卖出 / 亏损
+$color-market-up-bg: #FEF2F2FF;       // 涨标签底
+$color-market-down-bg: #ECFDF5FF;     // 跌标签底
+
+// --- color · 状态 ---
+$color-status-success-bg: #ECFDF5FF;  // 运行中徽标底
+
+// --- metric · 圆角 ---
+$metric-radius-sm: 6px;
+$metric-radius-md: 8px;
+$metric-radius-btn: 10px;
+$metric-radius-lg: 12px;
+$metric-radius-xl: 14px;
+$metric-radius-tag: 4px;
+$metric-radius-full: 999px;
+
+// --- metric · 间距 ---
+$metric-space-2xs: 4px;
+$metric-space-xs: 6px;
+$metric-space-sm: 8px;
+$metric-space-md: 12px;
+$metric-space-lg: 16px;
+$metric-space-xl: 20px;
+$metric-space-2xl: 24px;
+
+// --- metric · 字号 ---
+$metric-font-size-2xs: 9px;
+$metric-font-size-xs: 10px;
+$metric-font-size-sm: 11px;
+$metric-font-size-md: 12px;
+$metric-font-size-base: 13px;
+$metric-font-size-lg: 14px;
+$metric-font-size-xl: 15px;
+$metric-font-size-2xl: 17px;
+$metric-font-size-display: 24px;
+
+// --- metric · 尺寸 ---
+$metric-size-page-w: 375px;
+$metric-size-page-h: 812px;
+$metric-size-statusbar-h: 44px;
+$metric-size-topbar-h: 56px;
+$metric-size-tabbar-h: 78px;
+$metric-size-input-h: 44px;
+$metric-size-btn-h: 46px;
+$metric-size-btn-sm-h: 30px;
+$metric-size-chip-h: 28px;
+$metric-size-content-bottom: 734px;
+$metric-size-hit-min: 44px;
+$metric-border-width: 1px;
+
+// --- type ---
+$type-font-family-base: "Noto Sans SC";
+$type-font-family-number: "Inter";

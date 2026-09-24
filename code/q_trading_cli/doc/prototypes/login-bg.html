@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>登录 - QTrade 量化策略交易系统</title>
+<style>
+  /* ============================================================
+     设计令牌（与 colors/theme.py 深色套一致，便于后续落地对齐）
+     ============================================================ */
+  :root {
+    --qs-page: #0f0f1a;
+    --qs-surface: #1e293b;
+    --qs-surface-alt: #111827;
+    --qs-border: #334155;
+    --qs-text: #e5e7eb;
+    --qs-heading: #f3f4f6;
+    --qs-muted: #9ca3af;
+    --qs-primary: #3b82f6;
+    --qs-primary-hover: #2563eb;
+    --qs-link: #60a5fa;
+    --qs-up: #ef4444;      /* A 股约定：涨红 */
+    --qs-down: #22c55e;    /* A 股约定：跌绿 */
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  /* 卡片中心落在窗口横向黄金分割点：容器水平居中卡片，
+     故卡片中心 = (padding-left + 视口宽 − padding-right)/2。
+     取 padding-right = 1rem、padding-left = calc(23.6% + 1rem)
+     ⇒ 中心 = (23.6% + 100%)/2 = 61.8%。<768px 回退为居中。 */
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--qs-page);
+    color: var(--qs-text);
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem 1rem 1rem calc(23.6% + 1rem);
+    overflow: hidden;
+  }
+  @media (max-width: 767px) {
+    body { padding: 1rem; }
+  }
+
+  /* ============================================================
+     背景层 1：蓝图网格 + 品牌色辉光
+     ============================================================ */
+  .bg-grid {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.055) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 45%, #000 30%, transparent 100%);
+            mask-image: radial-gradient(ellipse 90% 80% at 50% 45%, #000 30%, transparent 100%);
+  }
+  .bg-glow {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(600px 320px at 18% 8%, rgba(59, 130, 246, 0.14), transparent 70%),
+      radial-gradient(520px 300px at 85% 12%, rgba(37, 99, 235, 0.10), transparent 70%),
+      radial-gradient(700px 380px at 50% 115%, rgba(59, 130, 246, 0.10), transparent 75%);
+  }
+
+  /* ============================================================
+     背景层 2：巨幅品牌水印 + K 线粒子画布
+     ============================================================ */
+  .bg-watermark {
+    position: fixed; z-index: 0; pointer-events: none; user-select: none;
+    top: 50%; left: 50%; transform: translate(-50%, -62%);
+    font-size: clamp(120px, 22vw, 300px); font-weight: 800; letter-spacing: 0.08em;
+    color: rgba(148, 163, 184, 0.045); white-space: nowrap;
+  }
+  #scene { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
+
+  /* ============================================================
+     背景层 3：量化因子面板（纯设计元素，不含行情数据）
+     ============================================================ */
+  .panel {
+    position: fixed; z-index: 2; pointer-events: none;
+    left: max(24px, 4vw); bottom: 12vh;
+    background: rgba(30, 41, 59, 0.55);
+    border: 1px solid rgba(51, 65, 85, 0.65);
+    border-radius: 14px; padding: 16px 18px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    font-variant-numeric: tabular-nums;
+    animation: panel-float 7s ease-in-out infinite;
+  }
+  @keyframes panel-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+  .panel h3 {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+    color: var(--qs-link); text-transform: uppercase; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .panel h3::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--qs-primary); box-shadow: 0 0 8px var(--qs-primary);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot { 50% { opacity: 0.35; } }
+  .factor { display: grid; grid-template-columns: 74px 1fr 56px; gap: 4px 10px; align-items: center; margin: 7px 0; font-size: 12.5px; }
+  .factor .k { color: var(--qs-muted); }
+  .factor .bar { height: 4px; border-radius: 2px; background: rgba(51, 65, 85, 0.8); overflow: hidden; }
+  .factor .bar i {
+    display: block; height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--qs-primary), var(--qs-link));
+    width: 0; transition: width 1.6s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .factor .bar i.warn { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+  .factor .v { color: var(--qs-heading); font-weight: 600; text-align: right; }
+  .factor .v.up { color: var(--qs-up); }
+  .factor .v.down { color: var(--qs-down); }
+
+  /* ============================================================
+     登录卡片（沿用 login.html 原型样式，加毛玻璃融入背景）
+     ============================================================ */
+  .login-card {
+    position: relative; z-index: 5;
+    background: rgba(30, 41, 59, 0.82);
+    border: 1px solid var(--qs-border);
+    border-radius: 1.25rem;
+    padding: 2.5rem 2.5rem 2rem;
+    width: 100%; max-width: 440px; margin: 0 auto;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(59, 130, 246, 0.06);
+    backdrop-filter: blur(14px);
+  }
+  .brand { display: flex; align-items: center; gap: 0.75rem; justify-content: center; margin-bottom: 2rem; }
+  .brand-icon {
+    width: 2.5rem; height: 2.5rem; background: var(--qs-primary); border-radius: 0.75rem;
+    display: flex; align-items: center; justify-content: center; color: white;
+    font-size: 1.5rem; box-shadow: 0 0 24px rgba(59, 130, 246, 0.45);
+  }
+  .brand-text { font-size: 1.75rem; font-weight: 700; color: var(--qs-heading); letter-spacing: -0.02em; }
+  .tabs { display: flex; gap: 0.5rem; background: var(--qs-surface-alt); border-radius: 0.75rem; padding: 0.25rem; margin-bottom: 2rem; }
+  .tab-btn {
+    flex: 1; padding: 0.6rem 0; border: none; border-radius: 0.5rem;
+    font-size: 0.95rem; font-weight: 600; cursor: pointer;
+    background: transparent; color: var(--qs-muted);
+  }
+  .tab-btn.active { background: var(--qs-primary); color: white; }
+  .form-group { margin-bottom: 1.25rem; }
+  .form-label { display: block; font-size: 0.85rem; font-weight: 500; color: var(--qs-text); margin-bottom: 0.5rem; }
+  .form-input {
+    width: 100%; padding: 0.7rem 0.9rem; font-size: 0.95rem;
+    background: var(--qs-surface-alt); border: 1px solid var(--qs-border); border-radius: 0.6rem;
+    color: var(--qs-text); outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .form-input:focus { border-color: var(--qs-primary); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25); }
+  .btn-primary {
+    width: 100%; padding: 0.75rem 0; margin-top: 0.5rem;
+    background: var(--qs-primary); color: white; font-size: 1rem; font-weight: 600;
+    border: none; border-radius: 0.6rem; cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .btn-primary:hover { background: var(--qs-primary-hover); }
+  .btn-primary:active { transform: scale(0.99); }
+  .card-foot { margin-top: 1.5rem; text-align: center; font-size: 0.8rem; color: var(--qs-muted); }
+  .card-foot a { color: var(--qs-link); text-decoration: none; }
+
+  @media (max-width: 1100px) { .panel { display: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .panel, .panel h3::before { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- 背景层 -->
+  <div class="bg-grid"></div>
+  <div class="bg-glow"></div>
+  <div class="bg-watermark">QTRADE</div>
+  <canvas id="scene"></canvas>
+
+  <!-- 左下：量化因子面板（设计元素，非真实数据） -->
+  <div class="panel">
+    <h3>策略 Alpha-01 · 实盘</h3>
+    <div class="factor"><span class="k">年化收益</span><span class="bar"><i data-w="72"></i></span><span class="v up" data-count="23.6" data-suffix="%">0%</span></div>
+    <div class="factor"><span class="k">夏普比率</span><span class="bar"><i data-w="62"></i></span><span class="v" data-count="1.87">0</span></div>
+    <div class="factor"><span class="k">胜率</span><span class="bar"><i data-w="63"></i></span><span class="v" data-count="63.2" data-suffix="%">0%</span></div>
+    <div class="factor"><span class="k">最大回撤</span><span class="bar"><i class="warn" data-w="34"></i></span><span class="v down" data-count="-8.4" data-suffix="%">-0%</span></div>
+  </div>
+
+  <!-- 登录卡片 -->
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-icon">Q</div>
+      <div class="brand-text">QTrade</div>
+    </div>
+    <div class="tabs">
+      <button class="tab-btn active">登录</button>
+      <button class="tab-btn">注册</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">用户名</label>
+      <input class="form-input" placeholder="请输入用户名" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">密码</label>
+      <input class="form-input" type="password" placeholder="请输入密码" />
+    </div>
+    <button class="btn-primary">登 录</button>
+    <div class="card-foot">忘记密码？<a href="#">联系我们</a></div>
+  </div>
+
+<script>
+"use strict";
+/* ============================================================
+   K 线粒子 + 均线趋势事件（无任何行情数据，纯视觉装饰）
+   ------------------------------------------------------------
+   常态：蜡烛作为粒子在背景里随机出现（三种方式）
+     spawn —— 随机位置淡入浮现，实体从中线生长，停留后淡出
+     fall  —— 自上方自由落体（v = v₀ + g·t），坠落中淡出
+     blink —— 定点忽明忽暗地呼吸，随后消散
+
+   趋势事件（"偶尔"发生，默认首次 7s、之后间隔 12–18s）：
+     ① 3 条均线自左向右扫入（sweep，1.4s）
+     ② 屏上蜡烛被吸附到均线上，横向均匀排开，收敛为图表尺寸，
+        形成自左下向右上的上涨趋势（hold，2s）
+     ③ 蜡烛向四周散开并淡出，均线同时向右退场（disperse，1.1s）
+     ④ 回到常态
+
+   涨红跌绿（A 股约定），趋势段以红色为主。不含任何真实/模拟行情数值。
+   ============================================================ */
+const RED = "#ef4444", GREEN = "#22c55e";
+const MODES = ["spawn", "fall", "blink"];   // 常态出现方式；想固定一种就只留一个
+const MAX_CANDLES = 22;                     // 同屏蜡烛上限
+const SPAWN_EVERY = 700;                    // 常态生成间隔（ms）
+
+/* —— 趋势事件参数 —— */
+const MA_COLORS = ["#3b82f6", "#60a5fa", "#818cf8"];  // 3 条均线（MA5 / MA10 / MA20 的视觉化）
+const SWEEP_DUR = 1.4;      // 均线从左扫入时长（秒）
+const HOLD_DUR = 2.0;       // 上涨趋势保持时长（秒）——用户指定 2 秒
+const EXIT_DUR = 1.1;       // 均线向右退场时长（秒）
+const TREND_FIRST = 7;      // 首次趋势出现前的等待（秒）
+const TREND_GAP = [12, 18]; // 之后两次趋势的间隔区间（秒）
+const TREND_MIN = 12;       // 趋势参与蜡烛的最少根数（3 条均线 × 4 根）
+
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const cv = document.getElementById("scene");
+const cx = cv.getContext("2d");
+let W, H;
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.style.width = W + "px"; cv.style.height = H + "px";
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  maLines = makeLines();
+}
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+/* ------------------------------------------------------------
+   蜡烛粒子
+   ------------------------------------------------------------ */
+function makeCandle() {
+  const mode = MODES[Math.floor(Math.random() * MODES.length)];
+  return {
+    mode,
+    up: Math.random() < 0.5,                            // 涨/跌只决定颜色，无行情含义
+    x: rand(0.05, 0.95) * W,                            // 水平位置随机
+    y: mode === "fall" ? -rand(60, 220) : rand(0.06, 0.86) * H,
+    vy: rand(90, 220),                                  // fall：初速（px/s）
+    g: rand(120, 320),                                  // fall：重力加速度（px/s²）
+    bw: rand(7, 15),                                    // 实体宽
+    bh: rand(18, 64),                                   // 实体高
+    wk: rand(0.5, 1.1),                                 // 影线相对实体的延伸比例
+    age: 0,
+    life: mode === "fall" ? rand(2.6, 4.2) : rand(5, 9),// 存活时长（s）
+    freq: rand(0.8, 1.8),                               // blink：呼吸频率
+    phase: rand(0, Math.PI * 2),
+    trend: false,                                       // 是否在趋势段（被吸附到均线上）
+    scatter: false,                                     // 是否处于"散开后的漂移"状态
+    tx: 0, ty: 0, tbh: 0, tbw: 0,                        // 趋势目标位置与尺寸
+    dvx: 0, dvy: 0,                                      // 散开后的漂移速度
+  };
+}
+
+const candles = [];
+
+/* ------------------------------------------------------------
+   均线：自左下向右上的上升趋势曲线
+     y = baseY − rise·(x/W) + amp·sin(2π·freq·x/W + φ)
+   baseY 依次下移、rise 依次略减 → 三条线呈多头排列（MA5 在上）
+   ------------------------------------------------------------ */
+let maLines = [];
+function makeLines() {
+  const centerY = H * 0.46;
+  return MA_COLORS.map((color, i) => ({
+    color,
+    baseY: centerY + i * Math.min(H * 0.055, 34),
+    rise: H * (0.20 - i * 0.02),
+    amp: H * (0.018 + i * 0.004),
+    freq: 1.15 + i * 0.35,
+    phaseOff: rand(0, Math.PI * 2),
+  }));
+}
+function lineY(line, x) {
+  const t = x / W;
+  return line.baseY - line.rise * t + line.amp * Math.sin(t * Math.PI * 2 * line.freq + line.phaseOff);
+}
+
+/* ------------------------------------------------------------
+   趋势事件状态机：idle → sweep → hold → disperse → idle
+   ------------------------------------------------------------ */
+let phase = "idle", phaseT = 0;
+let nextTrendIn = TREND_FIRST;   // idle 阶段倒计时
+let maDraw = 0;                  // 扫入进度 0..1
+let maShift = 0;                 // 退场位移（px，向右）
+
+function startTrend() {
+  phase = "sweep"; phaseT = 0; maDraw = 0; maShift = 0;
+  maLines = makeLines();
+  while (candles.length < TREND_MIN) candles.push(makeCandle());
+  const n = candles.length;
+  const step = n > 1 ? 0.84 / (n - 1) : 0;
+  candles.forEach((c, j) => {
+    const tx = W * (0.08 + step * j);                 // 横向均匀排开
+    const line = maLines[j % maLines.length];         // 轮流落在三条均线上
+    c.trend = true;
+    c.scatter = false;
+    c.tx = tx;
+    c.ty = lineY(line, tx);                           // 蜡烛中心落在均线上
+    c.up = Math.random() < 0.72;                      // 上涨趋势以红为主
+    c.tbh = rand(10, 26);                             // 收敛为"图表蜡烛"尺寸
+    c.tbw = rand(6, 11);
+    c.age = 0.6;                                      // 已淡入完成，避免趋势中再闪一次
+    c.life = Infinity;                                // 趋势期间不老化
+    c.dvx = 0; c.dvy = 0;
+  });
+}
+
+function disperseCandles() {
+  for (const c of candles) {
+    if (!c.trend) continue;
+    c.trend = false;
+    c.scatter = true;                                 // 转为自由漂移
+    c.life = c.age + rand(1.6, 3.0);                  // 漂移中淡出
+    c.dvx = rand(-170, 170);
+    c.dvy = rand(-140, 140);
+  }
+}
+
+function update(dt) {
+  phaseT += dt;
+  if (phase === "idle") {
+    nextTrendIn -= dt;
+    if (nextTrendIn <= 0) startTrend();
+  } else if (phase === "sweep") {
+    maDraw = clamp01(phaseT / SWEEP_DUR);
+    if (maDraw >= 1) { phase = "hold"; phaseT = 0; }
+  } else if (phase === "hold") {
+    if (phaseT >= HOLD_DUR) { phase = "disperse"; phaseT = 0; disperseCandles(); }
+  } else if (phase === "disperse") {
+    maShift = easeInOut(clamp01(phaseT / EXIT_DUR)) * (W + 80);
+    if (phaseT >= EXIT_DUR + 0.8) {
+      phase = "idle"; phaseT = 0; maDraw = 0; maShift = 0;
+      nextTrendIn = rand(TREND_GAP[0], TREND_GAP[1]);
+    }
+  }
+}
+
+/* 均线整体透明度：扫入时渐显，退场过半后渐隐 */
+function lineAlpha() {
+  if (phase === "sweep") return clamp01(maDraw * 1.2);
+  if (phase === "hold") return 1;
+  if (phase === "disperse") return clamp01(1 - (phaseT / EXIT_DUR - 0.5) / 0.5);
+  return 0;
+}
+
+function drawLines() {
+  const a = lineAlpha();
+  if (a <= 0.01) return;
+  const limit = phase === "sweep" ? W * maDraw : W;   // 扫入时只画到进度处
+  for (const line of maLines) {
+    cx.save();
+    cx.globalAlpha = a * 0.6;
+    cx.strokeStyle = line.color;
+    cx.lineWidth = 1.6;
+    cx.shadowColor = line.color;
+    cx.shadowBlur = 6;                                // 轻微辉光，像技术指标叠加层
+    cx.beginPath();
+    for (let x = 0; x <= limit; x += 6) {
+      const px = x + maShift, py = lineY(line, x);
+      if (x === 0) cx.moveTo(px, py); else cx.lineTo(px, py);
+    }
+    cx.stroke();
+    cx.restore();
+  }
+}
+
+function drawCandle(c, alpha) {
+  if (alpha <= 0.01) return;
+  const color = c.up ? RED : GREEN;
+  const grow = c.mode === "spawn" && !c.trend && !c.scatter
+    ? clamp01(c.age / 0.7)                            // spawn：实体从中心向两端生长
+    : 1;
+  const bh = Math.max(c.bh * grow, 1.5);
+  const yTop = c.y - bh / 2;
+  const wickHalf = (c.bh * c.wk / 2) * grow;
+
+  cx.globalAlpha = alpha * 0.85;
+  cx.strokeStyle = color;
+  cx.lineWidth = 1.2;
+  cx.beginPath();
+  cx.moveTo(c.x, yTop - wickHalf);
+  cx.lineTo(c.x, yTop + bh + wickHalf);
+  cx.stroke();
+
+  cx.globalAlpha = alpha;
+  cx.fillStyle = color;
+  cx.fillRect(c.x - c.bw / 2, yTop, c.bw, bh);
+  cx.globalAlpha = 1;
+}
+
+/* 亮度包络：淡入 → 保持 → 淡出 */
+function envelope(c) {
+  const fadeIn = Math.min(c.age / 0.9, 1);
+  const fadeOut = Math.min((c.life - c.age) / 1.2, 1);
+  return Math.max(0, Math.min(fadeIn, fadeOut));
+}
+
+function moveCandle(c, dt) {
+  if (c.trend) {                                      // 被均线吸附（缓入）
+    const k = Math.min(dt * 3.0, 1);
+    c.x += (c.tx - c.x) * k;
+    c.y += (c.ty - c.y) * k;
+    c.bh += (c.tbh - c.bh) * k;
+    c.bw += (c.tbw - c.bw) * k;
+    return;
+  }
+  if (c.scatter) {                                    // 散开后自由漂移并衰减
+    c.x += c.dvx * dt;
+    c.y += c.dvy * dt;
+    const decay = Math.exp(-1.5 * dt);
+    c.dvx *= decay; c.dvy *= decay;
+    return;
+  }
+  if (c.mode === "fall") {
+    c.vy += c.g * dt;                                 // v = v₀ + g·t
+    c.y += c.vy * dt;
+  }
+}
+
+/* ------------------------------------------------------------
+   主循环
+   ------------------------------------------------------------ */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+
+  cx.clearRect(0, 0, W, H);
+  update(dt);
+  drawLines();                                        // 均线在下层
+
+  for (let i = candles.length - 1; i >= 0; i--) {
+    const c = candles[i];
+    c.age += dt;
+    moveCandle(c, dt);
+    if (!c.trend && c.age >= c.life) { candles.splice(i, 1); continue; }
+
+    let alpha;
+    if (c.trend) {
+      alpha = 0.92;                                   // 趋势段稳定可见
+    } else {
+      alpha = envelope(c);
+      if (c.mode === "blink" && !c.scatter) {         // 忽明忽暗（散开后不再呼吸）
+        alpha *= 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(c.phase + c.age * c.freq * 2 * Math.PI));
+      }
+    }
+    drawCandle(c, alpha);
+  }
+  requestAnimationFrame(frame);
+}
+
+function spawn() {
+  if (phase !== "idle") return;                       // 趋势期间不再随机生成
+  if (candles.length < MAX_CANDLES) candles.push(makeCandle());
+}
+
+resize();
+for (let i = 0; i < 10; i++) candles.push(makeCandle());   // 开场预铺，避免空场
+
+if (reduceMotion) {
+  // 减少动态：画一组静态蜡烛后停止
+  for (let i = 0; i < 12; i++) {
+    const c = makeCandle();
+    c.mode = "spawn"; c.age = 2; c.life = 9; c.trend = false; c.scatter = false;
+    drawCandle(c, 0.35);
+  }
+} else {
+  requestAnimationFrame(frame);
+  setInterval(spawn, SPAWN_EVERY);
+}
+
+/* ============================================================
+   量化因子：数字滚动 + 进度条入场（纯设计元素）
+   ============================================================ */
+function countUp(el) {
+  const target = parseFloat(el.dataset.count);
+  const suffix = el.dataset.suffix || "";
+  const dec = (String(el.dataset.count).split(".")[1] || "").length;
+  const t0 = performance.now(), dur = 1400;
+  (function step(t) {
+    const k = Math.min((t - t0) / dur, 1);
+    const eased = 1 - Math.pow(1 - k, 3);
+    el.textContent = (target * eased).toFixed(dec) + suffix;
+    if (k < 1) requestAnimationFrame(step);
+  })(t0);
+}
+document.querySelectorAll("[data-count]").forEach(countUp);
+requestAnimationFrame(() =>
+  document.querySelectorAll(".bar i").forEach((b) => (b.style.width = b.dataset.w + "%")));
+</script>
+</body>
+</html>

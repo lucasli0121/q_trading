@@ -1,0 +1,122 @@
+/* ==========================================================================
+ * QTrade Design Tokens — CSS Custom Properties
+ * 来源：Ardot 设计系统「QTrade 设计系统」
+ *       https://ardot.tencent.com/file/726465434404942
+ * 令牌集：color（Light / Dark 双模式）· metric · type
+ *
+ * 用法：
+ *   <html>                    → Light（默认，见 :root）
+ *   <html data-theme="Dark">  → Dark
+ *
+ * 颜色写法约定：不透明色用 6 位 hex；带透明度的用 8 位 hex（#RRGGBBAA）。
+ * 本文件由设计令牌导出后加注中文语义注释，色值与 tokens.json 完全一致；
+ * 若在 Ardot 侧重新导出，注释会被覆盖。
+ * ========================================================================== */
+
+:root {
+  /* --- color · 背景 --- */
+  --color-bg-base: #F9FAFB;            /* 页面底色 */
+  --color-bg-surface: #FFFFFF;         /* 卡片 / 面板 */
+  --color-bg-elevated: #FFFFFF;        /* 顶栏 / 侧栏 / 抬升层 */
+  --color-bg-input: #F3F4F6;           /* 输入槽 / 分段控件底 */
+  --color-bg-subtle: #F1F5F9;          /* 次级填充 / 内分隔 */
+  --color-bg-scrim: #11182773;         /* 遮罩层（约 45% 不透明） */
+
+  /* --- color · 描边 --- */
+  --color-border-default: #E5E7EB;     /* 卡片描边 */
+  --color-border-control: #D1D5DB;     /* 输入框 / 控件描边 */
+  --color-border-divider: #F1F5F9;     /* 卡内细分隔线 */
+
+  /* --- color · 文字 --- */
+  --color-text-primary: #111827;       /* 正文 / 标题 */
+  --color-text-secondary: #6B7280;     /* 次要说明 */
+  --color-text-tertiary: #9CA3AF;      /* 弱化 / 占位符 */
+  --color-text-on-brand: #FFFFFF;      /* 主色底上的文字 */
+
+  /* --- color · 品牌 --- */
+  --color-brand-primary: #2563EB;      /* 主色 / 主按钮 */
+  --color-brand-link: #2563EB;         /* 文字链 */
+  --color-brand-wechat: #07C160;       /* 微信品牌绿（两模式一致） */
+  --color-accent-warning: #F59E0B;     /* 强调 / 警示 */
+
+  /* --- color · 行情（A 股约定：涨红跌绿） --- */
+  --color-market-up: #DC2626;          /* 涨 / 买入 / 盈利 */
+  --color-market-down: #059669;        /* 跌 / 卖出 / 亏损 */
+  --color-market-up-bg: #FEF2F2;       /* 涨标签底 */
+  --color-market-down-bg: #ECFDF5;     /* 跌标签底 */
+
+  /* --- color · 状态 --- */
+  --color-status-success-bg: #ECFDF5;  /* 运行中徽标底 */
+
+  /* --- metric · 圆角 --- */
+  --metric-radius-sm: 6px;             /* 小控件 / 分段段块 */
+  --metric-radius-md: 8px;             /* 输入框 / 搜索框 */
+  --metric-radius-btn: 10px;           /* 按钮 */
+  --metric-radius-lg: 12px;            /* 卡片 */
+  --metric-radius-xl: 14px;            /* 大卡片 / 登录卡 */
+  --metric-radius-tag: 4px;            /* 小标签 */
+  --metric-radius-full: 999px;         /* 胶囊 / 徽标 */
+
+  /* --- metric · 间距 --- */
+  --metric-space-2xs: 4px;
+  --metric-space-xs: 6px;
+  --metric-space-sm: 8px;
+  --metric-space-md: 12px;
+  --metric-space-lg: 16px;
+  --metric-space-xl: 20px;
+  --metric-space-2xl: 24px;
+
+  /* --- metric · 字号 --- */
+  --metric-font-size-2xs: 9px;         /* 极小辅助 */
+  --metric-font-size-xs: 10px;         /* 标签 / 说明 */
+  --metric-font-size-sm: 11px;         /* 次要正文 */
+  --metric-font-size-md: 12px;         /* 正文（默认） */
+  --metric-font-size-base: 13px;       /* 小标题 */
+  --metric-font-size-lg: 14px;         /* 卡片标题 */
+  --metric-font-size-xl: 15px;         /* 区块标题 */
+  --metric-font-size-2xl: 17px;        /* 统计数值 */
+  --metric-font-size-display: 24px;    /* 品牌名 / 大数值 */
+
+  /* --- metric · 尺寸 --- */
+  --metric-size-page-w: 375px;         /* 设计基准宽 */
+  --metric-size-page-h: 812px;         /* 设计基准高 */
+  --metric-size-statusbar-h: 44px;     /* 状态栏 */
+  --metric-size-topbar-h: 56px;        /* 顶部导航栏 */
+  --metric-size-tabbar-h: 78px;        /* 底部 Tab Bar（含安全区） */
+  --metric-size-input-h: 44px;         /* 输入框高度 */
+  --metric-size-btn-h: 46px;           /* 主按钮高度 */
+  --metric-size-btn-sm-h: 30px;        /* 顶栏小按钮 */
+  --metric-size-chip-h: 28px;          /* 筛选 chip */
+  --metric-size-content-bottom: 734px; /* 可视内容底线 = 812 - 78 */
+  --metric-size-hit-min: 44px;         /* 最小点击热区 */
+  --metric-border-width: 1px;
+
+  /* --- type · 字体族 --- */
+  --type-font-family-base: "Noto Sans SC";
+  --type-font-family-number: "Inter";
+}
+
+[data-theme="Dark"] {
+  --color-bg-base: #0F0F1A;
+  --color-bg-surface: #1E293B;
+  --color-bg-elevated: #111827;
+  --color-bg-input: #0F0F1A;
+  --color-bg-subtle: #2D3748;
+  --color-bg-scrim: #00000099;
+  --color-border-default: #334155;
+  --color-border-control: #334155;
+  --color-border-divider: #2D3748;
+  --color-text-primary: #E5E7EB;
+  --color-text-secondary: #6B7280;
+  --color-text-tertiary: #4B5563;
+  --color-text-on-brand: #FFFFFF;
+  --color-brand-primary: #3B82F6;
+  --color-brand-link: #60A5FA;
+  --color-accent-warning: #FBBF24;
+  --color-market-up: #F87171;
+  --color-market-down: #34D399;
+  --color-market-up-bg: #F871711F;
+  --color-market-down-bg: #34D3991F;
+  --color-status-success-bg: #34D39929;
+  --color-brand-wechat: #07C160;
+}

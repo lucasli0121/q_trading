@@ -1,0 +1,107 @@
+/* 策略监控 */
+
+.live {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-xs);
+  padding: var(--metric-space-sm) var(--metric-space-md);
+  border-radius: var(--metric-radius-full);
+  margin-bottom: var(--metric-space-md);
+  align-self: flex-start;
+}
+
+.live--on {
+  background-color: var(--color-status-success-bg);
+}
+
+.live--off {
+  background-color: var(--color-bg-subtle);
+}
+
+.live-dot {
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  background-color: var(--color-market-down);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.live--off .live-dot {
+  background-color: var(--color-accent-warning);
+}
+
+.live-text {
+  font-size: var(--metric-font-size-sm);
+  font-weight: 600;
+  color: var(--color-market-down);
+}
+
+.live--off .live-text { color: var(--color-accent-warning); }
+
+.live-hint {
+  font-size: var(--metric-font-size-2xs);
+  color: var(--color-text-tertiary);
+}
+
+.stat-k {
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.stat-v {
+  margin-top: 6rpx;
+  font-size: var(--metric-font-size-2xl);
+  font-weight: 700;
+}
+
+.filter-bar {
+  margin: var(--metric-space-lg) 0 var(--metric-space-md);
+}
+
+/* ---------------------------------------------------------- 信号卡 */
+.sig-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--metric-space-md);
+}
+
+.sig-card { padding: var(--metric-space-md) var(--metric-space-lg); }
+
+.sig-hd {
+  padding-bottom: var(--metric-space-sm);
+  border-bottom: var(--metric-border-width) dashed var(--color-border-default);
+}
+
+.sig-mid {
+  margin-top: var(--metric-space-md);
+  align-items: flex-start;
+}
+
+.sig-code {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  align-items: flex-start;
+}
+
+.sig-code--hover { opacity: 0.7; }
+
+.sig-nums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6rpx;
+}
+
+.sig-ft {
+  margin-top: var(--metric-space-md);
+  padding-top: var(--metric-space-sm);
+  border-top: var(--metric-border-width) solid var(--color-border-divider);
+  gap: var(--metric-space-sm);
+}
+
+.sig-reason {
+  max-width: 60%;
+  text-align: right;
+  line-height: 1.4;
+}

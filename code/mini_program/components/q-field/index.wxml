@@ -1,0 +1,45 @@
+<view class="field">
+  <view wx:if="{{label}}" class="field-label">
+    <text wx:if="{{required}}" class="field-req">*</text>
+    <text>{{label}}</text>
+  </view>
+
+  <textarea
+    wx:if="{{mode === 'textarea'}}"
+    class="textarea {{error ? 'input--error' : ''}} {{disabled ? 'input--disabled' : ''}}"
+    value="{{value}}"
+    placeholder="{{placeholder}}"
+    placeholder-class="input-ph"
+    maxlength="{{maxlength}}"
+    disabled="{{disabled}}"
+    bindinput="onInput"
+    bindfocus="onFocus"
+    bindblur="onBlur"
+    auto-height
+  ></textarea>
+
+  <view
+    wx:else
+    class="input {{focused ? 'input--focus' : ''}} {{error ? 'input--error' : ''}} {{disabled ? 'input--disabled' : ''}}"
+  >
+    <input
+      class="field-input"
+      value="{{value}}"
+      placeholder="{{placeholder}}"
+      placeholder-class="input-ph"
+      password="{{mode === 'password'}}"
+      type="{{mode === 'password' ? 'text' : mode}}"
+      maxlength="{{maxlength}}"
+      disabled="{{disabled}}"
+      bindinput="onInput"
+      bindfocus="onFocus"
+      bindblur="onBlur"
+    />
+    <slot name="suffix"></slot>
+  </view>
+
+  <view class="field-foot">
+    <text wx:if="{{error}}" class="field-error">{{error}}</text>
+    <text wx:elif="{{showCount}}" class="field-count">{{value.length}}/{{maxlength}}</text>
+  </view>
+</view>

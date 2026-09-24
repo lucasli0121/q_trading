@@ -1,0 +1,163 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="{{mode === 'create' ? '创建策略' : '编辑策略'}}"
+    statusBarHeight="{{statusBarHeight}}"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="card" rows="3" />
+
+    <block wx:else>
+      <!-- ① 策略模板 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">策略模板</text>
+          <text wx:if="{{mode === 'edit'}}" class="c-tertiary t-xs">编辑时不可更换</text>
+          <text wx:else class="c-tertiary t-xs">点击卡片勾选</text>
+        </view>
+
+        <!-- 编辑：只读卡片 -->
+        <view wx:if="{{mode === 'edit' && lockedTpl}}" class="tpl-card tpl-card--locked">
+          <view class="tpl-hd">
+            <text class="tpl-check tpl-check--on">✓</text>
+            <text class="tag tag-brand">{{lockedTpl.type}}</text>
+          </view>
+          <view class="tpl-name ellipsis">{{lockedTpl.name}}</view>
+          <view class="tpl-desc ellipsis-3">{{lockedTpl.description}}</view>
+        </view>
+
+        <!-- 创建：可横向滑动的卡片 -->
+        <block wx:else>
+          <q-empty wx:if="{{!templates.length}}" type="empty" title="暂无可用策略模板" compact />
+          <scroll-view wx:else class="tpl-scroll" scroll-x show-scrollbar="{{false}}">
+            <view class="tpl-inner">
+              <view
+                wx:for="{{templates}}"
+                wx:key="id"
+                class="tpl-card {{selectedSid === item.id ? 'tpl-card--on' : ''}}"
+                data-id="{{item.id}}"
+                bindtap="onPickTemplate"
+              >
+                <view class="tpl-hd">
+                  <text class="tpl-check {{selectedSid === item.id ? 'tpl-check--on' : ''}}">
+                    {{selectedSid === item.id ? '✓' : ''}}
+                  </text>
+                  <text class="tag tag-brand">{{item.type}}</text>
+                </view>
+                <view class="tpl-name ellipsis-2">{{item.name}}</view>
+                <view class="tpl-desc ellipsis-3">{{item.description}}</view>
+              </view>
+            </view>
+          </scroll-view>
+        </block>
+      </view>
+
+      <!-- ② 基本信息 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">基本信息</text>
+        </view>
+        <view class="form-body">
+          <view class="field-label">自定义名称 <text class="c-up">*</text></view>
+          <input
+            class="input"
+            value="{{name}}"
+            data-key="name"
+            placeholder="列表中展示的名称，建议唯一"
+            placeholder-class="input-ph"
+            maxlength="40"
+            bindinput="onField"
+          />
+
+          <view class="field-label">股票池 <text class="c-up">*</text></view>
+          <picker
+            wx:if="{{poolNames.length}}"
+            mode="selector"
+            range="{{poolNames}}"
+            value="{{poolIndex}}"
+            bindchange="onPoolChange"
+          >
+            <view class="input picker-box">
+              <text class="{{poolName ? '' : 'input-ph'}} ellipsis flex1">{{poolName || '请选择股票池'}}</text>
+              <text class="picker-caret">▾</text>
+            </view>
+          </picker>
+          <view wx:else class="empty-inline">暂无股票池，请先到「行情」页创建股票池</view>
+
+          <view class="row gap-md">
+            <view class="flex1">
+              <view class="field-label">初始资金（元）</view>
+              <input
+                class="input num"
+                type="digit"
+                value="{{initialAmount}}"
+                data-key="initialAmount"
+                placeholder="1000000"
+                placeholder-class="input-ph"
+                bindinput="onField"
+              />
+            </view>
+            <view class="flex1">
+              <view class="field-label">最大持仓数</view>
+              <input
+                class="input num"
+                type="number"
+                value="{{maxStockCount}}"
+                data-key="maxStockCount"
+                placeholder="4"
+                placeholder-class="input-ph"
+                bindinput="onField"
+              />
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <!-- ③ 策略参数 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">策略参数</text>
+          <text class="c-tertiary t-xs">默认值来自模板</text>
+        </view>
+
+        <view wx:if="{{!selectedSid}}" class="empty-inline">
+          请先在上方勾选一个策略模板
+        </view>
+        <view wx:elif="{{!hasParams}}" class="empty-inline">该策略暂无参数配置</view>
+
+        <view wx:else class="param-wrap">
+          <block wx:for="{{paramGroups}}" wx:key="key" wx:for-index="gi" wx:for-item="group">
+            <view class="param-group">
+              <view class="param-title">{{group.title}}</view>
+              <view wx:for="{{group.items}}" wx:key="rawKey" wx:for-index="ki" wx:for-item="p" class="param-row">
+                <text class="param-desc ellipsis">{{p.desc}}</text>
+                <input
+                  class="param-input num"
+                  type="{{p.isNumber ? 'digit' : 'text'}}"
+                  value="{{p.value}}"
+                  data-gi="{{gi}}"
+                  data-ki="{{ki}}"
+                  placeholder="--"
+                  placeholder-class="input-ph"
+                  bindinput="onParamInput"
+                />
+              </view>
+            </view>
+          </block>
+        </view>
+      </view>
+
+      <!-- 底部按钮 -->
+      <view class="row gap-md form-actions">
+        <view class="btn btn-secondary flex1" bindtap="retry">重置</view>
+        <view
+          class="btn btn-primary flex1 {{saving ? 'btn-disabled' : ''}}"
+          bindtap="onSave"
+        >{{saving ? '保存中...' : '保存'}}</view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

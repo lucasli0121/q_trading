@@ -1,0 +1,30 @@
+<view class="navbar-wrap">
+  <view class="navbar" style="padding-top: {{statusBarHeight}}px;">
+    <view class="navbar-bar">
+      <!-- 左：返回（热区 44×44pt） -->
+      <view class="navbar-side navbar-side--left">
+        <view wx:if="{{back}}" class="navbar-hit" bindtap="onBack" hover-class="navbar-hit--hover">
+          <view class="navbar-arrow"></view>
+        </view>
+        <slot name="left"></slot>
+      </view>
+
+      <!-- 中：标题 -->
+      <view class="navbar-title ellipsis">{{title}}</view>
+
+      <!-- 右：操作 -->
+      <view class="navbar-side navbar-side--right">
+        <slot name="right"></slot>
+        <view wx:if="{{actionIcon}}" class="navbar-hit" bindtap="onActionIcon" hover-class="navbar-hit--hover">
+          <view class="navbar-refresh"></view>
+        </view>
+        <view wx:if="{{action}}" class="navbar-action" bindtap="onAction" hover-class="navbar-hit--hover">
+          <text wx:if="{{actionAdd}}" class="navbar-plus">＋</text>
+          <text>{{action}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{placeholder}}" class="navbar-ph" style="height: {{statusBarHeight + 44}}px;"></view>
+</view>

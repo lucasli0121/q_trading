@@ -1,0 +1,9 @@
+{
+  "desc": "QTrade 量化小程序为登录后可见的内部工具，不需要被微信索引",
+  "rules": [
+    {
+      "action": "disallow",
+      "page": "*"
+    }
+  ]
+}

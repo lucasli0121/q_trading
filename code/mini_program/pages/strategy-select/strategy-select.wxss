@@ -1,0 +1,71 @@
+/* 策略选股 */
+
+.sel-date {
+  display: flex;
+  align-items: baseline;
+  margin-bottom: var(--metric-space-md);
+}
+
+.tab-scroll {
+  white-space: nowrap;
+  margin-bottom: var(--metric-space-md);
+}
+
+.tab-inner {
+  display: inline-flex;
+  gap: var(--metric-space-xs);
+  padding-right: var(--metric-space-lg);
+}
+
+.loading-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--metric-space-sm);
+  padding: var(--metric-space-2xl) 0;
+}
+
+/* ---------------------------------------------------------- 表格 */
+.sel-hd,
+.sel-row {
+  display: flex;
+  align-items: center;
+}
+
+.c-code {
+  flex: 1.6;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.c-min {
+  flex: 1;
+  text-align: right;
+}
+
+.sel-row { min-height: 96rpx; }
+
+.sub-metrics {
+  border-top: var(--metric-border-width) solid var(--color-border-default);
+  padding: var(--metric-space-sm) var(--metric-space-lg) var(--metric-space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--metric-space-sm);
+}
+
+.sub-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--metric-space-sm);
+  font-size: var(--metric-font-size-2xs);
+  color: var(--color-text-tertiary);
+}
+
+.sub-code {
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.sub-kv { color: var(--color-text-tertiary); }

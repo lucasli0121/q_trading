@@ -1,0 +1,120 @@
+/* 搜索与筛选 */
+
+.seg {
+  display: flex;
+  padding: 4rpx;
+  background-color: var(--color-bg-subtle);
+  border-radius: var(--metric-radius-md);
+  margin-bottom: var(--metric-space-md);
+}
+
+.seg-item {
+  flex: 1;
+  text-align: center;
+  padding: var(--metric-space-sm) 0;
+  font-size: var(--metric-font-size-md);
+  color: var(--color-text-secondary);
+  border-radius: var(--metric-radius-sm);
+}
+
+.seg-item--on {
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.search-icon {
+  width: 26rpx;
+  height: 26rpx;
+  border: 3rpx solid var(--color-text-tertiary);
+  border-radius: 50%;
+  position: relative;
+  flex: none;
+}
+
+.search-icon::after {
+  content: '';
+  position: absolute;
+  right: -8rpx;
+  bottom: -6rpx;
+  width: 14rpx;
+  height: 3rpx;
+  background-color: var(--color-text-tertiary);
+  transform: rotate(45deg);
+}
+
+.s-clear {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+}
+
+.s-go { margin-top: var(--metric-space-md); }
+
+.loading-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--metric-space-sm);
+  padding: var(--metric-space-2xl) 0;
+}
+
+/* ---------------------------------------------------------- 搜索结果 */
+.result-list {
+  margin-top: var(--metric-space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--metric-space-md);
+}
+
+.r-card { padding: var(--metric-space-md) var(--metric-space-lg); }
+.r-card--hover { background-color: var(--color-bg-subtle); }
+
+.r-sub { margin-top: 8rpx; }
+
+.r-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4rpx;
+}
+
+/* ---------------------------------------------------------- 筛选条件 */
+.sec-title {
+  margin: var(--metric-space-md) 0 var(--metric-space-xs);
+  font-size: var(--metric-font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.sec-title:first-child { margin-top: 0; }
+
+.s-actions { margin-top: var(--metric-space-lg); }
+
+.hint {
+  margin-top: var(--metric-space-md);
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+/* ---------------------------------------------------------- 筛选结果 */
+.r-table { margin-top: var(--metric-space-md); }
+
+.sf-code {
+  flex: 1.6;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sf-min {
+  flex: 1;
+  text-align: right;
+}
+
+.tbl-note {
+  padding: var(--metric-space-sm) var(--metric-space-lg);
+  font-size: var(--metric-font-size-2xs);
+  color: var(--color-text-tertiary);
+  background-color: var(--color-bg-subtle);
+}

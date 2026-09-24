@@ -1,0 +1,592 @@
+/* ==========================================================================
+ * QTrade 量化小程序 · 全局样式
+ *
+ * 设计令牌严格来源：ui/tokens.css（Light / Dark 双模式）
+ * 换算规则：设计稿基准宽 375pt，小程序 750rpx = 屏宽 → 1pt = 2rpx
+ *   因此 tokens.css 里的 px 值一律 ×2 转成 rpx，颜色值保持完全一致。
+ *
+ * 主题切换：根节点 <view class="root {{theme}}"> 上的 .root / .root.theme-dark
+ *   覆盖同名变量即可，业务样式只引用 var(--color-*)，不写死色值。
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------- Light */
+.root {
+  /* --- color · 背景 --- */
+  --color-bg-base: #F9FAFB;
+  --color-bg-surface: #FFFFFF;
+  --color-bg-elevated: #FFFFFF;
+  --color-bg-input: #F3F4F6;
+  --color-bg-subtle: #F1F5F9;
+  --color-bg-scrim: rgba(17, 24, 39, 0.45);
+
+  /* --- color · 描边 --- */
+  --color-border-default: #E5E7EB;
+  --color-border-control: #D1D5DB;
+  --color-border-divider: #F1F5F9;
+
+  /* --- color · 文字 --- */
+  --color-text-primary: #111827;
+  --color-text-secondary: #6B7280;
+  --color-text-tertiary: #9CA3AF;
+  --color-text-on-brand: #FFFFFF;
+
+  /* --- color · 品牌 --- */
+  --color-brand-primary: #2563EB;
+  --color-brand-link: #2563EB;
+  --color-brand-wechat: #07C160;
+  --color-accent-warning: #F59E0B;
+
+  /* --- color · 行情（A 股约定：涨红跌绿） --- */
+  --color-market-up: #DC2626;
+  --color-market-down: #059669;
+  --color-market-up-bg: #FEF2F2;
+  --color-market-down-bg: #ECFDF5;
+
+  /* --- color · 状态 --- */
+  --color-status-success-bg: #ECFDF5;
+  --color-chip-neutral: #E5E7EB;
+
+  /* --- metric · 圆角 --- */
+  --metric-radius-sm: 12rpx;
+  --metric-radius-md: 16rpx;
+  --metric-radius-btn: 20rpx;
+  --metric-radius-lg: 24rpx;
+  --metric-radius-xl: 28rpx;
+  --metric-radius-tag: 8rpx;
+  --metric-radius-full: 999rpx;
+
+  /* --- metric · 间距 --- */
+  --metric-space-2xs: 8rpx;
+  --metric-space-xs: 12rpx;
+  --metric-space-sm: 16rpx;
+  --metric-space-md: 24rpx;
+  --metric-space-lg: 32rpx;
+  --metric-space-xl: 40rpx;
+  --metric-space-2xl: 48rpx;
+
+  /* --- metric · 字号 --- */
+  --metric-font-size-2xs: 18rpx;
+  --metric-font-size-xs: 20rpx;
+  --metric-font-size-sm: 22rpx;
+  --metric-font-size-md: 24rpx;
+  --metric-font-size-base: 26rpx;
+  --metric-font-size-lg: 28rpx;
+  --metric-font-size-xl: 30rpx;
+  --metric-font-size-2xl: 34rpx;
+  --metric-font-size-display: 48rpx;
+
+  /* --- metric · 尺寸 --- */
+  --metric-size-topbar-h: 112rpx;
+  --metric-size-tabbar-h: 156rpx;
+  --metric-size-input-h: 88rpx;
+  --metric-size-btn-h: 92rpx;
+  --metric-size-btn-sm-h: 60rpx;
+  --metric-size-chip-h: 56rpx;
+  --metric-size-hit-min: 88rpx;
+  --metric-border-width: 1rpx;
+
+  /* --- type · 字体族 --- */
+  --type-font-family-base: -apple-system, BlinkMacSystemFont, "Noto Sans SC", "PingFang SC", "Helvetica Neue", sans-serif;
+  --type-font-family-number: "DIN Alternate", "Inter", -apple-system, "Helvetica Neue", sans-serif;
+
+  /* --- 阴影 --- */
+  --shadow-card: 0 2rpx 12rpx rgba(15, 23, 42, 0.06);
+  --shadow-pop: 0 12rpx 40rpx rgba(15, 23, 42, 0.16);
+}
+
+/* ---------------------------------------------------------------- Dark */
+.root.theme-dark {
+  --color-bg-base: #0F0F1A;
+  --color-bg-surface: #1E293B;
+  --color-bg-elevated: #111827;
+  --color-bg-input: #0F0F1A;
+  --color-bg-subtle: #2D3748;
+  --color-bg-scrim: rgba(0, 0, 0, 0.6);
+
+  --color-border-default: #334155;
+  --color-border-control: #334155;
+  --color-border-divider: #2D3748;
+
+  --color-text-primary: #E5E7EB;
+  --color-text-secondary: #6B7280;
+  --color-text-tertiary: #4B5563;
+  --color-text-on-brand: #FFFFFF;
+
+  --color-brand-primary: #3B82F6;
+  --color-brand-link: #60A5FA;
+  --color-accent-warning: #FBBF24;
+
+  --color-market-up: #F87171;
+  --color-market-down: #34D399;
+  --color-market-up-bg: rgba(248, 113, 113, 0.12);
+  --color-market-down-bg: rgba(52, 211, 153, 0.12);
+
+  --color-status-success-bg: rgba(52, 211, 153, 0.16);
+  --color-chip-neutral: #374151;
+
+  --shadow-card: 0 2rpx 12rpx rgba(0, 0, 0, 0.32);
+  --shadow-pop: 0 12rpx 40rpx rgba(0, 0, 0, 0.5);
+}
+
+/* ================================================================ 基础 */
+page {
+  background-color: #F9FAFB;
+  font-family: -apple-system, BlinkMacSystemFont, "Noto Sans SC", "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 24rpx;
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 根容器：承载主题变量 + 页面级底色（随主题切换） */
+.root {
+  min-height: 100vh;
+  box-sizing: border-box;
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--type-font-family-base);
+  font-size: var(--metric-font-size-md);
+  display: flex;
+  flex-direction: column;
+}
+
+view, text, scroll-view, button, input, textarea, image, canvas {
+  box-sizing: border-box;
+}
+
+/* 页面主体：顶部导航之下、TabBar 之上的滚动区 */
+.page-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--metric-space-lg) var(--metric-space-lg) var(--metric-space-xl);
+}
+
+.page-body--tab {
+  padding-bottom: calc(var(--metric-size-tabbar-h) + var(--metric-space-xl));
+}
+
+.page-body--nopad {
+  padding: 0;
+}
+
+/* ================================================================ 排版 */
+.num {
+  font-family: var(--type-font-family-number);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.t-display { font-size: var(--metric-font-size-display); font-weight: 700; line-height: 1.2; }
+.t-2xl     { font-size: var(--metric-font-size-2xl); font-weight: 700; line-height: 1.3; }
+.t-xl      { font-size: var(--metric-font-size-xl); font-weight: 600; }
+.t-lg      { font-size: var(--metric-font-size-lg); font-weight: 600; }
+.t-base    { font-size: var(--metric-font-size-base); }
+.t-md      { font-size: var(--metric-font-size-md); }
+.t-sm      { font-size: var(--metric-font-size-sm); }
+.t-xs      { font-size: var(--metric-font-size-xs); }
+.t-2xs     { font-size: var(--metric-font-size-2xs); }
+
+.t-bold    { font-weight: 700; }
+.t-medium  { font-weight: 500; }
+
+.c-primary  { color: var(--color-text-primary); }
+.c-second   { color: var(--color-text-secondary); }
+.c-tertiary { color: var(--color-text-tertiary); }
+.c-brand    { color: var(--color-brand-primary); }
+.c-link     { color: var(--color-brand-link); }
+.c-up       { color: var(--color-market-up); }
+.c-down     { color: var(--color-market-down); }
+.c-warn     { color: var(--color-accent-warning); }
+
+.upper { letter-spacing: 1rpx; }
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ellipsis-2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ellipsis-3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+
+/* ================================================================ 布局 */
+.row      { display: flex; flex-direction: row; align-items: center; }
+.row-top  { display: flex; flex-direction: row; align-items: flex-start; }
+.col      { display: flex; flex-direction: column; }
+.between  { justify-content: space-between; }
+.center   { justify-content: center; align-items: center; }
+.wrap     { flex-wrap: wrap; }
+.flex1    { flex: 1; min-width: 0; }
+.gap-2xs { gap: var(--metric-space-2xs); }
+.gap-xs  { gap: var(--metric-space-xs); }
+.gap-sm  { gap: var(--metric-space-sm); }
+.gap-md  { gap: var(--metric-space-md); }
+.gap-lg  { gap: var(--metric-space-lg); }
+.gap-xl  { gap: var(--metric-space-xl); }
+
+.divider {
+  height: 1rpx;
+  background-color: var(--color-border-divider);
+}
+
+/* ================================================================ 卡片 */
+.card {
+  background-color: var(--color-bg-surface);
+  border: var(--metric-border-width) solid var(--color-border-default);
+  border-radius: var(--metric-radius-lg);
+  overflow: hidden;
+}
+
+.card-pad {
+  padding: var(--metric-space-lg);
+}
+
+.card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-bottom: var(--metric-border-width) solid var(--color-border-default);
+}
+
+.card-bd {
+  padding: var(--metric-space-md) var(--metric-space-lg);
+}
+
+/* ================================================================ 按钮 */
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--metric-size-btn-h);
+  padding: 0 var(--metric-space-xl);
+  border-radius: var(--metric-radius-btn);
+  font-size: var(--metric-font-size-lg);
+  font-weight: 600;
+  line-height: 1;
+  border: none;
+  transition: opacity 0.15s;
+}
+
+.btn::after { border: none; }
+
+.btn-primary {
+  background-color: var(--color-brand-primary);
+  color: var(--color-text-on-brand);
+}
+
+.btn-wechat {
+  background-color: var(--color-brand-wechat);
+  color: #FFFFFF;
+}
+
+.btn-secondary {
+  background-color: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--color-brand-link);
+  border: var(--metric-border-width) solid var(--color-border-control);
+}
+
+.btn-danger {
+  background-color: transparent;
+  color: var(--color-market-up);
+  border: var(--metric-border-width) solid var(--color-market-up);
+}
+
+.btn-sm {
+  height: var(--metric-size-btn-sm-h);
+  padding: 0 var(--metric-space-md);
+  border-radius: var(--metric-radius-sm);
+  font-size: var(--metric-font-size-md);
+  font-weight: 600;
+}
+
+.btn-block { width: 100%; }
+
+.btn-hover { opacity: 0.85; }
+
+.btn-disabled {
+  opacity: 0.45;
+}
+
+/* 主色描边小按钮：顶栏「创建策略」「添加股票」等 */
+.btn-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--metric-space-2xs);
+  height: var(--metric-size-btn-sm-h);
+  padding: 0 var(--metric-space-md);
+  border-radius: var(--metric-radius-sm);
+  background-color: var(--color-brand-primary);
+  color: var(--color-text-on-brand);
+  font-size: var(--metric-font-size-md);
+  font-weight: 600;
+}
+
+/* 纯文字按钮：热区仍需 ≥88rpx */
+.btn-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--metric-size-hit-min);
+  padding: 0 var(--metric-space-sm);
+  color: var(--color-brand-link);
+  font-size: var(--metric-font-size-md);
+}
+
+/* ================================================================ 输入 */
+.input {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--metric-size-input-h);
+  padding: 0 var(--metric-space-md);
+  background-color: var(--color-bg-input);
+  border: var(--metric-border-width) solid var(--color-border-control);
+  border-radius: var(--metric-radius-md);
+  font-size: var(--metric-font-size-lg);
+  color: var(--color-text-primary);
+}
+
+.input--focus {
+  border-color: var(--color-brand-primary);
+}
+
+.input--error {
+  border-color: var(--color-market-up);
+}
+
+.input--disabled {
+  opacity: 0.5;
+}
+
+.input-ph {
+  color: var(--color-text-tertiary);
+  font-size: var(--metric-font-size-lg);
+}
+
+.textarea {
+  width: 100%;
+  min-height: 160rpx;
+  padding: var(--metric-space-md);
+  background-color: var(--color-bg-input);
+  border: var(--metric-border-width) solid var(--color-border-control);
+  border-radius: var(--metric-radius-md);
+  font-size: var(--metric-font-size-lg);
+  color: var(--color-text-primary);
+}
+
+/* 搜索框 h36(=72rpx) radius8(=16rpx) */
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-sm);
+  height: 72rpx;
+  padding: 0 var(--metric-space-md);
+  background-color: var(--color-bg-input);
+  border-radius: var(--metric-radius-md);
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  font-size: var(--metric-font-size-base);
+  color: var(--color-text-primary);
+}
+
+/* ================================================================ Chip / Tag */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--metric-size-chip-h);
+  padding: 0 var(--metric-space-md);
+  border-radius: var(--metric-radius-full);
+  background-color: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--metric-font-size-md);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip--active {
+  background-color: var(--color-brand-primary);
+  color: var(--color-text-on-brand);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rpx 8rpx;
+  border-radius: var(--metric-radius-tag);
+  font-size: var(--metric-font-size-xs);
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.tag-up   { color: var(--color-market-up);   background-color: var(--color-market-up-bg); }
+.tag-down { color: var(--color-market-down); background-color: var(--color-market-down-bg); }
+.tag-neutral { color: var(--color-text-secondary); background-color: var(--color-bg-subtle); }
+.tag-brand { color: var(--color-brand-link); background-color: var(--color-status-success-bg); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 36rpx;
+  padding: 0 var(--metric-space-sm);
+  border-radius: var(--metric-radius-full);
+  font-size: var(--metric-font-size-xs);
+  font-weight: 500;
+  background-color: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+/* ================================================================ 列表行 */
+.list-row {
+  display: flex;
+  align-items: center;
+  min-height: 112rpx;
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.list-row:last-child { border-bottom: none; }
+
+.list-row-hover { background-color: var(--color-bg-subtle); }
+
+/* ================================================================ 统计卡 */
+.stat-card {
+  flex: 1;
+  min-width: 0;
+  padding: var(--metric-space-md);
+  background-color: var(--color-bg-surface);
+  border: var(--metric-border-width) solid var(--color-border-default);
+  border-radius: var(--metric-radius-lg);
+}
+
+.stat-icon {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: var(--metric-radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32rpx;
+}
+
+/* ================================================================ 表格 */
+.tbl-hd {
+  display: flex;
+  align-items: center;
+  padding: var(--metric-space-sm) var(--metric-space-lg);
+  background-color: var(--color-bg-subtle);
+  border-bottom: var(--metric-border-width) solid var(--color-border-default);
+  font-size: var(--metric-font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.tbl-row {
+  display: flex;
+  align-items: center;
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.tbl-row:last-child { border-bottom: none; }
+
+/* ================================================================ 遮罩 / 弹层 */
+.scrim {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background-color: var(--color-bg-scrim);
+  z-index: 900;
+}
+
+/* ================================================================ 骨架屏 */
+.sk {
+  background: linear-gradient(90deg,
+    var(--color-bg-subtle) 25%,
+    var(--color-bg-input) 37%,
+    var(--color-bg-subtle) 63%);
+  background-size: 400% 100%;
+  animation: sk-shine 1.4s ease infinite;
+  border-radius: var(--metric-radius-sm);
+}
+
+@keyframes sk-shine {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* ================================================================ 加载 */
+.spinner {
+  width: 40rpx;
+  height: 40rpx;
+  border: 4rpx solid var(--color-border-default);
+  border-top-color: var(--color-brand-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 运行中呼吸圆点 */
+.pulse-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  background-color: var(--color-market-down);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.8); }
+}
+
+/* ================================================================ 安全区 */
+.safe-bottom {
+  height: env(safe-area-inset-bottom);
+  min-height: 0;
+}
+
+/* 底部固定操作条 */
+.footer-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-md);
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  padding-bottom: calc(var(--metric-space-md) + env(safe-area-inset-bottom));
+  background-color: var(--color-bg-elevated);
+  border-top: var(--metric-border-width) solid var(--color-border-default);
+}

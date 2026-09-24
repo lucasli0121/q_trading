@@ -1,0 +1,157 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="策略详情"
+    statusBarHeight="{{statusBarHeight}}"
+    action="编辑"
+    actionAdd="{{false}}"
+    bind:action="goEdit"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="card" rows="3" />
+
+    <block wx:elif="{{head}}">
+      <!-- 概览 -->
+      <view class="card card-pad">
+        <view class="row between">
+          <text class="t-xl t-bold flex1 ellipsis">{{head.name}}</text>
+          <q-status status="{{head.status}}" />
+        </view>
+        <view class="sd-desc">{{head.description}}</view>
+
+        <view class="row gap-xs sd-tags">
+          <text class="tag tag-neutral">{{head.stype}}</text>
+          <text class="tag tag-neutral">持仓上限 {{head.maxStockCount}}</text>
+        </view>
+
+        <view class="profit-box">
+          <view class="pb-item">
+            <text class="pb-k">总收益</text>
+            <text class="num t-2xl t-bold {{head.profitTone === 'up' ? 'c-up' : (head.profitTone === 'down' ? 'c-down' : 'c-second')}}">{{head.profitText}}</text>
+          </view>
+          <view class="pb-item">
+            <text class="pb-k">累计盈亏 (元)</text>
+            <text class="num t-lg t-bold {{head.profitAmountTone === 'up' ? 'c-up' : (head.profitAmountTone === 'down' ? 'c-down' : 'c-second')}}">{{head.profitAmountText}}</text>
+          </view>
+        </view>
+
+        <view class="kv-grid">
+          <view class="kv">
+            <text class="kv-k">初始资金</text>
+            <text class="kv-v num">{{head.initialAmount}} 元</text>
+          </view>
+          <view class="kv">
+            <text class="kv-k">关联股票池</text>
+            <text class="kv-v c-link" bindtap="goPool">{{head.poolName}}</text>
+          </view>
+          <view class="kv">
+            <text class="kv-k">创建时间</text>
+            <text class="kv-v num">{{head.createTime}}</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 策略参数 -->
+      <view wx:if="{{paramGroups.length}}" class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">策略参数</text>
+          <text class="c-tertiary t-xs">用户值优先</text>
+        </view>
+        <view class="param-wrap">
+          <block wx:for="{{paramGroups}}" wx:key="key">
+            <view class="param-group">
+              <view class="param-title">{{item.title}}</view>
+              <view class="param-grid">
+                <view wx:for="{{item.items}}" wx:for-item="p" wx:key="k" class="param-cell">
+                  <text class="param-k ellipsis">{{p.k}}</text>
+                  <text class="param-v num">{{p.v}}</text>
+                </view>
+              </view>
+            </view>
+          </block>
+        </view>
+      </view>
+
+      <!-- 明细标签 -->
+      <view class="card sd-tabs">
+        <view class="detail-tabs">
+          <view class="detail-tab {{tab === 'positions' ? 'detail-tab--on' : ''}}" data-key="positions" bindtap="onTab">持仓信息</view>
+          <view class="detail-tab {{tab === 'trades' ? 'detail-tab--on' : ''}}" data-key="trades" bindtap="onTab">订单明细</view>
+          <view class="detail-tab {{tab === 'runlog' ? 'detail-tab--on' : ''}}" data-key="runlog" bindtap="onTab">运行日志</view>
+        </view>
+
+        <view wx:if="{{detailLoading}}" class="loading-box">
+          <view class="spinner"></view>
+          <text class="c-tertiary t-sm">加载中...</text>
+        </view>
+
+        <block wx:else>
+          <block wx:if="{{tab === 'positions'}}">
+            <q-empty wx:if="{{!positions.length}}" type="empty" title="暂无持仓" compact />
+            <view wx:else class="mini-tbl">
+              <view class="mini-hd">
+                <text class="col-code">代码 / 名称</text>
+                <text class="col-r">数量</text>
+                <text class="col-r">成本</text>
+                <text class="col-r">现价</text>
+                <text class="col-r">盈亏</text>
+              </view>
+              <view
+                wx:for="{{positions}}"
+                wx:key="code"
+                class="mini-row"
+                data-code="{{item.code}}"
+                bindtap="goStock"
+                hover-class="list-row-hover"
+              >
+                <view class="col-code">
+                  <text class="t-bold num t-sm">{{item.code}}</text>
+                  <text class="c-tertiary t-2xs ellipsis">{{item.name}}</text>
+                </view>
+                <text class="col-r num t-xs">{{item.quantity}}</text>
+                <text class="col-r num t-xs">{{item.cost}}</text>
+                <text class="col-r num t-xs">{{item.current}}</text>
+                <text class="col-r num t-xs t-medium {{item.profitTone === 'up' ? 'c-up' : (item.profitTone === 'down' ? 'c-down' : 'c-second')}}">{{item.profitText}}</text>
+              </view>
+            </view>
+          </block>
+
+          <block wx:elif="{{tab === 'trades'}}">
+            <q-empty wx:if="{{!trades.length}}" type="empty" title="暂无订单记录" compact />
+            <view wx:else class="mini-tbl">
+              <view class="mini-hd">
+                <text class="col-date">日期</text>
+                <text class="col-code">股票</text>
+                <text class="col-r">方向</text>
+                <text class="col-r">数量</text>
+                <text class="col-r">价格</text>
+                <text class="col-r">成交额</text>
+              </view>
+              <view wx:for="{{trades}}" wx:key="key" class="mini-row">
+                <text class="col-date num t-2xs c-second">{{item.date}}</text>
+                <view class="col-code">
+                  <text class="t-bold num t-xs">{{item.code}}</text>
+                  <text class="c-tertiary t-2xs ellipsis">{{item.name}}</text>
+                </view>
+                <text class="col-r t-xs t-medium {{item.actionTone === 'up' ? 'c-up' : 'c-down'}}">{{item.action}}</text>
+                <text class="col-r num t-xs">{{item.quantity}}</text>
+                <text class="col-r num t-xs">{{item.price}}</text>
+                <text class="col-r num t-xs">{{item.amount}}</text>
+              </view>
+            </view>
+          </block>
+
+          <block wx:else>
+            <q-empty wx:if="{{!runlogs.length}}" type="empty" title="暂无运行日志" compact />
+            <view wx:else class="runlog">
+              <text wx:for="{{runlogs}}" wx:key="key" class="runlog-line num">{{item.text}}</text>
+            </view>
+          </block>
+        </block>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

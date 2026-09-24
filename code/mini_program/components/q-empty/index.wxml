@@ -1,0 +1,17 @@
+<view class="empty {{compact ? 'empty--compact' : ''}}">
+  <block wx:if="{{type === 'loading'}}">
+    <view class="spinner"></view>
+  </block>
+  <block wx:else>
+    <view class="empty-icon empty-icon--{{type}}">
+      <view class="empty-glyph"></view>
+    </view>
+  </block>
+
+  <view class="empty-title">{{title || defaults[type].title}}</view>
+  <view wx:if="{{desc || defaults[type].desc}}" class="empty-desc">{{desc || defaults[type].desc}}</view>
+
+  <view wx:if="{{action}}" class="btn btn-outline btn-sm empty-action" bindtap="onAction" hover-class="btn-hover">
+    {{action}}
+  </view>
+</view>

@@ -1,0 +1,84 @@
+// ==========================================================================
+// QTrade Design Tokens — Dark
+// 来源：Ardot 设计系统「QTrade 设计系统」
+//       https://ardot.tencent.com/file/726465434404942
+// 与 tokens.css 的 [data-theme="Dark"] 段一致。Light 版见 tokens-light.scss。
+// metric / type 两组令牌两模式共用（见 tokens-light.scss）。
+// ==========================================================================
+
+// --- color · 背景 ---
+$color-bg-base: #0F0F1AFF;
+$color-bg-surface: #1E293BFF;
+$color-bg-elevated: #111827FF;
+$color-bg-input: #0F0F1AFF;
+$color-bg-subtle: #2D3748FF;
+$color-bg-scrim: #00000099;
+
+// --- color · 描边 ---
+$color-border-default: #334155FF;
+$color-border-control: #334155FF;
+$color-border-divider: #2D3748FF;
+
+// --- color · 文字 ---
+$color-text-primary: #E5E7EBFF;
+$color-text-secondary: #6B7280FF;
+$color-text-tertiary: #4B5563FF;
+$color-text-on-brand: #FFFFFFFF;
+
+// --- color · 品牌 ---
+$color-brand-primary: #3B82F6FF;
+$color-brand-link: #60A5FAFF;
+$color-brand-wechat: #07C160FF;
+$color-accent-warning: #FBBF24FF;
+
+// --- color · 行情（A 股约定：涨红跌绿） ---
+$color-market-up: #F87171FF;
+$color-market-down: #34D399FF;
+$color-market-up-bg: #F871711F;
+$color-market-down-bg: #34D3991F;
+
+// --- color · 状态 ---
+$color-status-success-bg: #34D39929;
+
+// --- metric / type：与 Light 相同，见 tokens-light.scss ---
+$metric-radius-sm: 6px;
+$metric-radius-md: 8px;
+$metric-radius-btn: 10px;
+$metric-radius-lg: 12px;
+$metric-radius-xl: 14px;
+$metric-radius-tag: 4px;
+$metric-radius-full: 999px;
+
+$metric-space-2xs: 4px;
+$metric-space-xs: 6px;
+$metric-space-sm: 8px;
+$metric-space-md: 12px;
+$metric-space-lg: 16px;
+$metric-space-xl: 20px;
+$metric-space-2xl: 24px;
+
+$metric-font-size-2xs: 9px;
+$metric-font-size-xs: 10px;
+$metric-font-size-sm: 11px;
+$metric-font-size-md: 12px;
+$metric-font-size-base: 13px;
+$metric-font-size-lg: 14px;
+$metric-font-size-xl: 15px;
+$metric-font-size-2xl: 17px;
+$metric-font-size-display: 24px;
+
+$metric-size-page-w: 375px;
+$metric-size-page-h: 812px;
+$metric-size-statusbar-h: 44px;
+$metric-size-topbar-h: 56px;
+$metric-size-tabbar-h: 78px;
+$metric-size-input-h: 44px;
+$metric-size-btn-h: 46px;
+$metric-size-btn-sm-h: 30px;
+$metric-size-chip-h: 28px;
+$metric-size-content-bottom: 734px;
+$metric-size-hit-min: 44px;
+$metric-border-width: 1px;
+
+$type-font-family-base: "Noto Sans SC";
+$type-font-family-number: "Inter";

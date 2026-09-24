@@ -1,0 +1,40 @@
+<view class="quote" bindtap="onTap" hover-class="quote--hover">
+  <!-- 第一行：代码/名称 + 最新价 + 涨跌幅 -->
+  <view class="quote-line">
+    <view class="quote-id">
+      <view class="quote-code num">{{vm.code}}</view>
+      <view class="quote-name ellipsis">{{vm.name || '--'}}</view>
+    </view>
+
+    <view wx:if="{{showScore}}" class="quote-score">
+      <view class="quote-k">评分</view>
+      <view class="quote-v num c-brand">{{vm.score}}</view>
+    </view>
+
+    <view class="quote-price">
+      <view class="num quote-price-v {{vm.priceClass}}">{{vm.price}}</view>
+      <view class="num quote-pct {{vm.pctClass}}">{{vm.pct}}</view>
+    </view>
+  </view>
+
+  <!-- 第二行：涨跌额 / 换手率 / 动态市盈率 / 利润增长率 -->
+  <view class="quote-line quote-line--sub">
+    <view class="quote-kv">
+      <text class="quote-k">涨跌额</text>
+      <text class="num quote-v {{vm.amtClass}}">{{vm.amt}}</text>
+    </view>
+    <view class="quote-kv">
+      <text class="quote-k">换手率</text>
+      <text class="num quote-v c-second">{{vm.turnover}}</text>
+    </view>
+    <view class="quote-kv">
+      <text class="quote-k">市盈率</text>
+      <text class="num quote-v c-second">{{vm.pe}}</text>
+    </view>
+    <view class="quote-kv">
+      <text class="quote-k">利润增长</text>
+      <text class="num quote-v c-second">{{vm.growth}}</text>
+    </view>
+    <view wx:if="{{showAction}}" class="quote-action" catchtap="onAction">{{actionText}}</view>
+  </view>
+</view>

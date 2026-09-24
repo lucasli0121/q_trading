@@ -1,0 +1,94 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="股票池"
+    back="{{false}}"
+    action="创建股票池"
+    statusBarHeight="{{statusBarHeight}}"
+    bind:action="goCreate"
+  />
+
+  <scroll-view class="page-body page-body--tab" scroll-y>
+    <!-- 搜索 -->
+    <view class="search" bindtap="goSearch">
+      <view class="search-icon"></view>
+      <input
+        class="search-input"
+        value="{{keyword}}"
+        placeholder="搜索股票池，或点此按代码/名称搜行情"
+        placeholder-class="input-ph"
+        confirm-type="search"
+        bindinput="onKeyword"
+        bindconfirm="onSearchConfirm"
+      />
+      <text wx:if="{{keyword}}" class="search-cancel" catchtap="clearKeyword">清空</text>
+    </view>
+
+    <!-- 统计栏 -->
+    <view class="pool-stats">
+      <view class="pool-stat">
+        <text class="pool-stat-v num">{{statTotal}}</text>
+        <text class="pool-stat-k">总数</text>
+      </view>
+      <view class="pool-stat">
+        <text class="pool-stat-v num c-down">{{statAuto}}</text>
+        <text class="pool-stat-k">自动更新</text>
+      </view>
+      <view class="pool-stat">
+        <text class="pool-stat-v num">{{statStatic}}</text>
+        <text class="pool-stat-k">静态池</text>
+      </view>
+    </view>
+
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="card" rows="4" />
+
+    <block wx:else>
+      <q-empty
+        wx:if="{{!filtered.length}}"
+        type="empty"
+        title="{{pools.length ? '没有匹配的股票池' : '还没有股票池'}}"
+        desc="{{pools.length ? '换个关键词试试' : '创建一个股票池后即可查看池内行情'}}"
+        action="{{pools.length ? '' : '创建股票池'}}"
+        bind:action="goCreate"
+      />
+
+      <view wx:else class="pool-list">
+        <view
+          wx:for="{{filtered}}"
+          wx:key="id"
+          class="card pool-card"
+          data-name="{{item.name}}"
+          bindtap="goDetail"
+          hover-class="pool-card--hover"
+        >
+          <view class="pool-hd">
+            <view class="pool-type">
+              <text class="pool-type-icon">{{item.typeIcon}}</text>
+              <text class="pool-type-text">{{item.type}}</text>
+            </view>
+            <text class="c-tertiary t-xs">更新 {{item.typeUpdate}}</text>
+          </view>
+
+          <view class="pool-name ellipsis">{{item.name}}</view>
+          <view class="pool-desc ellipsis-2">{{item.description}}</view>
+
+          <view class="pool-ft">
+            <text class="pool-count num">{{item.stockCount}} 只股票</text>
+            <view class="pool-actions">
+              <view class="btn btn-outline btn-sm" data-name="{{item.name}}" catchtap="goDetail">查看股票</view>
+              <view class="btn btn-secondary btn-sm" data-name="{{item.name}}" catchtap="goEdit">编辑</view>
+            </view>
+          </view>
+        </view>
+
+        <!-- 虚线占位卡 -->
+        <view class="pool-create" bindtap="goCreate" hover-class="pool-card--hover">
+          <view class="pool-create-plus">＋</view>
+          <view class="pool-create-text">创建新股票池</view>
+        </view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

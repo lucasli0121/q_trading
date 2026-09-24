@@ -1,0 +1,133 @@
+<view class="root {{themeClass}}">
+  <q-navbar title="我的" back="{{false}}" statusBarHeight="{{statusBarHeight}}" />
+
+  <scroll-view class="page-body page-body--tab" scroll-y>
+    <!-- 账号卡片 -->
+    <view class="card card-pad user-card">
+      <view class="row gap-md">
+        <view class="avatar">{{initials}}</view>
+        <view class="flex1">
+          <view class="row gap-xs">
+            <text class="t-xl t-bold ellipsis">{{account}}</text>
+            <text class="tag tag-brand">{{roleText}}</text>
+          </view>
+          <text class="c-tertiary t-sm">手机号 {{phoneText}}</text>
+        </view>
+      </view>
+
+      <view class="row gap-md user-stats">
+        <view class="us-item">
+          <text class="us-v num">{{statTotal}}</text>
+          <text class="us-k">策略总数</text>
+        </view>
+        <view class="us-div"></view>
+        <view class="us-item">
+          <text class="us-v num c-down">{{statRunning}}</text>
+          <text class="us-k">运行中</text>
+        </view>
+        <view class="us-div"></view>
+        <view class="us-item">
+          <text class="us-v num c-brand">{{statMonthNew}}</text>
+          <text class="us-k">本月新增</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 深色模式 -->
+    <view class="card">
+      <view class="list-row">
+        <view class="flex1">
+          <text class="t-base t-medium">深色模式</text>
+          <view class="c-tertiary t-xs">切换系统的显示主题风格，即时生效</view>
+        </view>
+        <switch checked="{{dark}}" color="#2563EB" bindchange="onToggleDark" />
+      </view>
+    </view>
+
+    <!-- 功能入口 -->
+    <view class="card">
+      <view class="list-row" bindtap="goMonitor" hover-class="list-row-hover">
+        <text class="entry-icon">⚡</text>
+        <view class="flex1">
+          <text class="t-base">策略监控</text>
+          <view class="c-tertiary t-xs">实时交易信号流水</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+
+      <view class="list-row" bindtap="goSelect" hover-class="list-row-hover">
+        <text class="entry-icon">◎</text>
+        <view class="flex1">
+          <text class="t-base">策略选股</text>
+          <view class="c-tertiary t-xs">查看各策略今日选出的股票</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+
+      <view class="list-row" bindtap="goPools" hover-class="list-row-hover">
+        <text class="entry-icon">▤</text>
+        <view class="flex1">
+          <text class="t-base">股票池与行情</text>
+          <view class="c-tertiary t-xs">管理股票池、查看池内实时行情</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+
+      <view class="list-row" bindtap="goSearch" hover-class="list-row-hover">
+        <text class="entry-icon">⌕</text>
+        <view class="flex1">
+          <text class="t-base">搜索与筛选</text>
+          <view class="c-tertiary t-xs">按代码/名称搜索，或按市值/PE 筛选</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+    </view>
+
+    <!-- 设置 -->
+    <view class="card">
+      <view class="list-row" bindtap="goPreferences" hover-class="list-row-hover">
+        <text class="entry-icon">⚙</text>
+        <view class="flex1">
+          <text class="t-base">个人喜好设置</text>
+          <view class="c-tertiary t-xs">主题、企业微信推送、短信推送</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+
+      <view class="list-row" bindtap="goBlacklist" hover-class="list-row-hover">
+        <text class="entry-icon">⊘</text>
+        <view class="flex1">
+          <text class="t-base">黑名单股票管理</text>
+          <view class="c-tertiary t-xs">黑名单逻辑对所有策略生效</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+
+      <view class="list-row" bindtap="onAbout" hover-class="list-row-hover">
+        <text class="entry-icon">ⓘ</text>
+        <view class="flex1">
+          <text class="t-base">关于</text>
+          <view class="c-tertiary t-xs">版本 {{version}}</view>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+    </view>
+
+    <!-- 危险区 -->
+    <view class="card">
+      <view class="list-row" bindtap="onLogout" hover-class="list-row-hover">
+        <view class="flex1 center">
+          <text class="t-base c-brand">退出登录</text>
+        </view>
+      </view>
+      <view class="list-row" bindtap="onDeleteAccount" hover-class="list-row-hover">
+        <view class="flex1 center">
+          <text class="t-base c-up">注销账号</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="risk-note">行情与信号仅供研究参考，不构成投资建议。</view>
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

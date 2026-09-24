@@ -1,0 +1,47 @@
+.field {
+  width: 100%;
+  margin-bottom: var(--metric-space-md);
+}
+
+.field-label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4rpx;
+  margin-bottom: 10rpx;
+  font-size: var(--metric-font-size-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.field-req {
+  color: var(--color-market-up);
+  font-weight: 700;
+}
+
+.field-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: var(--metric-font-size-lg);
+  color: var(--color-text-primary);
+}
+
+.field-foot {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  min-height: 32rpx;
+  padding-top: 6rpx;
+}
+
+.field-error {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-market-up);
+  flex: 1;
+}
+
+.field-count {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}

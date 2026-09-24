@@ -1,0 +1,4 @@
+<view class="st st--{{tone}}">
+  <view wx:if="{{dot && status === 'running'}}" class="st-dot"></view>
+  <text>{{text}}</text>
+</view>

@@ -1,0 +1,128 @@
+/* 黑名单股票管理 */
+
+.banner {
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-radius: var(--metric-radius-lg);
+  background-color: var(--color-status-success-bg);
+  border-left: 6rpx solid var(--color-brand-primary);
+  margin-bottom: var(--metric-space-md);
+}
+
+.banner-title {
+  font-size: var(--metric-font-size-sm);
+  font-weight: 700;
+  color: var(--color-brand-primary);
+}
+
+.banner-desc {
+  margin-top: 8rpx;
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+}
+
+.search-icon {
+  width: 26rpx;
+  height: 26rpx;
+  border: 3rpx solid var(--color-text-tertiary);
+  border-radius: 50%;
+  position: relative;
+  flex: none;
+}
+
+.search-icon::after {
+  content: '';
+  position: absolute;
+  right: -8rpx;
+  bottom: -6rpx;
+  width: 14rpx;
+  height: 3rpx;
+  background-color: var(--color-text-tertiary);
+  transform: rotate(45deg);
+}
+
+.bl-search { margin-bottom: var(--metric-space-md); }
+
+.bl-clear {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+}
+
+/* ---------------------------------------------------------- 列表 */
+.bl-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--metric-space-md);
+}
+
+.bl-card { padding: var(--metric-space-md) var(--metric-space-lg); }
+
+.bl-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--metric-space-sm) var(--metric-space-lg);
+  margin-top: var(--metric-space-md);
+  padding-top: var(--metric-space-sm);
+  border-top: var(--metric-border-width) dashed var(--color-border-default);
+}
+
+.bl-kv {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.bl-kv--full { width: 100%; align-items: flex-start; }
+
+.bl-k {
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+  flex: none;
+}
+
+.bl-reason { line-height: 1.6; word-break: break-all; }
+
+/* ---------------------------------------------------------- 表单 */
+.field-label {
+  margin-bottom: var(--metric-space-xs);
+  font-size: var(--metric-font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.field-error {
+  margin-top: var(--metric-space-sm);
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-market-up);
+}
+
+/* ---------------------------------------------------------- 底部弹层 */
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 950;
+  background-color: var(--color-bg-elevated);
+  border-radius: var(--metric-radius-xl) var(--metric-radius-xl) 0 0;
+  padding: var(--metric-space-lg) 0 0;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+
+.sheet-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--metric-space-lg) var(--metric-space-md);
+}
+
+.sheet-close {
+  font-size: 34rpx;
+  color: var(--color-text-tertiary);
+  padding: 0 var(--metric-space-xs);
+}
+
+.sheet-bd { padding: 0 var(--metric-space-lg); }
+
+.sheet-ft { position: static; }

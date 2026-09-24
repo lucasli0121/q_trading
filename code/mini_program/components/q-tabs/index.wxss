@@ -1,0 +1,52 @@
+.tabs {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.tabs--fixed {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--metric-space-sm);
+}
+
+.tabs-inner {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--metric-space-sm);
+  padding: 2rpx 0;
+}
+
+.tab {
+  flex: none;
+}
+
+.tab--fill {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 下划线样式：股票池 / 策略标签 */
+.tab--ul {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 76rpx;
+  padding: 0 var(--metric-space-md);
+  font-size: var(--metric-font-size-base);
+  color: var(--color-text-secondary);
+  border-bottom: 4rpx solid transparent;
+}
+
+.tab--ul-active {
+  color: var(--color-brand-primary);
+  font-weight: 700;
+  border-bottom-color: var(--color-brand-primary);
+}
+
+.tabs--underline {
+  border-bottom: 1rpx solid var(--color-border-default);
+}

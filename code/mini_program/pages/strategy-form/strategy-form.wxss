@@ -1,0 +1,148 @@
+/* 创建 / 编辑策略 */
+
+.card + .card { margin-top: var(--metric-space-md); }
+
+/* ---------------------------------------------------------- 模板卡 */
+.tpl-scroll {
+  white-space: nowrap;
+  padding: var(--metric-space-md) var(--metric-space-lg);
+}
+
+.tpl-inner {
+  display: inline-flex;
+  gap: var(--metric-space-md);
+}
+
+.tpl-card {
+  width: 380rpx;
+  flex: none;
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--metric-space-xs);
+  padding: var(--metric-space-md);
+  border: 2rpx solid var(--color-border-default);
+  border-radius: var(--metric-radius-lg);
+  background-color: var(--color-bg-surface);
+  white-space: normal;
+  vertical-align: top;
+}
+
+.tpl-card--on {
+  border-color: var(--color-brand-primary);
+  background-color: var(--color-status-success-bg);
+}
+
+.tpl-card--locked {
+  width: auto;
+  display: flex;
+  margin: var(--metric-space-md) var(--metric-space-lg);
+  opacity: 0.9;
+  border-color: var(--color-border-default);
+  background-color: var(--color-bg-subtle);
+}
+
+.tpl-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tpl-check {
+  width: 40rpx;
+  height: 40rpx;
+  flex: none;
+  border-radius: var(--metric-radius-tag);
+  border: 2rpx solid var(--color-border-control);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--metric-font-size-sm);
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+}
+
+.tpl-check--on {
+  border-color: var(--color-brand-primary);
+  background-color: var(--color-brand-primary);
+  color: var(--color-text-on-brand);
+}
+
+.tpl-name {
+  font-size: var(--metric-font-size-base);
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.tpl-desc {
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+/* ---------------------------------------------------------- 表单 */
+.form-body { padding: var(--metric-space-md) var(--metric-space-lg) var(--metric-space-lg); }
+
+.field-label {
+  margin: var(--metric-space-md) 0 var(--metric-space-xs);
+  font-size: var(--metric-font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.form-body > .field-label:first-child { margin-top: 0; }
+
+.picker-box { justify-content: space-between; }
+
+.picker-caret {
+  margin-left: var(--metric-space-sm);
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+.empty-inline {
+  margin: var(--metric-space-md) var(--metric-space-lg);
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+/* ---------------------------------------------------------- 参数 */
+.param-wrap { padding: var(--metric-space-md) var(--metric-space-lg) var(--metric-space-lg); }
+
+.param-group + .param-group { margin-top: var(--metric-space-md); }
+
+.param-title {
+  font-size: var(--metric-font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  margin-bottom: var(--metric-space-sm);
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-md);
+  padding: var(--metric-space-xs) 0;
+}
+
+.param-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.param-input {
+  flex: none;
+  width: 220rpx;
+  height: 72rpx;
+  padding: 0 var(--metric-space-sm);
+  text-align: right;
+  background-color: var(--color-bg-input);
+  border: var(--metric-border-width) solid var(--color-border-control);
+  border-radius: var(--metric-radius-sm);
+  font-size: var(--metric-font-size-base);
+  color: var(--color-text-primary);
+}
+
+/* ---------------------------------------------------------- 底部 */
+.form-actions { margin-top: var(--metric-space-xl); }

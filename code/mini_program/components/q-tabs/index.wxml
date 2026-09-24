@@ -1,0 +1,31 @@
+<scroll-view
+  wx:if="{{scroll}}"
+  class="tabs {{variant === 'underline' ? 'tabs--underline' : ''}}"
+  scroll-x
+  enable-flex
+  show-scrollbar="{{false}}"
+>
+  <view class="tabs-inner">
+    <view
+      wx:for="{{list}}"
+      wx:key="key"
+      class="tab {{variant === 'underline' ? 'tab--ul' : 'chip'}} {{active === item.key ? (variant === 'underline' ? 'tab--ul-active' : 'chip--active') : ''}}"
+      data-key="{{item.key}}"
+      bindtap="onTap"
+    >
+      {{item.label}}
+    </view>
+  </view>
+</scroll-view>
+
+<view wx:else class="tabs tabs--fixed {{variant === 'underline' ? 'tabs--underline' : ''}}">
+  <view
+    wx:for="{{list}}"
+    wx:key="key"
+    class="tab tab--fill {{variant === 'underline' ? 'tab--ul' : 'chip'}} {{active === item.key ? (variant === 'underline' ? 'tab--ul-active' : 'chip--active') : ''}}"
+    data-key="{{item.key}}"
+    bindtap="onTap"
+  >
+    {{item.label}}
+  </view>
+</view>

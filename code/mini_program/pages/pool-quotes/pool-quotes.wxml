@@ -1,0 +1,40 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="{{poolName || '股票行情'}}"
+    statusBarHeight="{{statusBarHeight}}"
+    actionIcon="refresh"
+    bind:actionicon="refresh"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <view class="search" bindtap="goSearch">
+      <view class="search-icon"></view>
+      <view class="search-ph">输入代码或名称搜索行情</view>
+    </view>
+
+    <view wx:if="{{updatedAt}}" class="updated">更新于 {{updatedAt}} · 每 15 秒自动刷新</view>
+
+    <view class="card list-card">
+      <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+      <q-skeleton wx:elif="{{loading}}" type="quote" rows="7" />
+      <q-empty wx:elif="{{empty}}" type="empty" title="池内暂无股票"
+        desc="可在「股票池」页编辑该池，添加股票代码" />
+      <block wx:else>
+        <view class="tbl-hd">
+          <text style="flex:1;">代码 / 名称</text>
+          <text style="text-align:right;">最新价 / 涨跌幅</text>
+        </view>
+        <q-quote
+          wx:for="{{quotes}}"
+          wx:key="code"
+          vm="{{item}}"
+          showAction="{{true}}"
+          bind:rowtap="onRowTap"
+          bind:action="onAnalyze"
+        />
+      </block>
+    </view>
+
+    <view style="height: 40rpx;"></view>
+  </scroll-view>
+</view>

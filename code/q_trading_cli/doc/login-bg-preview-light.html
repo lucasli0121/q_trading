@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>QTrade 登录页背景预览（浅色）</title>
+<style>
+/* ===== 由 colors/theme.py 生成的真实令牌样式 ===== */
+/* ===== 设计令牌：浅色（默认） ===== */
+:root {
+    --qs-page: #f3f4f6;
+    --qs-surface: #ffffff;
+    --qs-surface-alt: #ffffff;
+    --qs-row-alt: #f9fafb;
+    --qs-row-alt-2: #f9fafb;
+    --qs-text: #374151;
+    --qs-heading: #111827;
+    --qs-label: #4b5563;
+    --qs-muted: #6b7280;
+    --qs-faint: #9ca3af;
+    --qs-icon-muted: #d1d5db;
+    --qs-disabled: #9ca3af;
+    --qs-disabled-border: #d1d5db;
+    --qs-border: #e5e7eb;
+    --qs-border-soft: #eef2f6;
+    --qs-primary: #2563eb;
+    --qs-secondary: #16a34a;
+    --qs-primary-hover: #1d4ed8;
+    --qs-primary-active: #1e40af;
+    --qs-link: #2563eb;
+    --qs-info: #1d4ed8;
+    --qs-info-border: #bfdbfe;
+    --qs-danger-border: #fecaca;
+    --qs-accent: #d97706;
+    --qs-positive: #dc2626;
+    --qs-negative: #059669;
+    --qs-danger: #dc2626;
+    --qs-purple: #7e22ce;
+    --qs-orange: #c2410c;
+    --qs-on-accent: #ffffff;
+    --qs-avatar-bg: #dbeafe;
+    --qs-chart-volume: #9ca3af;
+    --qs-chip-neutral: #e5e7eb;
+    --qs-text-secondary: rgba(55,65,81,0.66);
+    --qs-divider: #eef2f6;
+    --qs-divider-strong: #e5e7eb;
+    --qs-shadow: rgba(15,23,42,0.12);
+    --qs-primary-glow: rgba(37,99,235,0.28);
+    --qs-table-header-bg: #3b82f6;
+    --qs-surface-soft: #f8fafc;
+    --qs-bg-grid: rgba(15,23,42,0.06);
+    --qs-bg-glow: rgba(37,99,235,0.10);
+}
+/* ===== 设计令牌：深色 ===== */
+body.qs-dark {
+    --qs-page: #0f0f1a;
+    --qs-surface: #1e293b;
+    --qs-surface-alt: #111827;
+    --qs-row-alt: #19222f;
+    --qs-row-alt-2: #151c29;
+    --qs-text: #e5e7eb;
+    --qs-heading: #f3f4f6;
+    --qs-label: #d1d5db;
+    --qs-muted: #9ca3af;
+    --qs-faint: #6b7280;
+    --qs-icon-muted: #4b5563;
+    --qs-disabled: #94a3b8;
+    --qs-disabled-border: #64748b;
+    --qs-border: #334155;
+    --qs-border-soft: #2d3748;
+    --qs-primary: #3b82f6;
+    --qs-secondary: #34d399;
+    --qs-primary-hover: #2563eb;
+    --qs-primary-active: #1d4ed8;
+    --qs-link: #60a5fa;
+    --qs-info: #93c5fd;
+    --qs-info-border: #1e40af;
+    --qs-danger-border: #991b1b;
+    --qs-accent: #fbbf24;
+    --qs-positive: #f87171;
+    --qs-negative: #34d399;
+    --qs-danger: #ef4444;
+    --qs-purple: #c084fc;
+    --qs-orange: #fb923c;
+    --qs-on-accent: #ffffff;
+    --qs-avatar-bg: #1e3a5f;
+    --qs-chart-volume: #4b5563;
+    --qs-chip-neutral: rgba(55,65,81,0.8);
+    --qs-text-secondary: rgba(229,231,235,0.53);
+    --qs-divider: rgba(51,65,85,0.2);
+    --qs-divider-strong: rgba(45,55,72,0.6);
+    --qs-shadow: rgba(0,0,0,0.6);
+    --qs-primary-glow: rgba(37,99,235,0.2);
+    --qs-table-header-bg: #65b6ff;
+    --qs-surface-soft: #fcfeff;
+    --qs-bg-grid: rgba(148,163,184,0.06);
+    --qs-bg-glow: rgba(59,130,246,0.14);
+}
+/* ===== 颜色通道：供 rgba(var(--qs-<名>-rgb), a) 拼透明度 ===== */
+:root {
+    --qs-page-rgb: 243,244,246;
+    --qs-surface-rgb: 255,255,255;
+    --qs-surface-alt-rgb: 255,255,255;
+    --qs-row-alt-rgb: 249,250,251;
+    --qs-row-alt-2-rgb: 249,250,251;
+    --qs-text-rgb: 55,65,81;
+    --qs-heading-rgb: 17,24,39;
+    --qs-label-rgb: 75,85,99;
+    --qs-muted-rgb: 107,114,128;
+    --qs-faint-rgb: 156,163,175;
+    --qs-icon-muted-rgb: 209,213,219;
+    --qs-disabled-rgb: 156,163,175;
+    --qs-disabled-border-rgb: 209,213,219;
+    --qs-border-rgb: 229,231,235;
+    --qs-border-soft-rgb: 238,242,246;
+    --qs-primary-rgb: 37,99,235;
+    --qs-secondary-rgb: 22,163,74;
+    --qs-primary-hover-rgb: 29,78,216;
+    --qs-primary-active-rgb: 30,64,175;
+    --qs-link-rgb: 37,99,235;
+    --qs-info-rgb: 29,78,216;
+    --qs-info-border-rgb: 191,219,254;
+    --qs-danger-border-rgb: 254,202,202;
+    --qs-accent-rgb: 217,119,6;
+    --qs-positive-rgb: 220,38,38;
+    --qs-negative-rgb: 5,150,105;
+    --qs-danger-rgb: 220,38,38;
+    --qs-purple-rgb: 126,34,206;
+    --qs-orange-rgb: 194,65,12;
+    --qs-on-accent-rgb: 255,255,255;
+    --qs-avatar-bg-rgb: 219,234,254;
+    --qs-chart-volume-rgb: 156,163,175;
+    --qs-chip-neutral-rgb: 229,231,235;
+    --qs-text-secondary-rgb: 55,65,81;
+    --qs-divider-rgb: 238,242,246;
+    --qs-divider-strong-rgb: 229,231,235;
+    --qs-shadow-rgb: 15,23,42;
+    --qs-primary-glow-rgb: 37,99,235;
+    --qs-table-header-bg-rgb: 59,130,246;
+    --qs-surface-soft-rgb: 248,250,252;
+    --qs-bg-grid-rgb: 15,23,42;
+    --qs-bg-glow-rgb: 37,99,235;
+    --qs-primary-strong-rgb: 29,78,216;
+}
+body.qs-dark {
+    --qs-page-rgb: 15,15,26;
+    --qs-surface-rgb: 30,41,59;
+    --qs-surface-alt-rgb: 17,24,39;
+    --qs-row-alt-rgb: 25,34,47;
+    --qs-row-alt-2-rgb: 21,28,41;
+    --qs-text-rgb: 229,231,235;
+    --qs-heading-rgb: 243,244,246;
+    --qs-label-rgb: 209,213,219;
+    --qs-muted-rgb: 156,163,175;
+    --qs-faint-rgb: 107,114,128;
+    --qs-icon-muted-rgb: 75,85,99;
+    --qs-disabled-rgb: 148,163,184;
+    --qs-disabled-border-rgb: 100,116,139;
+    --qs-border-rgb: 51,65,85;
+    --qs-border-soft-rgb: 45,55,72;
+    --qs-primary-rgb: 59,130,246;
+    --qs-secondary-rgb: 52,211,153;
+    --qs-primary-hover-rgb: 37,99,235;
+    --qs-primary-active-rgb: 29,78,216;
+    --qs-link-rgb: 96,165,250;
+    --qs-info-rgb: 147,197,253;
+    --qs-info-border-rgb: 30,64,175;
+    --qs-danger-border-rgb: 153,27,27;
+    --qs-accent-rgb: 251,191,36;
+    --qs-positive-rgb: 248,113,113;
+    --qs-negative-rgb: 52,211,153;
+    --qs-danger-rgb: 239,68,68;
+    --qs-purple-rgb: 192,132,252;
+    --qs-orange-rgb: 251,146,60;
+    --qs-on-accent-rgb: 255,255,255;
+    --qs-avatar-bg-rgb: 30,58,95;
+    --qs-chart-volume-rgb: 75,85,99;
+    --qs-chip-neutral-rgb: 55,65,81;
+    --qs-text-secondary-rgb: 229,231,235;
+    --qs-divider-rgb: 51,65,85;
+    --qs-divider-strong-rgb: 45,55,72;
+    --qs-shadow-rgb: 0,0,0;
+    --qs-primary-glow-rgb: 37,99,235;
+    --qs-table-header-bg-rgb: 101,182,255;
+    --qs-surface-soft-rgb: 252,254,255;
+    --qs-bg-grid-rgb: 148,163,184;
+    --qs-bg-glow-rgb: 59,130,246;
+    --qs-primary-strong-rgb: 37,99,235;
+}
+
+/* ===== Quasar 组件配色覆盖（跟随令牌，切主题即时生效） ===== */
+.q-field__native,
+.q-field__input {
+    color: var(--qs-text) !important;
+}
+.q-field__native span,
+.q-select__dropdown .q-item__label {
+    color: var(--qs-text) !important;
+}
+.q-field__label {
+    color: var(--qs-muted) !important;
+}
+.q-field__native::placeholder {
+    color: var(--qs-muted) !important;
+}
+.q-textarea .q-field__native {
+    min-height: auto !important;
+}
+.q-btn__content,
+.q-btn__content .block,
+.q-btn__content > * {
+    color: inherit !important;
+}
+body:not(.qs-dark) .q-field--outlined .q-field__control:before {
+    border-color: var(--qs-border);
+}
+body:not(.qs-dark) .q-table tbody td {
+    color: var(--qs-text);
+}
+
+</style>
+<style>
+/* ===== 预览页容器重置 ===== */
+
+html, body {
+    height: 100%;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+    background-color: var(--qs-page);
+}
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: var(--qs-text);
+    overflow: hidden;
+}
+/* 卡片位置示意：仅复刻「毛玻璃面板」这一层；表单由 NiceGUI 渲染。
+   位置须与 pages/login_page.py 的 .login-viewport 一致：
+   卡片中心落在窗口横向黄金分割点 0.618（窄屏回退为居中）。 */
+.qtbg-card-ghost {
+    position: fixed;
+    z-index: 10;
+    top: 50%;
+    left: 61.8%;
+    transform: translate(-50%, -50%);
+    width: min(92vw, 440px);
+    height: min(72vh, 520px);
+    border-radius: 1.25rem;
+    background-color: rgba(var(--qs-surface-rgb), 0.82);
+    border: 1px solid var(--qs-border);
+    box-shadow: 0 20px 40px var(--qs-shadow);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 2rem;
+    font-size: 0.8rem;
+    line-height: 1.9;
+    color: var(--qs-muted);
+}
+@media (max-width: 767px) {
+    .qtbg-card-ghost { left: 50%; }
+}
+
+</style>
+<style>
+/* ===== 由 components/login_background.py 生成的真实样式 ===== */
+
+/* ===== 登录页背景：网格 / 辉光 / 水印 / K 线画布 =====
+   层级刻意低于登录卡片（z-index:10），让蜡烛从卡片背后飘过。
+   用正值 z-index 而不是 0：Quasar 的 .q-page / .q-page-container 若是定位元素，
+   z-index:0 的浮层会被它们自身的背景盖住。 */
+.qtbg-grid,
+.qtbg-glow {
+    position: fixed;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+}
+.qtbg-grid {
+    background-image:
+        linear-gradient(var(--qs-bg-grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--qs-bg-grid) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 45%, black 30%, transparent 100%);
+    mask-image: radial-gradient(ellipse 90% 80% at 50% 45%, black 30%, transparent 100%);
+}
+.qtbg-glow {
+    background:
+        radial-gradient(600px 320px at 18% 8%, var(--qs-bg-glow), transparent 70%),
+        radial-gradient(520px 300px at 85% 12%, var(--qs-bg-glow), transparent 70%),
+        radial-gradient(700px 380px at 50% 115%, var(--qs-bg-glow), transparent 75%);
+}
+.qtbg-watermark {
+    position: fixed;
+    z-index: 4;
+    pointer-events: none;
+    user-select: none;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -62%);
+    font-size: clamp(120px, 22vw, 300px);
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    white-space: nowrap;
+    color: var(--qs-bg-grid);
+}
+#qtbg-scene {
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+}
+
+/* ===== 左下浮层：只列系统能力名称，不含任何数字或业绩 ===== */
+.qtbg-panel {
+    position: fixed;
+    z-index: 6;
+    pointer-events: none;
+    left: max(24px, 4vw);
+    bottom: 12vh;
+    padding: 16px 18px;
+    border-radius: 14px;
+    background: rgba(var(--qs-surface-rgb), 0.55);
+    border: 1px solid rgba(var(--qs-border-rgb), 0.65);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 12px 32px var(--qs-shadow);
+    animation: qtbg-float 7s ease-in-out infinite;
+}
+@keyframes qtbg-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+}
+.qtbg-panel h3 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--qs-link);
+}
+.qtbg-panel h3::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--qs-primary);
+    box-shadow: 0 0 8px var(--qs-primary);
+    animation: qtbg-pulse 2s ease-in-out infinite;
+}
+@keyframes qtbg-pulse {
+    50% { opacity: 0.35; }
+}
+.qtbg-panel .qtbg-feat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    font-size: 12.5px;
+    color: var(--qs-muted);
+}
+.qtbg-panel .qtbg-feat::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--qs-primary);
+    box-shadow: 0 0 6px var(--qs-primary);
+    opacity: 0.85;
+}
+@media (max-width: 1100px) {
+    .qtbg-panel { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .qtbg-panel,
+    .qtbg-panel h3::before { animation: none !important; }
+}
+
+</style>
+</head>
+<body>
+
+<div class="qtbg-card-ghost">
+    登录卡片位置（毛玻璃示意）<br />
+    表单内容由 NiceGUI 渲染，此处省略<br />
+    —— 判断背景与卡片的层次是否合适即可
+</div>
+
+
+<div class="qtbg-grid"></div>
+<div class="qtbg-glow"></div>
+<div class="qtbg-watermark">QTRADE</div>
+<canvas id="qtbg-scene"></canvas>
+<div class="qtbg-panel">
+    <h3>QTrade 量化策略平台</h3>
+    <div class="qtbg-feat">股票池管理</div>
+    <div class="qtbg-feat">实时行情</div>
+    <div class="qtbg-feat">策略监控</div>
+    <div class="qtbg-feat">量化选股</div>
+</div>
+<script>
+(function () {
+  "use strict";
+  if (window.__qtbgRunning) return;          // 幂等：同一页面只启动一次
+  window.__qtbgRunning = true;
+
+  const cv = document.getElementById("qtbg-scene");
+  if (!cv) return;
+  const cx = cv.getContext("2d");
+
+  /* ------------------------------------------------------------
+     取色：canvas 不解析 CSS 变量，运行时从令牌读真实色值。
+     等价于 Python 侧的 get_color()，但能随主题切换自动更新。
+     ------------------------------------------------------------ */
+  const FALLBACK = {"up": "#dc2626", "down": "#059669", "ma": ["#2563eb", "#1d4ed8", "#7e22ce"]};
+  let P = { up: FALLBACK.up, down: FALLBACK.down, ma: FALLBACK.ma.slice() };
+
+  function tokenColor(name, fallback) {
+    try {
+      const v = getComputedStyle(document.body).getPropertyValue("--qs-" + name).trim();
+      return v || fallback;
+    } catch (err) {
+      return fallback;
+    }
+  }
+  function readPalette() {
+    P = {
+      up: tokenColor("positive", FALLBACK.up),
+      down: tokenColor("negative", FALLBACK.down),
+      ma: [
+        tokenColor("primary", FALLBACK.ma[0]),
+        tokenColor("info", FALLBACK.ma[1]),
+        tokenColor("purple", FALLBACK.ma[2]),
+      ],
+    };
+  }
+  readPalette();
+  try {
+    new MutationObserver(readPalette).observe(document.body, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+  } catch (err) {
+    // 无 MutationObserver：只是切主题时画面不跟随，首屏配色仍然正确
+  }
+
+  /* ------------------------------------------------------------
+     参数（想调密度 / 频率 / 时长改这里）
+     ------------------------------------------------------------ */
+  const MODES = ["spawn", "fall", "blink"];   // 常态出现方式；只留一个即固定单一方式
+  const MAX_CANDLES = 22;                     // 同屏蜡烛上限
+  const SPAWN_EVERY = 700;                    // 常态生成间隔（ms）
+
+  const SWEEP_DUR = 1.4;        // 均线自左扫入时长（s）
+  const HOLD_DUR = 2.0;         // 上涨趋势保持时长（s）
+  const EXIT_DUR = 1.1;         // 均线向右退场时长（s）
+  const TREND_FIRST = 7;        // 首次趋势出现前的等待（s）
+  const TREND_GAP = [12, 18];   // 之后两次趋势的间隔区间（s）
+  const TREND_MIN = 12;         // 趋势参与蜡烛的最少根数（3 条均线 x 4）
+
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  let W = 1;
+  let H = 1;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+  /* ------------------------------------------------------------
+     蜡烛粒子
+     ------------------------------------------------------------ */
+  function makeCandle() {
+    const mode = MODES[Math.floor(Math.random() * MODES.length)];
+    return {
+      mode: mode,
+      up: Math.random() < 0.5,                     // 涨/跌只决定颜色，无行情含义
+      x: rand(0.05, 0.95) * W,
+      y: mode === "fall" ? -rand(60, 220) : rand(0.06, 0.86) * H,
+      vy: rand(90, 220),                           // fall：初速（px/s）
+      g: rand(120, 320),                           // fall：重力加速度（px/s^2）
+      bw: rand(7, 15),                             // 实体宽
+      bh: rand(18, 64),                            // 实体高
+      wk: rand(0.5, 1.1),                          // 影线相对实体的延伸比例
+      age: 0,
+      life: mode === "fall" ? rand(2.6, 4.2) : rand(5, 9),
+      freq: rand(0.8, 1.8),                        // blink：呼吸频率
+      phase: rand(0, Math.PI * 2),
+      trend: false,                                // 是否被吸附到均线上
+      scatter: false,                              // 是否处于散开后的漂移状态
+      tx: 0, ty: 0, tbh: 0, tbw: 0,                // 趋势目标位置与尺寸
+      dvx: 0, dvy: 0,                              // 散开后的漂移速度
+    };
+  }
+
+  const candles = [];
+
+  /* ------------------------------------------------------------
+     均线：自左下向右上的上升趋势曲线
+       y = baseY - rise*(x/W) + amp*sin(2*pi*freq*x/W + phase)
+     baseY 依次下移、rise 依次略减 -> 三条线呈多头排列
+     颜色在绘制时按 P.ma[ci] 取，因此换主题即时生效。
+     ------------------------------------------------------------ */
+  let maLines = [];
+  function makeLines() {
+    const centerY = H * 0.46;
+    return [0, 1, 2].map((i) => ({
+      ci: i,
+      baseY: centerY + i * Math.min(H * 0.055, 34),
+      rise: H * (0.20 - i * 0.02),
+      amp: H * (0.018 + i * 0.004),
+      freq: 1.15 + i * 0.35,
+      phaseOff: rand(0, Math.PI * 2),
+    }));
+  }
+  function maColor(line) {
+    return P.ma[line.ci] || P.ma[0];
+  }
+  function lineY(line, x) {
+    const t = x / W;
+    return line.baseY - line.rise * t + line.amp * Math.sin(t * Math.PI * 2 * line.freq + line.phaseOff);
+  }
+
+  /* ------------------------------------------------------------
+     趋势事件状态机：idle -> sweep -> hold -> disperse -> idle
+     ------------------------------------------------------------ */
+  let phase = "idle";
+  let phaseT = 0;
+  let nextTrendIn = TREND_FIRST;   // idle 阶段倒计时
+  let maDraw = 0;                  // 扫入进度 0..1
+  let maShift = 0;                 // 退场位移（px，向右）
+
+  function assignTrendTargets() {
+    if (!maLines.length) return;
+    const n = candles.length;
+    const step = n > 1 ? 0.84 / (n - 1) : 0;
+    candles.forEach((c, j) => {
+      const tx = W * (0.08 + step * j);          // 横向均匀排开
+      c.tx = tx;
+      c.ty = lineY(maLines[j % maLines.length], tx);   // 中心落在均线上
+    });
+  }
+
+  function startTrend() {
+    phase = "sweep";
+    phaseT = 0;
+    maDraw = 0;
+    maShift = 0;
+    maLines = makeLines();
+    while (candles.length < TREND_MIN) candles.push(makeCandle());
+    candles.forEach((c) => {
+      c.trend = true;
+      c.scatter = false;
+      c.up = Math.random() < 0.72;               // 上涨趋势以红为主
+      c.tbh = rand(10, 26);                      // 收敛为"图表蜡烛"尺寸
+      c.tbw = rand(6, 11);
+      c.age = 0.6;                               // 已淡入完成，避免趋势中再闪一次
+      c.life = Infinity;                         // 趋势期间不老化
+      c.dvx = 0;
+      c.dvy = 0;
+    });
+    assignTrendTargets();
+  }
+
+  function disperseCandles() {
+    for (const c of candles) {
+      if (!c.trend) continue;
+      c.trend = false;
+      c.scatter = true;                          // 转为自由漂移
+      c.life = c.age + rand(1.6, 3.0);           // 漂移中淡出
+      c.dvx = rand(-170, 170);
+      c.dvy = rand(-140, 140);
+    }
+  }
+
+  function update(dt) {
+    phaseT += dt;
+    if (phase === "idle") {
+      nextTrendIn -= dt;
+      if (nextTrendIn <= 0) startTrend();
+    } else if (phase === "sweep") {
+      maDraw = clamp01(phaseT / SWEEP_DUR);
+      if (maDraw >= 1) { phase = "hold"; phaseT = 0; }
+    } else if (phase === "hold") {
+      if (phaseT >= HOLD_DUR) { phase = "disperse"; phaseT = 0; disperseCandles(); }
+    } else if (phase === "disperse") {
+      maShift = easeInOut(clamp01(phaseT / EXIT_DUR)) * (W + 80);
+      if (phaseT >= EXIT_DUR + 0.8) {
+        phase = "idle";
+        phaseT = 0;
+        maDraw = 0;
+        maShift = 0;
+        nextTrendIn = rand(TREND_GAP[0], TREND_GAP[1]);
+      }
+    }
+  }
+
+  /* 均线整体透明度：扫入时渐显，退场过半后渐隐 */
+  function lineAlpha() {
+    if (phase === "sweep") return clamp01(maDraw * 1.2);
+    if (phase === "hold") return 1;
+    if (phase === "disperse") return clamp01(1 - (phaseT / EXIT_DUR - 0.5) / 0.5);
+    return 0;
+  }
+
+  function drawLines() {
+    const a = lineAlpha();
+    if (a <= 0.01) return;
+    const limit = phase === "sweep" ? W * maDraw : W;   // 扫入时只画到进度处
+    for (const line of maLines) {
+      const color = maColor(line);
+      cx.save();
+      cx.globalAlpha = a * 0.6;
+      cx.strokeStyle = color;
+      cx.lineWidth = 1.6;
+      cx.shadowColor = color;
+      cx.shadowBlur = 6;                                // 轻微辉光，像技术指标叠加层
+      cx.beginPath();
+      for (let x = 0; x <= limit; x += 6) {
+        const px = x + maShift;
+        const py = lineY(line, x);
+        if (x === 0) cx.moveTo(px, py); else cx.lineTo(px, py);
+      }
+      cx.stroke();
+      cx.restore();
+    }
+  }
+
+  function drawCandle(c, alpha) {
+    if (alpha <= 0.01) return;
+    const color = c.up ? P.up : P.down;
+    const grow = (c.mode === "spawn" && !c.trend && !c.scatter)
+      ? clamp01(c.age / 0.7)                            // spawn：实体从中心向两端生长
+      : 1;
+    const bh = Math.max(c.bh * grow, 1.5);
+    const yTop = c.y - bh / 2;
+    const wickHalf = (c.bh * c.wk / 2) * grow;
+
+    cx.globalAlpha = alpha * 0.85;
+    cx.strokeStyle = color;
+    cx.lineWidth = 1.2;
+    cx.beginPath();
+    cx.moveTo(c.x, yTop - wickHalf);
+    cx.lineTo(c.x, yTop + bh + wickHalf);
+    cx.stroke();
+
+    cx.globalAlpha = alpha;
+    cx.fillStyle = color;
+    cx.fillRect(c.x - c.bw / 2, yTop, c.bw, bh);
+    cx.globalAlpha = 1;
+  }
+
+  /* 亮度包络：淡入 -> 保持 -> 淡出 */
+  function envelope(c) {
+    const fadeIn = Math.min(c.age / 0.9, 1);
+    const fadeOut = Math.min((c.life - c.age) / 1.2, 1);
+    return Math.max(0, Math.min(fadeIn, fadeOut));
+  }
+
+  function moveCandle(c, dt) {
+    if (c.trend) {                                      // 被均线吸附（缓入）
+      const k = Math.min(dt * 3.0, 1);
+      c.x += (c.tx - c.x) * k;
+      c.y += (c.ty - c.y) * k;
+      c.bh += (c.tbh - c.bh) * k;
+      c.bw += (c.tbw - c.bw) * k;
+      return;
+    }
+    if (c.scatter) {                                    // 散开后自由漂移并衰减
+      c.x += c.dvx * dt;
+      c.y += c.dvy * dt;
+      const decay = Math.exp(-1.5 * dt);
+      c.dvx *= decay;
+      c.dvy *= decay;
+      return;
+    }
+    if (c.mode === "fall") {
+      c.vy += c.g * dt;                                 // v = v0 + g*t
+      c.y += c.vy * dt;
+    }
+  }
+
+  /* ------------------------------------------------------------
+     主循环
+     ------------------------------------------------------------ */
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+
+    cx.clearRect(0, 0, W, H);
+    update(dt);
+    drawLines();                                        // 均线在下层
+
+    for (let i = candles.length - 1; i >= 0; i--) {
+      const c = candles[i];
+      c.age += dt;
+      moveCandle(c, dt);
+      if (!c.trend && c.age >= c.life) { candles.splice(i, 1); continue; }
+
+      let alpha;
+      if (c.trend) {
+        alpha = 0.92;                                   // 趋势段稳定可见
+      } else {
+        alpha = envelope(c);
+        if (c.mode === "blink" && !c.scatter) {          // 忽明忽暗（散开后不再呼吸）
+          alpha *= 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(c.phase + c.age * c.freq * 2 * Math.PI));
+        }
+      }
+      drawCandle(c, alpha);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function spawn() {
+    if (phase !== "idle") return;                       // 趋势期间不再随机生成
+    if (candles.length < MAX_CANDLES) candles.push(makeCandle());
+  }
+
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth;
+    H = innerHeight;
+    cv.width = Math.floor(W * dpr);
+    cv.height = Math.floor(H * dpr);
+    cv.style.width = W + "px";
+    cv.style.height = H + "px";
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    maLines = makeLines();
+    if (phase === "hold" || phase === "sweep") assignTrendTargets();   // 尺寸变了要重算目标
+  }
+
+  resize();
+  addEventListener("resize", resize);
+
+  if (reduceMotion) {
+    // 减少动态：画一组静态蜡烛后不再推进（无 rAF、无定时器）
+    for (let i = 0; i < 12; i++) {
+      const c = makeCandle();
+      c.mode = "spawn";
+      c.age = 2;
+      c.life = 9;
+      drawCandle(c, 0.35);
+    }
+  } else {
+    for (let i = 0; i < 10; i++) candles.push(makeCandle());   // 开场预铺，避免空场
+    requestAnimationFrame(frame);
+    setInterval(spawn, SPAWN_EVERY);
+  }
+
+  /* 供离线自检读取内部状态：本机无浏览器时用 Node 桩跑帧验证（见
+     ~/.workbuddy/skills/browserless-canvas-page-check）。浏览器里也可在
+     控制台调用 __qtbgState() 排查。 */
+  window.__qtbgState = function () {
+    return {
+      phase: phase,
+      phaseT: phaseT,
+      candles: candles.length,
+      maDraw: maDraw,
+      maShift: maShift,
+      palette: P,
+      // 趋势段蜡烛的屏幕坐标 [x, y]（y 向下为正，故"向右上"= 斜率为负）
+      trend: candles.filter((c) => c.trend).map((c) => [Math.round(c.x), Math.round(c.y)]),
+    };
+  };
+})();
+</script>
+</body>
+</html>

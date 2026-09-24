@@ -1,0 +1,136 @@
+/* 个股详情 */
+
+.card + .card { margin-top: var(--metric-space-md); }
+
+.sd-name { margin-left: var(--metric-space-sm); }
+
+.quote-big {
+  margin-top: var(--metric-space-md);
+  padding-bottom: var(--metric-space-md);
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.qt-price {
+  font-size: 68rpx;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.qt-sub {
+  display: flex;
+  gap: var(--metric-space-lg);
+  margin-top: 8rpx;
+}
+
+.rt-fields {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: var(--metric-space-md);
+}
+
+.rt-field {
+  width: 33.33%;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  padding: var(--metric-space-xs) 0;
+}
+
+.rt-k {
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.rt-v {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-primary);
+}
+
+/* ---------------------------------------------------------- 图表 */
+.mode-switch {
+  display: flex;
+  padding: 4rpx;
+  background-color: var(--color-bg-subtle);
+  border-radius: var(--metric-radius-sm);
+}
+
+.mode-btn {
+  padding: 6rpx var(--metric-space-md);
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-secondary);
+  border-radius: var(--metric-radius-tag);
+}
+
+.mode-btn--on {
+  background-color: var(--color-bg-surface);
+  color: var(--color-brand-primary);
+  font-weight: 600;
+}
+
+.date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--metric-space-sm) var(--metric-space-lg) 0;
+}
+
+.date-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-2xs);
+  padding: 8rpx var(--metric-space-md);
+  background-color: var(--color-bg-subtle);
+  border-radius: var(--metric-radius-sm);
+}
+
+.chart-box { padding: var(--metric-space-md) var(--metric-space-md) 0; }
+
+.chart-note {
+  padding: var(--metric-space-sm) var(--metric-space-lg) var(--metric-space-md);
+  font-size: var(--metric-font-size-2xs);
+  color: var(--color-text-tertiary);
+}
+
+.loading-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--metric-space-sm);
+  height: 560rpx;
+}
+
+/* ---------------------------------------------------------- 信号 */
+.sig-list { padding: var(--metric-space-sm) var(--metric-space-lg) var(--metric-space-md); }
+
+.sig-row {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-md);
+  flex-wrap: wrap;
+  padding: var(--metric-space-sm) 0;
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.sig-row:last-child { border-bottom: none; }
+
+.sig-l {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-xs);
+  flex: 1;
+  min-width: 0;
+}
+
+.sig-tag { flex: none; }
+
+.sig-r {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-space-sm);
+}
+
+.sig-reason {
+  width: 100%;
+  font-size: var(--metric-font-size-2xs);
+  color: var(--color-text-tertiary);
+}

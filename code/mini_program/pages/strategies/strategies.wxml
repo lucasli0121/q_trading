@@ -1,0 +1,227 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="策略列表"
+    back="{{false}}"
+    action="创建策略"
+    statusBarHeight="{{statusBarHeight}}"
+    bind:action="goCreate"
+  />
+
+  <scroll-view class="page-body page-body--tab" scroll-y>
+    <!-- 统计 -->
+    <view class="row gap-md stat-row">
+      <view class="stat-card">
+        <view class="stat-k">策略总数</view>
+        <view class="stat-v num">{{statTotal}}</view>
+      </view>
+      <view class="stat-card">
+        <view class="stat-k">运行中</view>
+        <view class="stat-v num c-down">{{statRunning}}</view>
+      </view>
+      <view class="stat-card">
+        <view class="stat-k">本月新增</view>
+        <view class="stat-v num c-brand">{{statMonthNew}}</view>
+      </view>
+    </view>
+
+    <!-- 筛选 -->
+    <view class="filters card card-pad">
+      <view class="search">
+        <view class="search-icon"></view>
+        <input
+          class="search-input"
+          value="{{keyword}}"
+          placeholder="搜索策略名称 / 描述"
+          placeholder-class="input-ph"
+          confirm-type="search"
+          bindinput="onKeyword"
+        />
+        <text wx:if="{{keyword}}" class="filter-clear" catchtap="clearKeyword">清空</text>
+      </view>
+
+      <view class="filter-line">
+        <picker
+          class="filter-picker"
+          mode="selector"
+          range="{{typeOptions}}"
+          value="{{typeIndex}}"
+          bindchange="onTypeChange"
+        >
+          <view class="filter-pick">
+            <text class="ellipsis">{{typeFilter}}</text>
+            <text class="filter-caret">▾</text>
+          </view>
+        </picker>
+
+        <picker
+          class="filter-picker"
+          mode="selector"
+          range="{{statusOptions}}"
+          value="{{statusIndex}}"
+          bindchange="onStatusChange"
+        >
+          <view class="filter-pick">
+            <text class="ellipsis">{{statusFilter}}</text>
+            <text class="filter-caret">▾</text>
+          </view>
+        </picker>
+
+        <view class="btn btn-secondary btn-sm filter-reset" bindtap="resetFilters">重置</view>
+      </view>
+    </view>
+
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="list" rows="5" />
+
+    <block wx:else>
+      <q-empty
+        wx:if="{{!filtered.length}}"
+        type="empty"
+        title="{{rows.length ? '没有匹配的策略' : '还没有策略'}}"
+        desc="{{rows.length ? '换个筛选条件试试' : '创建一个策略后即可查看信号与持仓'}}"
+        action="{{rows.length ? '' : '创建策略'}}"
+        bind:action="goCreate"
+      />
+
+      <view wx:else class="strategy-list">
+        <view wx:for="{{pageRows}}" wx:key="usId" class="card stg-card">
+          <!-- 主行 -->
+          <view class="stg-main" data-id="{{item.usId}}" bindtap="onRowTap" hover-class="stg-main--hover">
+            <view class="flex1">
+              <view class="row between">
+                <text class="stg-name ellipsis flex1">{{item.name}}</text>
+                <q-status status="{{item.status}}" />
+              </view>
+              <view class="stg-desc ellipsis">{{item.description || '暂无描述'}}</view>
+
+              <view class="row between stg-metrics">
+                <view class="row gap-2xs">
+                  <text class="tag tag-neutral">{{item.stype}}</text>
+                  <text class="c-tertiary t-xs">持仓上限 {{item.maxStockCount}}</text>
+                </view>
+                <text class="num t-lg t-bold {{item.profitTone === 'up' ? 'c-up' : (item.profitTone === 'down' ? 'c-down' : 'c-second')}}">
+                  {{item.profitText}}
+                </text>
+              </view>
+
+              <view class="row between stg-signal">
+                <text class="c-tertiary t-xs">最近信号</text>
+                <text class="t-sm {{item.signalTone === 'up' ? 'c-up' : (item.signalTone === 'down' ? 'c-down' : 'c-tertiary')}}">
+                  {{item.signalText}}
+                </text>
+              </view>
+            </view>
+          </view>
+
+          <!-- 操作条 -->
+          <view class="stg-actions">
+            <view class="btn btn-outline btn-sm" data-id="{{item.usId}}" catchtap="goDetail">详情</view>
+            <view class="btn btn-secondary btn-sm" data-id="{{item.usId}}" catchtap="goEdit">编辑</view>
+          </view>
+
+          <!-- 展开的详情面板 -->
+          <view wx:if="{{expandedId === item.usId}}" class="stg-detail">
+            <view class="detail-tabs">
+              <view
+                class="detail-tab {{detailTab === 'positions' ? 'detail-tab--on' : ''}}"
+                data-key="positions"
+                bindtap="switchDetailTab"
+              >持仓信息</view>
+              <view
+                class="detail-tab {{detailTab === 'trades' ? 'detail-tab--on' : ''}}"
+                data-key="trades"
+                bindtap="switchDetailTab"
+              >订单明细</view>
+              <view
+                class="detail-tab {{detailTab === 'runlog' ? 'detail-tab--on' : ''}}"
+                data-key="runlog"
+                bindtap="switchDetailTab"
+              >运行日志</view>
+            </view>
+
+            <view wx:if="{{detailLoading}}" class="detail-loading">
+              <view class="spinner"></view>
+              <text class="c-tertiary t-sm">加载中...</text>
+            </view>
+
+            <block wx:else>
+              <!-- 持仓信息 -->
+              <block wx:if="{{detailTab === 'positions'}}">
+                <q-empty wx:if="{{!positions.length}}" type="empty" title="暂无持仓" compact />
+                <view wx:else class="mini-tbl">
+                  <view class="mini-hd">
+                    <text class="col-code">代码</text>
+                    <text class="col-r">数量</text>
+                    <text class="col-r">成本</text>
+                    <text class="col-r">现价</text>
+                    <text class="col-r">盈亏</text>
+                  </view>
+                  <view wx:for="{{positions}}" wx:key="code" class="mini-row">
+                    <view class="col-code">
+                      <text class="t-bold num">{{item.code}}</text>
+                      <text class="c-tertiary t-2xs ellipsis">{{item.name}}</text>
+                    </view>
+                    <text class="col-r num t-xs">{{item.quantity}}</text>
+                    <text class="col-r num t-xs">{{item.cost}}</text>
+                    <text class="col-r num t-xs">{{item.current}}</text>
+                    <text class="col-r num t-xs t-medium {{item.profitTone === 'up' ? 'c-up' : (item.profitTone === 'down' ? 'c-down' : 'c-second')}}">{{item.profitText}}</text>
+                  </view>
+                </view>
+              </block>
+
+              <!-- 订单明细 -->
+              <block wx:elif="{{detailTab === 'trades'}}">
+                <q-empty wx:if="{{!trades.length}}" type="empty" title="暂无订单记录" compact />
+                <view wx:else class="mini-tbl">
+                  <view class="mini-hd">
+                    <text class="col-date">日期</text>
+                    <text class="col-code">股票</text>
+                    <text class="col-r">方向</text>
+                    <text class="col-r">数量</text>
+                    <text class="col-r">价格</text>
+                  </view>
+                  <view wx:for="{{trades}}" wx:key="key" class="mini-row">
+                    <text class="col-date num t-2xs c-second">{{item.date}}</text>
+                    <view class="col-code">
+                      <text class="t-bold num t-xs">{{item.code}}</text>
+                      <text class="c-tertiary t-2xs ellipsis">{{item.name}}</text>
+                    </view>
+                    <text class="col-r t-xs t-medium {{item.actionTone === 'up' ? 'c-up' : 'c-down'}}">{{item.action}}</text>
+                    <text class="col-r num t-xs">{{item.quantity}}</text>
+                    <text class="col-r num t-xs">{{item.price}}</text>
+                  </view>
+                </view>
+              </block>
+
+              <!-- 运行日志 -->
+              <block wx:else>
+                <q-empty wx:if="{{!runlogs.length}}" type="empty" title="暂无运行日志" compact />
+                <view wx:else class="runlog">
+                  <text wx:for="{{runlogs}}" wx:key="key" class="runlog-line num">{{item.text}}</text>
+                </view>
+              </block>
+            </block>
+          </view>
+        </view>
+      </view>
+
+      <!-- 分页 -->
+      <view wx:if="{{filtered.length}}" class="pager">
+        <text class="pager-info t-xs c-tertiary">{{rangeText}}</text>
+        <view class="pager-btns">
+          <view
+            class="btn btn-secondary btn-sm {{page <= 1 ? 'btn-disabled' : ''}}"
+            bindtap="prevPage"
+          >上一页</view>
+          <text class="pager-page num t-sm">{{page}} / {{totalPages}}</text>
+          <view
+            class="btn btn-secondary btn-sm {{page >= totalPages ? 'btn-disabled' : ''}}"
+            bindtap="nextPage"
+          >下一页</view>
+        </view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

@@ -1,0 +1,54 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/home/home",
+    "pages/quotes/quotes",
+    "pages/strategies/strategies",
+    "pages/profile/profile",
+    "pages/pool-quotes/pool-quotes",
+    "pages/pool-form/pool-form",
+    "pages/stock-detail/stock-detail",
+    "pages/strategy-detail/strategy-detail",
+    "pages/strategy-form/strategy-form",
+    "pages/monitor/monitor",
+    "pages/strategy-select/strategy-select",
+    "pages/search/search",
+    "pages/preferences/preferences",
+    "pages/blacklist/blacklist"
+  ],
+  "window": {
+    "navigationStyle": "custom",
+    "backgroundColor": "#F9FAFB",
+    "backgroundTextStyle": "dark",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "QTrade"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#9CA3AF",
+    "selectedColor": "#2563EB",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      { "pagePath": "pages/home/home", "text": "首页" },
+      { "pagePath": "pages/quotes/quotes", "text": "行情" },
+      { "pagePath": "pages/strategies/strategies", "text": "策略" },
+      { "pagePath": "pages/profile/profile", "text": "我的" }
+    ]
+  },
+  "usingComponents": {
+    "q-navbar": "/components/q-navbar/index",
+    "q-empty": "/components/q-empty/index",
+    "q-chart": "/components/q-chart/index",
+    "q-quote": "/components/q-quote/index",
+    "q-status": "/components/q-status/index",
+    "q-skeleton": "/components/q-skeleton/index",
+    "q-field": "/components/q-field/index",
+    "q-tabs": "/components/q-tabs/index"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents",
+  "permission": {},
+  "requiredPrivateInfos": []
+}

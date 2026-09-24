@@ -1,0 +1,259 @@
+.login-scroll {
+  flex: 1;
+  min-height: 100vh;
+}
+
+/* ---------------------------------------------------------- 品牌区 */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 48rpx;
+}
+
+.hero-logo {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 32rpx;
+  background-color: var(--color-brand-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 12rpx 32rpx rgba(37, 99, 235, 0.28);
+}
+
+/* 品牌标记：一条上扬的折线 */
+.hero-mark {
+  position: relative;
+  width: 64rpx;
+  height: 64rpx;
+}
+
+.hero-mark::before {
+  content: '';
+  position: absolute;
+  left: 6rpx;
+  bottom: 18rpx;
+  width: 16rpx;
+  height: 16rpx;
+  background-color: #FFFFFF;
+  border-radius: 4rpx;
+}
+
+.hero-mark::after {
+  content: '';
+  position: absolute;
+  left: 6rpx;
+  top: 14rpx;
+  width: 52rpx;
+  height: 4rpx;
+  background-color: #FFFFFF;
+  border-radius: 2rpx;
+  transform: rotate(-32deg);
+  transform-origin: left center;
+  box-shadow: 0 26rpx 0 0 rgba(255, 255, 255, 0.55);
+}
+
+.hero-title {
+  margin-top: 28rpx;
+  font-size: 48rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+  color: var(--color-text-primary);
+}
+
+.hero-sub {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+}
+
+/* ---------------------------------------------------------- 表单卡 */
+.login-card {
+  margin: 0 var(--metric-space-lg);
+  padding: var(--metric-space-xl) var(--metric-space-lg);
+}
+
+.login-tabs {
+  display: flex;
+  flex-direction: row;
+  height: 72rpx;
+  padding: 6rpx;
+  margin-bottom: var(--metric-space-lg);
+  background-color: var(--color-bg-input);
+  border-radius: var(--metric-radius-md);
+}
+
+.login-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--metric-font-size-lg);
+  color: var(--color-text-secondary);
+  border-radius: var(--metric-radius-sm);
+}
+
+.login-tab--active {
+  background-color: var(--color-bg-surface);
+  color: var(--color-brand-primary);
+  font-weight: 700;
+}
+
+/* 密码字段右侧的显示/隐藏 */
+.pwd-wrap {
+  position: relative;
+}
+
+.pwd-eye {
+  position: absolute;
+  right: 0;
+  top: 32rpx;
+  width: 88rpx;
+  height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+}
+
+/* 协议行 */
+.login-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--metric-space-lg);
+}
+
+.agree {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8rpx;
+  min-height: 72rpx;
+}
+
+.agree-box {
+  width: 32rpx;
+  height: 32rpx;
+  border: 2rpx solid var(--color-border-control);
+  border-radius: 8rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.agree-box--on {
+  background-color: var(--color-brand-primary);
+  border-color: var(--color-brand-primary);
+}
+
+.agree-tick {
+  width: 14rpx;
+  height: 8rpx;
+  border-left: 3rpx solid #FFFFFF;
+  border-bottom: 3rpx solid #FFFFFF;
+  transform: rotate(-45deg) translate(1rpx, -2rpx);
+}
+
+.agree-text {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.agree-link {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+}
+
+.forgot {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+  padding: 16rpx 0;
+}
+
+/* 分隔线 */
+.or-line {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--metric-space-md);
+  margin: var(--metric-space-xl) 0 var(--metric-space-lg);
+}
+
+.or-line-hr {
+  flex: 1;
+  height: 1rpx;
+  background-color: var(--color-border-default);
+}
+
+.or-line-text {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+/* 微信图标 */
+.wx-icon {
+  width: 32rpx;
+  height: 32rpx;
+  border-radius: 50%;
+  background-color: #FFFFFF;
+  margin-right: 12rpx;
+  position: relative;
+}
+
+.wx-icon::after {
+  content: '';
+  position: absolute;
+  left: 11rpx;
+  top: 11rpx;
+  width: 10rpx;
+  height: 10rpx;
+  border-radius: 50%;
+  background-color: var(--color-brand-wechat);
+}
+
+.login-foot {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  margin-top: var(--metric-space-xl);
+  font-size: var(--metric-font-size-md);
+}
+
+/* 绑定提示 */
+.bind-tip {
+  margin-bottom: var(--metric-space-lg);
+  padding: var(--metric-space-md);
+  background-color: var(--color-bg-subtle);
+  border-radius: var(--metric-radius-md);
+}
+
+.bind-title {
+  font-size: var(--metric-font-size-lg);
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.bind-desc {
+  margin-top: 8rpx;
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.bind-cancel {
+  margin-top: var(--metric-space-md);
+}
+
+.login-bottom {
+  margin-top: var(--metric-space-xl);
+  text-align: center;
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-tertiary);
+}

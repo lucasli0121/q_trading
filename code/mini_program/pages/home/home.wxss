@@ -1,0 +1,168 @@
+/* ---------------------------------------------------------- 顶栏右侧 */
+.topbar-status {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6rpx;
+  margin-right: 4rpx;
+}
+
+.topbar-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  background-color: var(--color-market-down);
+}
+
+.topbar-status-text {
+  font-size: 20rpx;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.bell {
+  position: relative;
+  width: 88rpx;
+  height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 铃铛图标（纯 CSS） */
+.bell-icon {
+  width: 32rpx;
+  height: 34rpx;
+  border: 3rpx solid var(--color-text-secondary);
+  border-radius: 16rpx 16rpx 6rpx 6rpx;
+  position: relative;
+}
+
+.bell-icon::after {
+  content: '';
+  position: absolute;
+  left: 11rpx;
+  bottom: -10rpx;
+  width: 8rpx;
+  height: 5rpx;
+  background-color: var(--color-text-secondary);
+  border-radius: 0 0 6rpx 6rpx;
+}
+
+.bell-badge {
+  position: absolute;
+  right: 18rpx;
+  top: 20rpx;
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background-color: var(--color-market-up);
+  border: 2rpx solid var(--color-bg-elevated);
+}
+
+/* ---------------------------------------------------------- 统计卡 2×2 */
+.stat-grid {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--metric-space-md);
+}
+
+.stat-grid .stat-card {
+  width: calc((100% - var(--metric-space-md)) / 2);
+  flex: none;
+}
+
+.stat-card--hover {
+  opacity: 0.9;
+}
+
+.stat-top {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+  min-height: 64rpx;
+}
+
+.stat-label {
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.stat-value {
+  margin-top: 6rpx;
+  font-size: var(--metric-font-size-display);
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.badge--up {
+  color: var(--color-market-up);
+  background-color: var(--color-market-up-bg);
+}
+
+/* ---------------------------------------------------------- 区块 */
+.section {
+  margin-top: var(--metric-space-lg);
+}
+
+.card-ft {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88rpx;
+  border-top: 1rpx solid var(--color-border-divider);
+}
+
+.mini-empty {
+  padding: 56rpx 0;
+  text-align: center;
+  font-size: var(--metric-font-size-md);
+  color: var(--color-text-tertiary);
+}
+
+/* ---------------------------------------------------------- 近期运行状态 */
+.act-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.act {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--metric-space-md);
+  padding: var(--metric-space-md) 0;
+  border-bottom: 1rpx solid var(--color-border-divider);
+}
+
+.act:last-child {
+  border-bottom: none;
+}
+
+.act-dot {
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  margin-top: 12rpx;
+  flex: none;
+}
+
+.act-name {
+  font-size: var(--metric-font-size-md);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.act-desc {
+  margin-top: 4rpx;
+  font-size: var(--metric-font-size-sm);
+}
+
+.act-time {
+  margin-top: 4rpx;
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+}

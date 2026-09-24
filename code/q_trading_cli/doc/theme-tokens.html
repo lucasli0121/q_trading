@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>设计令牌预览 · colors/theme.py</title>
+<style>
+  /* ===== 由 theme.py 生成的真实样式：浅色（:root 默认） ===== */
+:root {
+    --qs-page: #f3f4f6;
+    --qs-surface: #ffffff;
+    --qs-surface-alt: #ffffff;
+    --qs-row-alt: #f9fafb;
+    --qs-row-alt-2: #f9fafb;
+    --qs-text: #374151;
+    --qs-heading: #111827;
+    --qs-label: #4b5563;
+    --qs-muted: #6b7280;
+    --qs-faint: #9ca3af;
+    --qs-icon-muted: #d1d5db;
+    --qs-disabled: #9ca3af;
+    --qs-disabled-border: #d1d5db;
+    --qs-border: #e5e7eb;
+    --qs-border-soft: #eef2f6;
+    --qs-primary: #2563eb;
+    --qs-secondary: #16a34a;
+    --qs-primary-hover: #1d4ed8;
+    --qs-primary-active: #1e40af;
+    --qs-link: #2563eb;
+    --qs-info: #1d4ed8;
+    --qs-info-border: #bfdbfe;
+    --qs-danger-border: #fecaca;
+    --qs-accent: #d97706;
+    --qs-positive: #dc2626;
+    --qs-negative: #059669;
+    --qs-danger: #dc2626;
+    --qs-purple: #7e22ce;
+    --qs-orange: #c2410c;
+    --qs-on-accent: #ffffff;
+    --qs-avatar-bg: #dbeafe;
+    --qs-chart-volume: #9ca3af;
+    --qs-chip-neutral: #e5e7eb;
+    --qs-text-secondary: rgba(55,65,81,0.66);
+    --qs-divider: #eef2f6;
+    --qs-divider-strong: #e5e7eb;
+    --qs-shadow: rgba(15,23,42,0.12);
+    --qs-primary-glow: rgba(37,99,235,0.28);
+    --qs-table-header-bg: #3b82f6;
+    --qs-surface-soft: #f8fafc;
+    --qs-bg-grid: rgba(15,23,42,0.06);
+    --qs-bg-glow: rgba(37,99,235,0.10);
+}
+:root {
+    --qs-page-rgb: 243,244,246;
+    --qs-surface-rgb: 255,255,255;
+    --qs-surface-alt-rgb: 255,255,255;
+    --qs-row-alt-rgb: 249,250,251;
+    --qs-row-alt-2-rgb: 249,250,251;
+    --qs-text-rgb: 55,65,81;
+    --qs-heading-rgb: 17,24,39;
+    --qs-label-rgb: 75,85,99;
+    --qs-muted-rgb: 107,114,128;
+    --qs-faint-rgb: 156,163,175;
+    --qs-icon-muted-rgb: 209,213,219;
+    --qs-disabled-rgb: 156,163,175;
+    --qs-disabled-border-rgb: 209,213,219;
+    --qs-border-rgb: 229,231,235;
+    --qs-border-soft-rgb: 238,242,246;
+    --qs-primary-rgb: 37,99,235;
+    --qs-secondary-rgb: 22,163,74;
+    --qs-primary-hover-rgb: 29,78,216;
+    --qs-primary-active-rgb: 30,64,175;
+    --qs-link-rgb: 37,99,235;
+    --qs-info-rgb: 29,78,216;
+    --qs-info-border-rgb: 191,219,254;
+    --qs-danger-border-rgb: 254,202,202;
+    --qs-accent-rgb: 217,119,6;
+    --qs-positive-rgb: 220,38,38;
+    --qs-negative-rgb: 5,150,105;
+    --qs-danger-rgb: 220,38,38;
+    --qs-purple-rgb: 126,34,206;
+    --qs-orange-rgb: 194,65,12;
+    --qs-on-accent-rgb: 255,255,255;
+    --qs-avatar-bg-rgb: 219,234,254;
+    --qs-chart-volume-rgb: 156,163,175;
+    --qs-chip-neutral-rgb: 229,231,235;
+    --qs-text-secondary-rgb: 55,65,81;
+    --qs-divider-rgb: 238,242,246;
+    --qs-divider-strong-rgb: 229,231,235;
+    --qs-shadow-rgb: 15,23,42;
+    --qs-primary-glow-rgb: 37,99,235;
+    --qs-table-header-bg-rgb: 59,130,246;
+    --qs-surface-soft-rgb: 248,250,252;
+    --qs-bg-grid-rgb: 15,23,42;
+    --qs-bg-glow-rgb: 37,99,235;
+    --qs-primary-strong-rgb: 29,78,216;
+}
+
+  /* ===== 由 theme.py 生成的真实样式：深色（此处用 .dark-scope 便于同页并列） ===== */
+.dark-scope {
+    --qs-page: #0f0f1a;
+    --qs-surface: #1e293b;
+    --qs-surface-alt: #111827;
+    --qs-row-alt: #19222f;
+    --qs-row-alt-2: #151c29;
+    --qs-text: #e5e7eb;
+    --qs-heading: #f3f4f6;
+    --qs-label: #d1d5db;
+    --qs-muted: #9ca3af;
+    --qs-faint: #6b7280;
+    --qs-icon-muted: #4b5563;
+    --qs-disabled: #94a3b8;
+    --qs-disabled-border: #64748b;
+    --qs-border: #334155;
+    --qs-border-soft: #2d3748;
+    --qs-primary: #3b82f6;
+    --qs-secondary: #34d399;
+    --qs-primary-hover: #2563eb;
+    --qs-primary-active: #1d4ed8;
+    --qs-link: #60a5fa;
+    --qs-info: #93c5fd;
+    --qs-info-border: #1e40af;
+    --qs-danger-border: #991b1b;
+    --qs-accent: #fbbf24;
+    --qs-positive: #f87171;
+    --qs-negative: #34d399;
+    --qs-danger: #ef4444;
+    --qs-purple: #c084fc;
+    --qs-orange: #fb923c;
+    --qs-on-accent: #ffffff;
+    --qs-avatar-bg: #1e3a5f;
+    --qs-chart-volume: #4b5563;
+    --qs-chip-neutral: rgba(55,65,81,0.8);
+    --qs-text-secondary: rgba(229,231,235,0.53);
+    --qs-divider: rgba(51,65,85,0.2);
+    --qs-divider-strong: rgba(45,55,72,0.6);
+    --qs-shadow: rgba(0,0,0,0.6);
+    --qs-primary-glow: rgba(37,99,235,0.2);
+    --qs-table-header-bg: #65b6ff;
+    --qs-surface-soft: #fcfeff;
+    --qs-bg-grid: rgba(148,163,184,0.06);
+    --qs-bg-glow: rgba(59,130,246,0.14);
+}
+.dark-scope {
+    --qs-page-rgb: 15,15,26;
+    --qs-surface-rgb: 30,41,59;
+    --qs-surface-alt-rgb: 17,24,39;
+    --qs-row-alt-rgb: 25,34,47;
+    --qs-row-alt-2-rgb: 21,28,41;
+    --qs-text-rgb: 229,231,235;
+    --qs-heading-rgb: 243,244,246;
+    --qs-label-rgb: 209,213,219;
+    --qs-muted-rgb: 156,163,175;
+    --qs-faint-rgb: 107,114,128;
+    --qs-icon-muted-rgb: 75,85,99;
+    --qs-disabled-rgb: 148,163,184;
+    --qs-disabled-border-rgb: 100,116,139;
+    --qs-border-rgb: 51,65,85;
+    --qs-border-soft-rgb: 45,55,72;
+    --qs-primary-rgb: 59,130,246;
+    --qs-secondary-rgb: 52,211,153;
+    --qs-primary-hover-rgb: 37,99,235;
+    --qs-primary-active-rgb: 29,78,216;
+    --qs-link-rgb: 96,165,250;
+    --qs-info-rgb: 147,197,253;
+    --qs-info-border-rgb: 30,64,175;
+    --qs-danger-border-rgb: 153,27,27;
+    --qs-accent-rgb: 251,191,36;
+    --qs-positive-rgb: 248,113,113;
+    --qs-negative-rgb: 52,211,153;
+    --qs-danger-rgb: 239,68,68;
+    --qs-purple-rgb: 192,132,252;
+    --qs-orange-rgb: 251,146,60;
+    --qs-on-accent-rgb: 255,255,255;
+    --qs-avatar-bg-rgb: 30,58,95;
+    --qs-chart-volume-rgb: 75,85,99;
+    --qs-chip-neutral-rgb: 55,65,81;
+    --qs-text-secondary-rgb: 229,231,235;
+    --qs-divider-rgb: 51,65,85;
+    --qs-divider-strong-rgb: 45,55,72;
+    --qs-shadow-rgb: 0,0,0;
+    --qs-primary-glow-rgb: 37,99,235;
+    --qs-table-header-bg-rgb: 101,182,255;
+    --qs-surface-soft-rgb: 252,254,255;
+    --qs-bg-grid-rgb: 148,163,184;
+    --qs-bg-glow-rgb: 59,130,246;
+    --qs-primary-strong-rgb: 37,99,235;
+}
+
+  /* ===== 页面自身样式（不参与主题） ===== */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px; background: #0f0f1a; color: #e5e7eb;
+         font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
+  h1 { font-size: 20px; margin: 0 0 6px; color: #f3f4f6; }
+  h2 { font-size: 14px; margin: 30px 0 10px; color: #60a5fa; font-weight: 600; }
+  p.lead { color: #9ca3af; margin: 0 0 20px; line-height: 1.75; max-width: 1100px; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .stat { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; min-width: 118px; }
+  .stat b { display: block; font-size: 20px; color: #f3f4f6; }
+  .stat span { color: #9ca3af; font-size: 12px; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; background: #1e293b;
+           border: 1px solid #334155; border-radius: 10px; overflow: hidden; }
+  th { text-align: left; font-weight: 600; color: #d1d5db; background: #111827; padding: 10px 12px;
+        border-bottom: 1px solid #334155; font-size: 12px; }
+  td { padding: 7px 12px; border-bottom: 1px solid rgba(51,65,85,0.5); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #19222f; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #cbd5e1; }
+  .sw { display: inline-block; width: 24px; height: 15px; border-radius: 3px;
+         border: 1px solid rgba(255,255,255,0.3); vertical-align: -3px; margin-right: 7px; }
+  td.dark-scope { background: #111827; }
+  tr:hover td.dark-scope { background: #111827; }
+  .cvar code { color: #94a3b8; }
+  .ch code { color: #94a3b8; font-size: 11px; }
+  .alias { display: block; color: #fbbf24; font-size: 11px; }
+  .same code::after { content: "（深浅同值）"; color: #6b7280; font-size: 11px; margin-left: 4px; }
+  .note { background: #111827; border: 1px solid #334155; border-left: 3px solid #3b82f6;
+           border-radius: 8px; padding: 14px 16px; color: #9ca3af; line-height: 1.8; margin-top: 26px; }
+  .note b { color: #e5e7eb; }
+  ul { margin: 6px 0 0; padding-left: 20px; line-height: 1.9; }
+  .ok { color: #34d399; }
+</style>
+</head>
+<body>
+  <h1>设计令牌预览</h1>
+  <p class="lead">
+    数据与样式均直接来自 <code>colors/theme.py</code>，非手工誊抄。<br>
+    浅色取值定义在 <code>:root</code>（系统默认主题为浅色），深色取值定义在 <code>body.qs-dark</code>（本页为同屏并列改写为 <code>.dark-scope</code>），
+    两者同时存在于同一张共享样式表；切换主题只切换 body 上的 class，浏览器立即重算，不需要重新渲染页面。<br>
+    <span class="ok">下方色块一律用 <code>var()</code> 取色 —— 若某个令牌或颜色通道没生成出来，色块会是空的。</span>
+  </p>
+
+  <div class="stats">
+    <div class="stat"><b>42</b><span>设计令牌</span></div>
+    <div class="stat"><b>43</b><span>颜色通道</span></div>
+    <div class="stat"><b>1</b><span>通道别名</span></div>
+    <div class="stat"><b>0</b><span>项目内写死色值</span></div>
+  </div>
+
+  <h2>背景 / 容器</h2>
+  <table>
+    <thead><tr>
+      <th style="width:20%">令牌</th><th style="width:22%">CSS 变量</th>
+      <th style="width:17%">深色 body.qs-dark</th><th style="width:17%">浅色 :root（默认）</th>
+      <th>半透明通道（示例 α=0.25）</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><code>page</code></td>
+        <td class="cvar"><code>var(--qs-page)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-page)"></span><code>#0f0f1a</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-page)"></span><code>#f3f4f6</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-page-rgb), 0.25)"></span><code>rgba(var(--qs-page-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>surface</code></td>
+        <td class="cvar"><code>var(--qs-surface)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-surface)"></span><code>#1e293b</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-surface)"></span><code>#ffffff</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-surface-rgb), 0.25)"></span><code>rgba(var(--qs-surface-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>surface-alt</code></td>
+        <td class="cvar"><code>var(--qs-surface-alt)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-surface-alt)"></span><code>#111827</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-surface-alt)"></span><code>#ffffff</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-surface-alt-rgb), 0.25)"></span><code>rgba(var(--qs-surface-alt-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>row-alt</code></td>
+        <td class="cvar"><code>var(--qs-row-alt)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-row-alt)"></span><code>#19222f</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-row-alt)"></span><code>#f9fafb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-row-alt-rgb), 0.25)"></span><code>rgba(var(--qs-row-alt-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>row-alt-2</code></td>
+        <td class="cvar"><code>var(--qs-row-alt-2)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-row-alt-2)"></span><code>#151c29</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-row-alt-2)"></span><code>#f9fafb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-row-alt-2-rgb), 0.25)"></span><code>rgba(var(--qs-row-alt-2-rgb), 0.25)</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>文字</h2>
+  <table>
+    <thead><tr>
+      <th style="width:20%">令牌</th><th style="width:22%">CSS 变量</th>
+      <th style="width:17%">深色 body.qs-dark</th><th style="width:17%">浅色 :root（默认）</th>
+      <th>半透明通道（示例 α=0.25）</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><code>text</code></td>
+        <td class="cvar"><code>var(--qs-text)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-text)"></span><code>#e5e7eb</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-text)"></span><code>#374151</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-text-rgb), 0.25)"></span><code>rgba(var(--qs-text-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>heading</code></td>
+        <td class="cvar"><code>var(--qs-heading)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-heading)"></span><code>#f3f4f6</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-heading)"></span><code>#111827</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-heading-rgb), 0.25)"></span><code>rgba(var(--qs-heading-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>label</code></td>
+        <td class="cvar"><code>var(--qs-label)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-label)"></span><code>#d1d5db</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-label)"></span><code>#4b5563</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-label-rgb), 0.25)"></span><code>rgba(var(--qs-label-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>muted</code></td>
+        <td class="cvar"><code>var(--qs-muted)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-muted)"></span><code>#9ca3af</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-muted)"></span><code>#6b7280</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-muted-rgb), 0.25)"></span><code>rgba(var(--qs-muted-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>faint</code></td>
+        <td class="cvar"><code>var(--qs-faint)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-faint)"></span><code>#6b7280</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-faint)"></span><code>#9ca3af</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-faint-rgb), 0.25)"></span><code>rgba(var(--qs-faint-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>icon-muted</code></td>
+        <td class="cvar"><code>var(--qs-icon-muted)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-icon-muted)"></span><code>#4b5563</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-icon-muted)"></span><code>#d1d5db</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-icon-muted-rgb), 0.25)"></span><code>rgba(var(--qs-icon-muted-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>disabled</code></td>
+        <td class="cvar"><code>var(--qs-disabled)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-disabled)"></span><code>#94a3b8</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-disabled)"></span><code>#9ca3af</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-disabled-rgb), 0.25)"></span><code>rgba(var(--qs-disabled-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>disabled-border</code></td>
+        <td class="cvar"><code>var(--qs-disabled-border)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-disabled-border)"></span><code>#64748b</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-disabled-border)"></span><code>#d1d5db</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-disabled-border-rgb), 0.25)"></span><code>rgba(var(--qs-disabled-border-rgb), 0.25)</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>边框 / 分割线</h2>
+  <table>
+    <thead><tr>
+      <th style="width:20%">令牌</th><th style="width:22%">CSS 变量</th>
+      <th style="width:17%">深色 body.qs-dark</th><th style="width:17%">浅色 :root（默认）</th>
+      <th>半透明通道（示例 α=0.25）</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><code>border</code></td>
+        <td class="cvar"><code>var(--qs-border)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-border)"></span><code>#334155</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-border)"></span><code>#e5e7eb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-border-rgb), 0.25)"></span><code>rgba(var(--qs-border-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>border-soft</code></td>
+        <td class="cvar"><code>var(--qs-border-soft)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-border-soft)"></span><code>#2d3748</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-border-soft)"></span><code>#eef2f6</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-border-soft-rgb), 0.25)"></span><code>rgba(var(--qs-border-soft-rgb), 0.25)</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>品牌 / 语义色</h2>
+  <table>
+    <thead><tr>
+      <th style="width:20%">令牌</th><th style="width:22%">CSS 变量</th>
+      <th style="width:17%">深色 body.qs-dark</th><th style="width:17%">浅色 :root（默认）</th>
+      <th>半透明通道（示例 α=0.25）</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><code>primary</code></td>
+        <td class="cvar"><code>var(--qs-primary)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-primary)"></span><code>#3b82f6</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-primary)"></span><code>#2563eb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-primary-rgb), 0.25)"></span><code>rgba(var(--qs-primary-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>secondary</code></td>
+        <td class="cvar"><code>var(--qs-secondary)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-secondary)"></span><code>#34d399</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-secondary)"></span><code>#16a34a</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-secondary-rgb), 0.25)"></span><code>rgba(var(--qs-secondary-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>primary-hover</code><span class="alias">有别名 primary-strong</span></td>
+        <td class="cvar"><code>var(--qs-primary-hover)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-primary-hover)"></span><code>#2563eb</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-primary-hover)"></span><code>#1d4ed8</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-primary-hover-rgb), 0.25)"></span><code>rgba(var(--qs-primary-hover-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>primary-active</code></td>
+        <td class="cvar"><code>var(--qs-primary-active)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-primary-active)"></span><code>#1d4ed8</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-primary-active)"></span><code>#1e40af</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-primary-active-rgb), 0.25)"></span><code>rgba(var(--qs-primary-active-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>link</code></td>
+        <td class="cvar"><code>var(--qs-link)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-link)"></span><code>#60a5fa</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-link)"></span><code>#2563eb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-link-rgb), 0.25)"></span><code>rgba(var(--qs-link-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>info</code></td>
+        <td class="cvar"><code>var(--qs-info)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-info)"></span><code>#93c5fd</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-info)"></span><code>#1d4ed8</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-info-rgb), 0.25)"></span><code>rgba(var(--qs-info-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>info-border</code></td>
+        <td class="cvar"><code>var(--qs-info-border)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-info-border)"></span><code>#1e40af</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-info-border)"></span><code>#bfdbfe</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-info-border-rgb), 0.25)"></span><code>rgba(var(--qs-info-border-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>danger-border</code></td>
+        <td class="cvar"><code>var(--qs-danger-border)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-danger-border)"></span><code>#991b1b</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-danger-border)"></span><code>#fecaca</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-danger-border-rgb), 0.25)"></span><code>rgba(var(--qs-danger-border-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>accent</code></td>
+        <td class="cvar"><code>var(--qs-accent)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-accent)"></span><code>#fbbf24</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-accent)"></span><code>#d97706</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-accent-rgb), 0.25)"></span><code>rgba(var(--qs-accent-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>positive</code></td>
+        <td class="cvar"><code>var(--qs-positive)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-positive)"></span><code>#f87171</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-positive)"></span><code>#dc2626</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-positive-rgb), 0.25)"></span><code>rgba(var(--qs-positive-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>negative</code></td>
+        <td class="cvar"><code>var(--qs-negative)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-negative)"></span><code>#34d399</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-negative)"></span><code>#059669</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-negative-rgb), 0.25)"></span><code>rgba(var(--qs-negative-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>danger</code></td>
+        <td class="cvar"><code>var(--qs-danger)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-danger)"></span><code>#ef4444</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-danger)"></span><code>#dc2626</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-danger-rgb), 0.25)"></span><code>rgba(var(--qs-danger-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>purple</code></td>
+        <td class="cvar"><code>var(--qs-purple)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-purple)"></span><code>#c084fc</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-purple)"></span><code>#7e22ce</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-purple-rgb), 0.25)"></span><code>rgba(var(--qs-purple-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>orange</code></td>
+        <td class="cvar"><code>var(--qs-orange)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-orange)"></span><code>#fb923c</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-orange)"></span><code>#c2410c</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-orange-rgb), 0.25)"></span><code>rgba(var(--qs-orange-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>on-accent</code></td>
+        <td class="cvar"><code>var(--qs-on-accent)</code></td>
+        <td class="pair dark-scope same"><span class="sw" style="background:var(--qs-on-accent)"></span><code>#ffffff</code></td>
+        <td class="pair same"><span class="sw" style="background:var(--qs-on-accent)"></span><code>#ffffff</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-on-accent-rgb), 0.25)"></span><code>rgba(var(--qs-on-accent-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>avatar-bg</code></td>
+        <td class="cvar"><code>var(--qs-avatar-bg)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-avatar-bg)"></span><code>#1e3a5f</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-avatar-bg)"></span><code>#dbeafe</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-avatar-bg-rgb), 0.25)"></span><code>rgba(var(--qs-avatar-bg-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>chart-volume</code></td>
+        <td class="cvar"><code>var(--qs-chart-volume)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-chart-volume)"></span><code>#4b5563</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-chart-volume)"></span><code>#9ca3af</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-chart-volume-rgb), 0.25)"></span><code>rgba(var(--qs-chart-volume-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>chip-neutral</code></td>
+        <td class="cvar"><code>var(--qs-chip-neutral)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-chip-neutral)"></span><code>rgba(55,65,81,0.8)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-chip-neutral)"></span><code>#e5e7eb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-chip-neutral-rgb), 0.25)"></span><code>rgba(var(--qs-chip-neutral-rgb), 0.25)</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>半透明 / 派生色（深浅取值不同，供界面直接引用）</h2>
+  <table>
+    <thead><tr>
+      <th style="width:20%">令牌</th><th style="width:22%">CSS 变量</th>
+      <th style="width:17%">深色 body.qs-dark</th><th style="width:17%">浅色 :root（默认）</th>
+      <th>半透明通道（示例 α=0.25）</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><code>text-secondary</code></td>
+        <td class="cvar"><code>var(--qs-text-secondary)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-text-secondary)"></span><code>rgba(229,231,235,0.53)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-text-secondary)"></span><code>rgba(55,65,81,0.66)</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-text-secondary-rgb), 0.25)"></span><code>rgba(var(--qs-text-secondary-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>divider</code></td>
+        <td class="cvar"><code>var(--qs-divider)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-divider)"></span><code>rgba(51,65,85,0.2)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-divider)"></span><code>#eef2f6</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-divider-rgb), 0.25)"></span><code>rgba(var(--qs-divider-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>divider-strong</code></td>
+        <td class="cvar"><code>var(--qs-divider-strong)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-divider-strong)"></span><code>rgba(45,55,72,0.6)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-divider-strong)"></span><code>#e5e7eb</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-divider-strong-rgb), 0.25)"></span><code>rgba(var(--qs-divider-strong-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>shadow</code></td>
+        <td class="cvar"><code>var(--qs-shadow)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-shadow)"></span><code>rgba(0,0,0,0.6)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-shadow)"></span><code>rgba(15,23,42,0.12)</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-shadow-rgb), 0.25)"></span><code>rgba(var(--qs-shadow-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>primary-glow</code></td>
+        <td class="cvar"><code>var(--qs-primary-glow)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-primary-glow)"></span><code>rgba(37,99,235,0.2)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-primary-glow)"></span><code>rgba(37,99,235,0.28)</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-primary-glow-rgb), 0.25)"></span><code>rgba(var(--qs-primary-glow-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>table-header-bg</code></td>
+        <td class="cvar"><code>var(--qs-table-header-bg)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-table-header-bg)"></span><code>#65b6ff</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-table-header-bg)"></span><code>#3b82f6</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-table-header-bg-rgb), 0.25)"></span><code>rgba(var(--qs-table-header-bg-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>surface-soft</code></td>
+        <td class="cvar"><code>var(--qs-surface-soft)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-surface-soft)"></span><code>#fcfeff</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-surface-soft)"></span><code>#f8fafc</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-surface-soft-rgb), 0.25)"></span><code>rgba(var(--qs-surface-soft-rgb), 0.25)</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>登录页背景装饰层（见 components/login_background.py）</h2>
+  <table>
+    <thead><tr>
+      <th style="width:20%">令牌</th><th style="width:22%">CSS 变量</th>
+      <th style="width:17%">深色 body.qs-dark</th><th style="width:17%">浅色 :root（默认）</th>
+      <th>半透明通道（示例 α=0.25）</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><code>bg-grid</code></td>
+        <td class="cvar"><code>var(--qs-bg-grid)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-bg-grid)"></span><code>rgba(148,163,184,0.06)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-bg-grid)"></span><code>rgba(15,23,42,0.06)</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-bg-grid-rgb), 0.25)"></span><code>rgba(var(--qs-bg-grid-rgb), 0.25)</code></td>
+      </tr>
+      <tr>
+        <td><code>bg-glow</code></td>
+        <td class="cvar"><code>var(--qs-bg-glow)</code></td>
+        <td class="pair dark-scope"><span class="sw" style="background:var(--qs-bg-glow)"></span><code>rgba(59,130,246,0.14)</code></td>
+        <td class="pair"><span class="sw" style="background:var(--qs-bg-glow)"></span><code>rgba(37,99,235,0.10)</code></td>
+        <td class="ch"><span class="sw" style="background:rgba(var(--qs-bg-glow-rgb), 0.25)"></span><code>rgba(var(--qs-bg-glow-rgb), 0.25)</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <b>颜色通道</b>：CSS 无法给 <code>var()</code> 追加透明度（<code>var(--qs-text)88</code> 是非法声明，
+    整条 <code>color</code> 会被浏览器丢弃）。需要半透明时用通道变量拼接
+    <code>rgba(var(--qs-primary-rgb), 0.15)</code>；Python 侧对应
+    <code>ThemeManager.var_rgba()</code>（CSS 场景）与 <code>get_rgba()</code>（canvas 场景）。
+    通道由令牌自动派生，因此对任意令牌都成立，不存在漏配。
+    <ul><li><code>primary-strong</code> → <code>primary-hover</code>（深 #2563eb / 浅 #1d4ed8）</li></ul>
+    <b>深浅同值的令牌</b>（正常，通常是"彩色底上的白字"这类跨主题不变的项）：
+    <code>on-accent</code><br>
+    <b>未纳入分组的令牌</b>：<code>无</code>
+  </div>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="个人喜好设置"
+    statusBarHeight="{{statusBarHeight}}"
+    action="保存更改"
+    actionAdd="{{false}}"
+    bind:action="onSave"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <q-skeleton wx:if="{{loading}}" type="card" rows="3" />
+
+    <block wx:else>
+      <!-- ① 界面显示 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">界面显示</text>
+        </view>
+        <view class="list-row">
+          <view class="flex1">
+            <text class="t-base">深色模式</text>
+            <view class="c-tertiary t-xs">切换系统的显示主题风格，拨动即时生效</view>
+          </view>
+          <switch checked="{{dark}}" color="#2563EB" bindchange="onToggleDark" />
+        </view>
+        <view class="cell-note">
+          主题为即时生效设置，拨动后立刻保存，无需再点「保存更改」；翻页与重新登录后保持所选主题。
+        </view>
+      </view>
+
+      <!-- ② 企业微信推送 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">企业微信推送</text>
+        </view>
+        <view class="list-row">
+          <view class="flex1">
+            <text class="t-base">启用推送</text>
+            <view class="c-tertiary t-xs">策略触发买入 / 卖出信号时发送通知</view>
+          </view>
+          <switch checked="{{enableWxPush}}" color="#2563EB" bindchange="onWxPushToggle" />
+        </view>
+
+        <view wx:if="{{enableWxPush}}" class="field-block">
+          <view class="field-label">Webhook 地址</view>
+          <input
+            class="input {{wxPushError ? 'input--error' : ''}}"
+            value="{{wxPushUrl}}"
+            data-key="wxPushUrl"
+            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+            placeholder-class="input-ph"
+            bindinput="onField"
+          />
+          <view wx:if="{{wxPushError}}" class="field-error">{{wxPushError}}</view>
+        </view>
+      </view>
+
+      <!-- ③ 手机短信推送 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">手机短信推送</text>
+        </view>
+        <view class="list-row">
+          <view class="flex1">
+            <text class="t-base">启用短信推送</text>
+            <view class="c-tertiary t-xs">信号触发时发送短信提醒</view>
+          </view>
+          <switch checked="{{enablePhoneText}}" color="#2563EB" bindchange="onPhoneToggle" />
+        </view>
+
+        <view wx:if="{{enablePhoneText}}" class="field-block">
+          <view class="field-label">推送手机号</view>
+          <input
+            class="input {{phoneError ? 'input--error' : ''}}"
+            type="number"
+            maxlength="11"
+            value="{{phone}}"
+            data-key="phone"
+            placeholder="请输入接收短信的手机号"
+            placeholder-class="input-ph"
+            bindinput="onField"
+          />
+          <view wx:if="{{phoneError}}" class="field-error">{{phoneError}}</view>
+        </view>
+      </view>
+
+      <!-- 保存 -->
+      <view
+        class="btn btn-primary btn-block save-btn {{saving ? 'btn-disabled' : ''}}"
+        bindtap="onSave"
+      >{{saving ? '保存中...' : '保存更改'}}</view>
+
+      <view class="entry-link" bindtap="goBlacklist">前往黑名单股票管理 ›</view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

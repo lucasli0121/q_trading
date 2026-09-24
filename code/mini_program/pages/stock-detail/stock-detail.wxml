@@ -1,0 +1,140 @@
+<view class="root {{themeClass}}">
+  <q-navbar
+    title="{{name ? name + ' ' + code : code}}"
+    statusBarHeight="{{statusBarHeight}}"
+    actionIcon="refresh"
+    bind:actionicon="retry"
+  />
+
+  <scroll-view class="page-body" scroll-y>
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+    <q-skeleton wx:elif="{{loading}}" type="card" rows="3" />
+
+    <block wx:else>
+      <!-- ① 实时行情 -->
+      <view class="card card-pad">
+        <view class="row between" bindtap="copyCode">
+          <view class="flex1">
+            <text class="num t-2xl t-bold">{{code}}</text>
+            <text class="c-tertiary t-sm sd-name">{{name}}</text>
+          </view>
+          <text class="c-tertiary t-2xs">点此复制代码</text>
+        </view>
+
+        <block wx:if="{{rt}}">
+          <view class="quote-big">
+            <text class="num qt-price {{rt.tone === 'up' ? 'c-up' : (rt.tone === 'down' ? 'c-down' : 'c-second')}}">{{rt.price}}</text>
+            <view class="qt-sub">
+              <text class="num t-lg t-bold {{rt.tone === 'up' ? 'c-up' : (rt.tone === 'down' ? 'c-down' : 'c-second')}}">{{rt.amtText}}</text>
+              <text class="num t-lg t-bold {{rt.tone === 'up' ? 'c-up' : (rt.tone === 'down' ? 'c-down' : 'c-second')}}">{{rt.pctText}}</text>
+            </view>
+          </view>
+
+          <view class="rt-fields">
+            <view wx:for="{{rt.fields}}" wx:key="k" class="rt-field">
+              <text class="rt-k">{{item.k}}</text>
+              <text class="rt-v num">{{item.v}}</text>
+            </view>
+          </view>
+        </block>
+
+        <q-empty wx:else type="empty" title="暂无实时行情数据" compact />
+      </view>
+
+      <!-- ② 价格走势 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">价格走势（近 15 天）</text>
+          <view class="mode-switch">
+            <view
+              class="mode-btn {{chartMode === 'day' ? 'mode-btn--on' : ''}}"
+              data-mode="day"
+              bindtap="onChartMode"
+            >日K</view>
+            <view
+              class="mode-btn {{chartMode === 'minute' ? 'mode-btn--on' : ''}}"
+              data-mode="minute"
+              bindtap="onChartMode"
+            >分时</view>
+          </view>
+        </view>
+
+        <!-- 分时：日期选择 -->
+        <view wx:if="{{chartMode === 'minute' && dateOptions.length}}" class="date-row">
+          <text class="c-tertiary t-xs">交易日</text>
+          <picker mode="selector" range="{{dateOptions}}" value="{{dateIndex}}" bindchange="onDateChange">
+            <view class="date-pick">
+              <text class="num t-sm">{{minuteDate || '请选择'}}</text>
+              <text class="c-tertiary t-xs">▾</text>
+            </view>
+          </picker>
+        </view>
+
+        <view class="chart-box">
+          <!-- 日K -->
+          <block wx:if="{{chartMode === 'day'}}">
+            <q-chart
+              wx:if="{{kline.length}}"
+              kind="kline"
+              theme="{{mode}}"
+              height="560"
+              candles="{{kline}}"
+              signals="{{rawSignals}}"
+            />
+            <q-empty wx:else type="empty" title="暂无日K数据" compact />
+          </block>
+
+          <!-- 分时 -->
+          <block wx:else>
+            <view wx:if="{{minuteLoading}}" class="loading-box">
+              <view class="spinner"></view>
+              <text class="c-tertiary t-sm">正在加载分时数据...</text>
+            </view>
+            <q-chart
+              wx:elif="{{minuteData.length}}"
+              kind="minute"
+              theme="{{mode}}"
+              height="560"
+              candles="{{minuteData}}"
+              signals="{{rawSignals}}"
+            />
+            <q-empty wx:else type="empty" title="{{minuteError || '暂无分时数据'}}" compact />
+          </block>
+        </view>
+
+        <view wx:if="{{chartMode === 'day' && kline.length}}" class="chart-note">
+          图中圆圈为买卖信号标注（买红 / 卖绿），仅展示最近 90 根 K 线
+        </view>
+      </view>
+
+      <!-- ③ 买卖信号 -->
+      <view class="card">
+        <view class="card-hd">
+          <text class="t-base t-medium">买卖信号（近 15 天）</text>
+          <text class="c-tertiary t-xs">共 {{signalCount}} 条</text>
+        </view>
+
+        <q-empty wx:if="{{!signals.length}}" type="empty" title="近15天无买卖信号" compact />
+
+        <view wx:else class="sig-list">
+          <view wx:for="{{signals}}" wx:key="key" class="sig-row">
+            <view class="sig-l">
+              <text class="num t-xs c-second">{{item.time}}</text>
+              <text class="tag {{item.actionTone === 'up' ? 'tag-up' : 'tag-down'}} sig-tag">{{item.action}}</text>
+            </view>
+            <view class="sig-r">
+              <text class="num t-base t-bold">{{item.price}}</text>
+              <text
+                wx:if="{{item.showRate}}"
+                class="num t-xs {{item.rateTone === 'up' ? 'c-up' : (item.rateTone === 'down' ? 'c-down' : 'c-second')}}"
+              >收益 {{item.rateText}}</text>
+            </view>
+            <text wx:if="{{item.reason}}" class="sig-reason ellipsis">{{item.reason}}</text>
+          </view>
+        </view>
+      </view>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

@@ -1,0 +1,36 @@
+/* 个人喜好设置 */
+
+.card + .card { margin-top: var(--metric-space-md); }
+
+.field-block {
+  padding: 0 var(--metric-space-lg) var(--metric-space-lg);
+}
+
+.field-label {
+  margin-bottom: var(--metric-space-xs);
+  font-size: var(--metric-font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.field-error {
+  margin-top: 8rpx;
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-market-up);
+}
+
+.cell-note {
+  padding: 0 var(--metric-space-lg) var(--metric-space-lg);
+  font-size: var(--metric-font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+.save-btn { margin-top: var(--metric-space-xl); }
+
+.entry-link {
+  margin-top: var(--metric-space-lg);
+  text-align: center;
+  font-size: var(--metric-font-size-sm);
+  color: var(--color-brand-link);
+}

@@ -1,0 +1,64 @@
+{
+  "appid": "touristappid",
+  "projectname": "QTrade-MiniProgram",
+  "description": "QTrade 量化交易小程序前端（对齐 q_trading_cli Web 端功能）",
+  "compileType": "miniprogram",
+  "libVersion": "3.5.5",
+  "miniprogramRoot": "./",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "showShadowRootInWxmlPanel": true,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "coverView": true,
+    "lazyloadPlaceholderEnable": false,
+    "preloadBackgroundData": false,
+    "autoAudits": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "useCompilerPlugins": false,
+    "ignoreUploadUnusedFiles": true,
+    "compileHotReLoad": false,
+    "condition": false
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "name": "登录页",
+          "pathName": "pages/login/login",
+          "query": "",
+          "scene": null
+        },
+        {
+          "name": "仪表盘",
+          "pathName": "pages/home/home",
+          "query": "",
+          "scene": null
+        },
+        {
+          "name": "个股详情",
+          "pathName": "pages/stock-detail/stock-detail",
+          "query": "code=600519",
+          "scene": null
+        }
+      ]
+    }
+  },
+  "packOptions": {
+    "ignore": [
+      { "type": "folder", "value": "ui" },
+      { "type": "folder", "value": "doc" },
+      { "type": "folder", "value": "tools" },
+      { "type": "file", "value": "README.md" },
+      { "type": "file", "value": ".gitignore" }
+    ],
+    "include": []
+  }
+}

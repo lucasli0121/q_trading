@@ -1,0 +1,32 @@
+<view class="sk-wrap">
+  <!-- 统计卡骨架 -->
+  <block wx:if="{{type === 'stat'}}">
+    <view class="sk-stat-row">
+      <view wx:for="{{items}}" wx:key="*this" class="sk sk-stat"></view>
+    </view>
+  </block>
+
+  <!-- 卡片骨架 -->
+  <block wx:elif="{{type === 'card'}}">
+    <view wx:for="{{items}}" wx:key="*this" class="sk sk-card"></view>
+  </block>
+
+  <!-- 行情行骨架 -->
+  <block wx:elif="{{type === 'quote'}}">
+    <view wx:for="{{items}}" wx:key="*this" class="sk-quote">
+      <view class="sk-quote-top">
+        <view class="sk sk-line sk-line--lg"></view>
+        <view class="sk sk-line sk-line--md"></view>
+      </view>
+      <view class="sk sk-line sk-line--sm"></view>
+    </view>
+  </block>
+
+  <!-- 默认列表骨架 -->
+  <block wx:else>
+    <view wx:for="{{items}}" wx:key="*this" class="sk-row">
+      <view class="sk sk-line sk-line--lg"></view>
+      <view class="sk sk-line sk-line--sm"></view>
+    </view>
+  </block>
+</view>

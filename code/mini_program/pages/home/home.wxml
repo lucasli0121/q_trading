@@ -1,0 +1,128 @@
+<view class="root {{themeClass}}">
+  <!-- 顶栏：标题 + 交易系统运行中 + 通知铃铛（仅仪表盘有铃铛） -->
+  <q-navbar
+    title="仪表盘"
+    back="{{false}}"
+    statusBarHeight="{{statusBarHeight}}"
+  >
+    <view slot="right" class="topbar-status">
+      <view class="topbar-dot"></view>
+      <text class="topbar-status-text">交易系统运行中</text>
+    </view>
+    <view slot="right" class="bell" bindtap="onBell">
+      <view class="bell-icon"></view>
+      <view wx:if="{{hasNewMessage}}" class="bell-badge"></view>
+    </view>
+  </q-navbar>
+
+  <scroll-view class="page-body page-body--tab" scroll-y>
+    <!-- 加载失败 -->
+    <q-empty wx:if="{{loadError}}" type="error" desc="{{loadError}}" action="重新加载" bind:action="retry" />
+
+    <block wx:else>
+      <q-skeleton wx:if="{{loading}}" type="stat" rows="4" />
+
+      <block wx:else>
+        <!-- 统计卡片（2×2） -->
+        <view class="stat-grid">
+          <view
+            wx:for="{{stats}}"
+            wx:key="key"
+            class="stat-card"
+            data-key="{{item.key}}"
+            bindtap="{{item.key === 'pools' ? 'goQuotes' : (item.key === 'total' || item.key === 'running' ? 'goStrategies' : '')}}"
+          >
+            <view class="stat-top">
+              <view class="stat-icon" style="background-color: {{item.iconBg}}; color: {{item.iconColor}};">{{item.icon}}</view>
+              <view wx:if="{{item.badge}}" class="{{item.badgeClass}}">{{item.badge}}</view>
+            </view>
+            <view class="stat-label">{{item.label}}</view>
+            <view class="stat-value num">{{item.value}}</view>
+          </view>
+        </view>
+
+        <!-- 系统累计收益概览 -->
+        <view class="card section">
+          <view class="card-hd">
+            <text class="t-lg t-bold">系统累计收益概览</text>
+            <q-tabs list="{{periods}}" active="{{period}}" bind:change="onPeriodChange" />
+          </view>
+          <view class="card-bd">
+            <q-chart
+              wx:if="{{!profitEmpty}}"
+              kind="profit"
+              theme="{{themeClass === 'theme-dark' ? 'dark' : 'light'}}"
+              height="{{chartHeight}}"
+              lineData="{{profitChart}}"
+            />
+            <view wx:else class="mini-empty">暂无收益数据</view>
+          </view>
+        </view>
+
+        <!-- 近期运行状态 -->
+        <view class="card section">
+          <view class="card-hd">
+            <text class="t-lg t-bold">近期运行状态</text>
+            <text class="c-tertiary t-xs">{{signalMode === 'ws' ? '实时推送' : (signalMode === 'poll' ? '轮询更新' : '')}}</text>
+          </view>
+          <view class="card-bd">
+            <view wx:if="{{activityEmpty}}" class="mini-empty">暂无信号活动</view>
+            <view wx:else class="act-list">
+              <view wx:for="{{activities}}" wx:key="index" class="act">
+                <view class="act-dot" style="{{item.dotStyle}}"></view>
+                <view class="flex1">
+                  <view class="act-name ellipsis">{{item.name}}</view>
+                  <view class="act-desc {{item.toneClass}}">触发{{item.action}}信号: {{item.code}}</view>
+                  <view class="act-time">{{item.time}}</view>
+                </view>
+              </view>
+            </view>
+          </view>
+          <view class="card-ft" bindtap="goMonitor" hover-class="list-row-hover">
+            <text class="c-link t-md">查看全部活动</text>
+          </view>
+        </view>
+
+        <!-- 近期更新策略 -->
+        <view class="card section">
+          <view class="card-hd">
+            <text class="t-lg t-bold">近期更新策略</text>
+            <text class="c-link t-md" bindtap="goStrategies">管理所有策略</text>
+          </view>
+
+          <view wx:if="{{strategyEmpty}}" class="mini-empty">暂无策略数据</view>
+
+          <block wx:else>
+            <view class="tbl-hd">
+              <text style="flex:2;">策略名称</text>
+              <text style="flex:1.2;">类型</text>
+              <text style="flex:1.2;">创建日期</text>
+              <text style="flex:1;">状态</text>
+              <text style="flex:1.2;text-align:right;">收益率(30d)</text>
+            </view>
+            <view
+              wx:for="{{strategies}}"
+              wx:key="id"
+              class="tbl-row"
+              data-id="{{item.id}}"
+              bindtap="goStrategyDetail"
+              hover-class="list-row-hover"
+            >
+              <view class="flex1" style="flex:2;">
+                <text class="ellipsis t-md">{{item.name}}</text>
+              </view>
+              <text class="c-second t-sm" style="flex:1.2;">{{item.type}}</text>
+              <text class="c-tertiary t-sm" style="flex:1.2;">{{item.createDate}}</text>
+              <view style="flex:1;">
+                <q-status status="{{item.status}}" dot="{{false}}" />
+              </view>
+              <text class="num t-md t-bold {{item.rateClass}}" style="flex:1.2;text-align:right;">{{item.rateText}}</text>
+            </view>
+          </block>
+        </view>
+      </block>
+    </block>
+
+    <view style="height: 24rpx;"></view>
+  </scroll-view>
+</view>

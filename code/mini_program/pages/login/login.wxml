@@ -1,0 +1,215 @@
+<view class="root {{themeClass}}">
+  <scroll-view class="login-scroll" scroll-y>
+    <!-- 品牌区 -->
+    <view class="hero" style="padding-top: {{statusBarHeight + 40}}px;">
+      <view class="hero-logo">
+        <view class="hero-mark"></view>
+      </view>
+      <view class="hero-title">QTrade</view>
+      <view class="hero-sub">量化策略交易管理</view>
+    </view>
+
+    <!-- 表单卡 -->
+    <view class="card login-card">
+      <!-- 登录 / 注册 切换 -->
+      <view wx:if="{{!bindTicket}}" class="login-tabs">
+        <view class="login-tab {{tab === 'login' ? 'login-tab--active' : ''}}" data-tab="login" bindtap="onSwitchTab">登录</view>
+        <view class="login-tab {{tab === 'register' ? 'login-tab--active' : ''}}" data-tab="register" bindtap="onSwitchTab">注册</view>
+      </view>
+
+      <!-- ==================== 登录表单 ==================== -->
+      <block wx:if="{{!bindTicket && tab === 'login'}}">
+        <q-field
+          label="账号"
+          value="{{account}}"
+          placeholder="用户名 / 邮箱 / 手机号"
+          error="{{errors.account}}"
+          data-field="account"
+          bindchange="onChange"
+          bindblur="onBlur"
+        />
+
+        <view class="pwd-wrap">
+          <q-field
+            label="密码"
+            value="{{password}}"
+            placeholder="请输入密码"
+            mode="{{showPwd ? 'text' : 'password'}}"
+            error="{{errors.password}}"
+            data-field="password"
+            bindchange="onChange"
+            bindblur="onBlur"
+          />
+          <view class="pwd-eye" data-field="password" bindtap="togglePwd">{{showPwd ? '隐藏' : '显示'}}</view>
+        </view>
+
+        <view class="login-row">
+          <view class="agree" bindtap="onAgree">
+            <view class="agree-box {{agreed ? 'agree-box--on' : ''}}">
+              <view wx:if="{{agreed}}" class="agree-tick"></view>
+            </view>
+            <text class="agree-text">我已阅读并同意</text>
+            <text class="agree-link" catchtap="onProtocol">《用户协议》</text>
+          </view>
+          <text class="forgot" catchtap="onForgot">忘记密码？</text>
+        </view>
+
+        <view
+          class="btn btn-primary btn-block {{(!agreed || loading) ? 'btn-disabled' : ''}}"
+          bindtap="onLogin"
+          hover-class="btn-hover"
+        >
+          {{loading ? '登录中...' : '登 录'}}
+        </view>
+
+        <view class="or-line">
+          <view class="or-line-hr"></view>
+          <text class="or-line-text">其他登录方式</text>
+          <view class="or-line-hr"></view>
+        </view>
+
+        <view class="btn btn-wechat btn-block" bindtap="onWxLogin" hover-class="btn-hover">
+          <view class="wx-icon"></view>
+          <text>微信一键登录</text>
+        </view>
+
+        <view class="login-foot">
+          <text class="c-tertiary">还没有账号？</text>
+          <text class="c-link" data-tab="register" bindtap="onSwitchTab">立即注册</text>
+        </view>
+      </block>
+
+      <!-- ==================== 注册表单 ==================== -->
+      <block wx:elif="{{!bindTicket && tab === 'register'}}">
+        <q-field
+          label="用户名"
+          required
+          value="{{regAccount}}"
+          placeholder="4-16 位字母或数字"
+          maxlength="16"
+          error="{{errors.regAccount}}"
+          data-field="regAccount"
+          bindchange="onChange"
+          bindblur="onBlur"
+        />
+        <q-field
+          label="邮箱"
+          required
+          value="{{regEmail}}"
+          placeholder="请输入邮箱"
+          error="{{errors.regEmail}}"
+          data-field="regEmail"
+          bindchange="onChange"
+          bindblur="onBlur"
+        />
+        <q-field
+          label="手机号"
+          required
+          value="{{regPhone}}"
+          placeholder="请输入手机号"
+          mode="number"
+          maxlength="11"
+          error="{{errors.regPhone}}"
+          data-field="regPhone"
+          bindchange="onChange"
+          bindblur="onBlur"
+        />
+
+        <view class="pwd-wrap">
+          <q-field
+            label="密码"
+            required
+            value="{{regPassword}}"
+            placeholder="至少 8 位，含字母和数字"
+            mode="{{showPwd ? 'text' : 'password'}}"
+            error="{{errors.regPassword}}"
+            data-field="regPassword"
+            bindchange="onChange"
+            bindblur="onBlur"
+          />
+          <view class="pwd-eye" bindtap="togglePwd">{{showPwd ? '隐藏' : '显示'}}</view>
+        </view>
+
+        <view class="pwd-wrap">
+          <q-field
+            label="确认密码"
+            required
+            value="{{regPassword2}}"
+            placeholder="请再次输入密码"
+            mode="{{showPwd2 ? 'text' : 'password'}}"
+            error="{{errors.regPassword2}}"
+            data-field="regPassword2"
+            bindchange="onChange"
+            bindblur="onBlur"
+          />
+          <view class="pwd-eye" bindtap="togglePwd2">{{showPwd2 ? '隐藏' : '显示'}}</view>
+        </view>
+
+        <view class="agree" bindtap="onAgree">
+          <view class="agree-box {{agreed ? 'agree-box--on' : ''}}">
+            <view wx:if="{{agreed}}" class="agree-tick"></view>
+          </view>
+          <text class="agree-text">我已阅读并同意</text>
+          <text class="agree-link" catchtap="onProtocol">《用户协议》</text>
+        </view>
+
+        <view
+          class="btn btn-primary btn-block {{(!agreed || loading) ? 'btn-disabled' : ''}}"
+          bindtap="onRegister"
+          hover-class="btn-hover"
+        >
+          {{loading ? '注册中...' : '注 册'}}
+        </view>
+
+        <view class="login-foot">
+          <text class="c-tertiary">已有账号？</text>
+          <text class="c-link" data-tab="login" bindtap="onSwitchTab">去登录</text>
+        </view>
+      </block>
+
+      <!-- ==================== 微信绑定表单 ==================== -->
+      <block wx:else>
+        <view class="bind-tip">
+          <view class="bind-title">首次使用，请绑定已有账号</view>
+          <view class="bind-desc">绑定后即可用微信一键登录，账号数据保持不变。</view>
+        </view>
+
+        <q-field
+          label="账号"
+          required
+          value="{{account}}"
+          placeholder="用户名 / 邮箱 / 手机号"
+          error="{{errors.account}}"
+          data-field="account"
+          bindchange="onChange"
+          bindblur="onBlur"
+        />
+        <view class="pwd-wrap">
+          <q-field
+            label="密码"
+            required
+            value="{{password}}"
+            placeholder="请输入密码"
+            mode="{{showPwd ? 'text' : 'password'}}"
+            error="{{errors.password}}"
+            data-field="password"
+            bindchange="onChange"
+            bindblur="onBlur"
+          />
+          <view class="pwd-eye" bindtap="togglePwd">{{showPwd ? '隐藏' : '显示'}}</view>
+        </view>
+
+        <view class="btn btn-primary btn-block {{loading ? 'btn-disabled' : ''}}" bindtap="onWxBind" hover-class="btn-hover">
+          {{loading ? '绑定中...' : '绑定并登录'}}
+        </view>
+        <view class="btn btn-secondary btn-block bind-cancel" bindtap="onCancelBind" hover-class="btn-hover">
+          返回
+        </view>
+      </block>
+    </view>
+
+    <view class="login-bottom" style="padding-bottom: {{safeBottom + 24}}px;">
+      QTrade · 量化策略管理工具
+    </view>
+  </scroll-view>
+</view>
