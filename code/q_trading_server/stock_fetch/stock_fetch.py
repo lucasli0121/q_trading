@@ -49,9 +49,57 @@ from apscheduler.events import (
 )
 
 
-class StockFetch(FetchBase):
+# ==================== 重分配任务的串行化与后台执行 ====================
+# 三个 distribute_* 都是「读全量股票池/行业 → 清表 → 逐数据代理写回」的长任务。
+# 原先由接口 await 执行：接口长时间不返回，而且函数体全是同步 pymongo，
+# 在 async 端点里会直接阻塞事件循环。这里改为投递到后台线程执行。
+# 同名任务用锁串行化：上一次还没跑完时本次直接跳过，避免并发触发叠加放大。
+logger = logging.getLogger(__name__)
 
-    CACHE_EXPIRE = 60 * 60 * 24
+_DISTRIBUTE_LOCKS: dict[str, threading.Lock] = {}
+_DISTRIBUTE_LOCK_GUARD = threading.Lock()
+
+
+def _get_distribute_lock(name: str) -> threading.Lock:
+    """取（或创建）指定重分配任务的锁"""
+    with _DISTRIBUTE_LOCK_GUARD:
+        lock = _DISTRIBUTE_LOCKS.get(name)
+        if lock is None:
+            lock = threading.Lock()
+            _DISTRIBUTE_LOCKS[name] = lock
+        return lock
+
+
+def submit_distribute_task(name: str, coro_getter) -> bool:
+    """在后台线程执行重分配任务，调用方立即返回
+
+    :param name: 任务名；同名任务之间串行，正在执行时新的触发直接跳过
+    :param coro_getter: 无参可调用对象，在后台线程内调用以创建协程
+    :return: True 表示已投递；False 表示同名任务正在执行，本次跳过
+    """
+    lock = _get_distribute_lock(name)
+    if not lock.acquire(blocking=False):
+        logger.warning("重分配任务 %s 正在执行，本次触发跳过", name)
+        return False
+
+    def _worker() -> None:
+        try:
+            asyncio.run(coro_getter())
+        except Exception:
+            logger.exception("后台重分配任务执行失败: %s", name)
+        finally:
+            lock.release()
+
+    try:
+        threading.Thread(target=_worker, name=f"distribute-{name}", daemon=True).start()
+    except Exception:
+        # 线程创建失败时必须归还锁，否则该任务名下的重分配会被永久跳过
+        lock.release()
+        raise
+    return True
+
+
+class StockFetch(FetchBase):
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -898,7 +946,11 @@ class StockFetch(FetchBase):
 
     async def distribute_pool_stocks_to_data_agents(self, pool_id: str = "") -> bool:
 
-        """查询所有股票池股票并将其平均分配给所有数据代理。"""
+        """查询所有股票池股票并将其平均分配给所有数据代理。
+
+        注意：这是长任务，接口侧请调用 submit_pool_stocks_distribution() 投递到后台，
+        不要在请求里直接 await。
+        """
         self.logger.info("开始将池内股票平均分配给所有数据代理")
         pool_impl = MongoStockPoolImpl()
         if pool_id and len(pool_id) > 0:
@@ -1082,3 +1134,25 @@ class StockFetch(FetchBase):
             assignment_count,
         )
         return True
+
+    def submit_pool_stocks_distribution(self, pool_id: str = "") -> bool:
+        """后台执行股票池股票重分配，接口侧立即返回
+
+        :param pool_id: 股票池 ID，为空表示全量重分配
+        :return: True 已投递；False 同名任务正在执行，本次跳过
+        """
+        return submit_distribute_task(
+            "pool_stocks", lambda: self.distribute_pool_stocks_to_data_agents(pool_id)
+        )
+
+    def submit_industry_stocks_distribution(self) -> bool:
+        """后台执行热门行业股票重分配，接口侧立即返回"""
+        return submit_distribute_task(
+            "industry_stocks", self.distribute_industry_stocks_to_data_agents
+        )
+
+    def submit_user_strategy_distribution(self) -> bool:
+        """后台执行用户策略重分配，接口侧立即返回"""
+        return submit_distribute_task(
+            "user_strategy", self.distribute_user_strategy_to_workflow
+        )

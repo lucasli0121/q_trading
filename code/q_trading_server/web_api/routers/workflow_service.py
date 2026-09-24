@@ -47,7 +47,7 @@ class WorkflowServiceItem(BaseModel):
 
 
 @router.post("/create", response_model=ApiResponse[WorkflowServiceItem])
-async def create_workflow_service(
+def create_workflow_service(
     req: WorkflowServiceCreateRequest,
     user_id: str = Depends(require_admin),
 ):
@@ -66,7 +66,7 @@ async def create_workflow_service(
     ok, record_id = impl.add_workflow_service(data)
     if not ok or not record_id:
         raise HTTPException(status_code=500, detail="创建失败")
-    await AppContext().stock_fetch.distribute_user_strategy_to_workflow()
+    AppContext().stock_fetch.submit_user_strategy_distribution()
     return ApiResponse(
         data=WorkflowServiceItem(
             id=record_id,
@@ -80,7 +80,7 @@ async def create_workflow_service(
 
 
 @router.get("/list", response_model=ApiResponse[list[WorkflowServiceItem]])
-async def list_workflow_services(
+def list_workflow_services(
     service_name: str = Query(default="", description="服务名称（可选）"),
     is_online: int | None = Query(default=None, description="是否在线: 1=在线, 0=离线（可选）"),
     skip: int = Query(default=0, description="分页跳过条数"),
@@ -111,7 +111,7 @@ async def list_workflow_services(
 
 
 @router.get("/{id}", response_model=ApiResponse[WorkflowServiceItem])
-async def get_workflow_service(
+def get_workflow_service(
     id: str,
     user_id: str = Depends(require_admin),
 ):
@@ -133,7 +133,7 @@ async def get_workflow_service(
 
 
 @router.put("/{id}", response_model=ApiResponse[WorkflowServiceItem])
-async def update_workflow_service(
+def update_workflow_service(
     id: str,
     req: WorkflowServiceUpdateRequest,
     user_id: str = Depends(require_admin),
@@ -163,7 +163,7 @@ async def update_workflow_service(
     if not res or not records:
         raise HTTPException(status_code=404, detail="记录不存在")
     record = records[0]
-    await AppContext().stock_fetch.distribute_user_strategy_to_workflow()
+    AppContext().stock_fetch.submit_user_strategy_distribution()
     return ApiResponse(
         data=WorkflowServiceItem(
             id=str(record.get("_id", "")),
@@ -177,7 +177,7 @@ async def update_workflow_service(
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_workflow_service(
+def delete_workflow_service(
     id: str,
     user_id: str = Depends(require_admin),
 ):

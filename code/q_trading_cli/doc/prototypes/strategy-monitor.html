@@ -101,7 +101,7 @@
             <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
                 <iconify-icon icon="lucide:trending-up"></iconify-icon>
             </div>
-            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+            <span class="text-xl font-bold text-gray-100">QTrade</span>
         </div>
         <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
             <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="home.html">
@@ -161,10 +161,20 @@
         </header>
         <!-- Page Body -->
         <div class="p-8 space-y-8">
-            <!-- Active Strategy Cards -->
-            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <!-- Active Strategy Cards
+                 注意：这里与最初设计稿有以下差异，均已在实现中落地，设计基准同步为此形态，
+                 避免后续误判为"实现走样"：
+                   1. 排列方式：由 2 列网格（grid xl:grid-cols-2）改为**横向排列 + 左右滚动**
+                      （每张卡片定宽 440px，不随容器伸缩）；
+                   2. 操作按钮：由「暂停 / 终止」两个补齐为「启动 / 暂停 / 停止」三个，
+                      并按策略状态决定各自可用性（不可用置灰 + cursor-not-allowed）；
+                   3. 颜色：原稿的盈亏与买卖方向用的是欧美惯例（盈利绿 / 买入绿），
+                      与项目既定规则 **A 股惯例（涨、买入 = 红；跌、卖出 = 绿）** 冲突，
+                      这里已统一为 A 股惯例（见《页面操作文档》4.1 节）。
+                      注意「已执行」这类状态色仍为绿，属于状态语义，不随涨跌规则变化。 -->
+            <div class="flex flex-nowrap gap-6 overflow-x-auto pb-2">
                 <!-- Card 1 -->
-                <div class="bg-[#1e293b] border border-[#334155] rounded-xl shadow-sm p-6">
+                <div class="shrink-0 w-[440px] bg-[#1e293b] border border-[#334155] rounded-xl shadow-sm p-6">
                     <div class="flex justify-between items-start mb-6">
                         <div class="flex items-center gap-4">
                             <div class="w-12 h-12 bg-blue-900/40 rounded-lg flex items-center justify-center text-blue-400">
@@ -176,8 +186,9 @@
                             </div>
                         </div>
                         <div class="flex gap-2">
+                            <button class="p-2 bg-[#111827] rounded-lg text-gray-600 cursor-not-allowed" title="启动（运行中）" disabled><iconify-icon icon="lucide:play"></iconify-icon></button>
                             <button class="p-2 text-gray-400 hover:text-orange-400 bg-[#111827] rounded-lg" title="暂停"><iconify-icon icon="lucide:pause"></iconify-icon></button>
-                            <button class="p-2 text-gray-400 hover:text-red-400 bg-[#111827] rounded-lg" title="终止"><iconify-icon icon="lucide:square"></iconify-icon></button>
+                            <button class="p-2 text-gray-400 hover:text-red-400 bg-[#111827] rounded-lg" title="停止"><iconify-icon icon="lucide:square"></iconify-icon></button>
                         </div>
                     </div>
                     <div class="grid grid-cols-3 gap-4 border-t border-b border-[#334155] py-4 mb-4">
@@ -190,8 +201,22 @@
                             <p class="text-lg font-bold text-gray-100">2 只</p>
                         </div>
                         <div class="text-center">
+                            <!-- 浮动盈亏（实现见 pages/strategy_monitor.py::_unrealized_profit
+                                 与 _fetch_all 里的合并处）
+                                 口径 = 已实现 + 未实现（需求方 2026-09-23 澄清）：
+                                   · 已实现 = 最新执行记录的 current_profit（与
+                                     user_strategy.total_profit 同义，后端卖出时同步过去）。
+                                     取执行记录而非会话缓存：后者只在进页时刷新一次，
+                                     常驻本页期间会一直冻结。
+                                   · 未实现 = Σ(实时价 − 成本价) × 持仓数量，现算。
+                                     不用持仓里的 profit_rate/profit_amount（成交时点值）。
+                                 任一持仓缺实时价 ⇒ 整卡 '--'（不用剩余持仓凑数，
+                                 也不单显示已实现段）；从未成交 ⇒ '--'；
+                                 已清仓 ⇒ 就是已实现段。
+                                 注：本原型下方 -¥840 用绿色是欧美惯例残留，
+                                     实现按 A 股惯例（跌/亏 = 绿、涨/盈 = 红）取色。 -->
                             <p class="text-[10px] uppercase font-bold text-gray-500">浮动盈亏</p>
-                            <p class="text-lg font-bold text-green-400">+¥4,520</p>
+                            <p class="text-lg font-bold text-red-400">+¥4,520</p>
                         </div>
                     </div>
                     <div class="flex justify-between items-center text-xs">
@@ -200,7 +225,7 @@
                     </div>
                 </div>
                 <!-- Card 2 -->
-                <div class="bg-[#1e293b] border border-[#334155] rounded-xl shadow-sm p-6">
+                <div class="shrink-0 w-[440px] bg-[#1e293b] border border-[#334155] rounded-xl shadow-sm p-6">
                     <div class="flex justify-between items-start mb-6">
                         <div class="flex items-center gap-4">
                             <div class="w-12 h-12 bg-purple-900/40 rounded-lg flex items-center justify-center text-purple-400">
@@ -212,8 +237,9 @@
                             </div>
                         </div>
                         <div class="flex gap-2">
-                            <button class="p-2 text-gray-400 hover:text-orange-400 bg-[#111827] rounded-lg"><iconify-icon icon="lucide:pause"></iconify-icon></button>
-                            <button class="p-2 text-gray-400 hover:text-red-400 bg-[#111827] rounded-lg"><iconify-icon icon="lucide:square"></iconify-icon></button>
+                            <button class="p-2 bg-[#111827] rounded-lg text-gray-600 cursor-not-allowed" title="启动（运行中）" disabled><iconify-icon icon="lucide:play"></iconify-icon></button>
+                            <button class="p-2 text-gray-400 hover:text-orange-400 bg-[#111827] rounded-lg" title="暂停"><iconify-icon icon="lucide:pause"></iconify-icon></button>
+                            <button class="p-2 text-gray-400 hover:text-red-400 bg-[#111827] rounded-lg" title="停止"><iconify-icon icon="lucide:square"></iconify-icon></button>
                         </div>
                     </div>
                     <div class="grid grid-cols-3 gap-4 border-t border-b border-[#334155] py-4 mb-4">
@@ -227,23 +253,29 @@
                         </div>
                         <div class="text-center">
                             <p class="text-[10px] uppercase font-bold text-gray-500">浮动盈亏</p>
-                            <p class="text-lg font-bold text-red-400">-¥840</p>
+                            <p class="text-lg font-bold text-green-400">-¥840</p>
                         </div>
                     </div>
                     <div class="flex justify-between items-center text-xs">
                         <span class="text-gray-500">最新信号: <span class="text-gray-200 font-medium">买入 600030 (10:15:22)</span></span>
-                        <a class="text-blue-400 hover:underline" href="#">详情回测 &gt;</a>
+                        <a class="text-blue-400 hover:underline" href="strategy-backtest.html">详情回测 &gt;</a>
                     </div>
                 </div>
             </div>
             <!-- Signal Logs -->
+            <!-- ⚠ 实现与本原型的差异（以实现为准，此处只记录，勿按原型回改）：
+                 实现为 7 列：时间 / 策略 / 股票代码 / 信号类型 / 成交价格 / 盈亏率 / 原因；
+                 原型是 6 列（末列是「已执行」状态，实现把它换成了盈亏率与原因）。
+                 2026-09-23 需求方调整：去掉「盈亏额」列；「股票代码」列改成
+                 代码在上、股票名称在下（原型是一行内 000001 平安银行）；
+                 「策略」列显示用户策略名称 user_strategy.name（同模板多实例不串名）。 -->
             <div class="bg-[#1e293b] rounded-xl border border-[#334155] shadow-sm overflow-hidden flex flex-col">
                 <div class="px-6 py-4 border-b border-[#334155] flex items-center justify-between">
                     <h3 class="text-lg font-bold text-gray-100">实时信号日志</h3>
                     <div class="flex gap-2">
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-900/40 text-blue-400">全部 (24)</span>
-                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900/40 text-red-400">卖出 (8)</span>
-                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900/40 text-green-400">买入 (16)</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900/40 text-green-400">卖出 (8)</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-900/40 text-red-400">买入 (16)</span>
                     </div>
                 </div>
                 <div class="overflow-x-auto">
@@ -262,7 +294,7 @@
                             <tr class="log-row text-sm">
                                 <td class="px-6 py-4 text-gray-400">2026-07-10 14:35:01</td>
                                 <td class="px-6 py-4 font-medium text-gray-200">均线金叉策略 A</td>
-                                <td class="px-6 py-4 text-red-400 font-bold uppercase">卖出 (SELL)</td>
+                                <td class="px-6 py-4 text-green-400 font-bold uppercase">卖出 (SELL)</td>
                                 <td class="px-6 py-4 text-gray-300">000001 平安银行</td>
                                 <td class="px-6 py-4 text-gray-300">¥12.45</td>
                                 <td class="px-6 py-4 text-green-400">已执行</td>
@@ -270,7 +302,7 @@
                             <tr class="log-row text-sm">
                                 <td class="px-6 py-4 text-gray-400">2026-07-10 11:20:15</td>
                                 <td class="px-6 py-4 font-medium text-gray-200">均线金叉策略 A</td>
-                                <td class="px-6 py-4 text-green-400 font-bold uppercase">买入 (BUY)</td>
+                                <td class="px-6 py-4 text-red-400 font-bold uppercase">买入 (BUY)</td>
                                 <td class="px-6 py-4 text-gray-300">600519 贵州茅台</td>
                                 <td class="px-6 py-4 text-gray-300">¥1,645.00</td>
                                 <td class="px-6 py-4 text-green-400">已执行</td>
@@ -278,7 +310,7 @@
                             <tr class="log-row text-sm">
                                 <td class="px-6 py-4 text-gray-400">2026-07-10 10:15:22</td>
                                 <td class="px-6 py-4 font-medium text-gray-200">小盘绩优成长股</td>
-                                <td class="px-6 py-4 text-green-400 font-bold uppercase">买入 (BUY)</td>
+                                <td class="px-6 py-4 text-red-400 font-bold uppercase">买入 (BUY)</td>
                                 <td class="px-6 py-4 text-gray-300">600030 中信证券</td>
                                 <td class="px-6 py-4 text-gray-300">¥21.80</td>
                                 <td class="px-6 py-4 text-green-400">已执行</td>
@@ -294,7 +326,7 @@
                             <tr class="log-row text-sm">
                                 <td class="px-6 py-4 text-gray-400">2026-07-10 09:30:45</td>
                                 <td class="px-6 py-4 font-medium text-gray-200">多因子策略-核心</td>
-                                <td class="px-6 py-4 text-red-400 font-bold uppercase">卖出 (SELL)</td>
+                                <td class="px-6 py-4 text-green-400 font-bold uppercase">卖出 (SELL)</td>
                                 <td class="px-6 py-4 text-gray-300">002594 比亚迪</td>
                                 <td class="px-6 py-4 text-gray-300">¥245.10</td>
                                 <td class="px-6 py-4 text-yellow-400 font-medium">执行中...</td>

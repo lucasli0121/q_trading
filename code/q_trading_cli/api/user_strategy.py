@@ -29,6 +29,7 @@ class UserStrategyApi:
     - get_latest_execution: 查询最近一次策略执行结果
     - delete_execution: 删除策略执行结果
     - list_executions: 查询用户所有策略执行结果
+    - list_executions_by_range: 按 update_time 时间范围查询策略执行结果
     - save_runlog: 保存运行记录
     - get_runlog: 查看运行记录
     """
@@ -239,11 +240,52 @@ class UserStrategyApi:
         return str(result)
 
     def list_executions(self) -> list[dict[str, Any]]:
-        """查询用户所有策略的执行结果列表。
+        """查询用户所有策略的执行结果列表（全量，无分页）。
+
+        需要「每个策略最新一条」或「全局最后数据点」时必须用本方法：
+        按时间范围查询（list_executions_by_range）会漏掉窗口外长期未更新的策略。
 
         :return: 策略执行结果列表
         """
         result: Any = self._client.get("/api/user_strategy/executions")
+        return list(result) if result else []
+
+    def list_executions_by_range(
+        self,
+        start_time: str = "",
+        end_time: str = "",
+        target_user_id: str = "",
+        skip: int = 0,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """按 update_time 时间范围查询策略执行结果（服务端过滤）。
+
+        时间边界都是**闭区间**，按字符串比较（库中 update_time 为
+        "%Y-%m-%d %H:%M:%S"，字典序与时间序一致）；只传日期时后端把上界
+        补成当天 23:59:59。格式非法返回 400。
+
+        ⚠ 两个易错点：
+        1. 接口**不支持按 user_strategy_id 过滤**，只支持时间 + 用户。
+           要取单个策略的记录，取回后在前端按 user_strategy_id 过滤。
+        2. limit 后端默认只有 500、上限 10000。画一年曲线时多策略每天多条
+           记录很容易超过 500，被静默截断（曲线少了后半段却不报错），
+           所以这里默认取满 10000。
+
+        :param start_time: 起始时间（含），YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS，空表示不限
+        :param end_time: 结束时间（含），格式同上，空表示不限
+        :param target_user_id: 目标用户 ID，仅管理员可指定
+        :param skip: 分页偏移
+        :param limit: 分页大小（后端限 1~10000）
+        :return: 策略执行结果列表
+        """
+        params: dict[str, Any] = {"skip": skip, "limit": limit}
+        if start_time:
+            params["start_time"] = start_time
+        if end_time:
+            params["end_time"] = end_time
+        if target_user_id:
+            params["target_user_id"] = target_user_id
+        result: Any = self._client.get("/api/user_strategy/executions/range", params)
         return list(result) if result else []
 
     # ---- 运行记录 ----

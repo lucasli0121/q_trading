@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/user", tags=["用户管理"])
 
 
 @router.post("/register", response_model=ApiResponse[str])
-async def register(req: RegisterRequest):
+def register(req: RegisterRequest):
     """用户注册（密码使用 SHA256 带盐加密存储）"""
     impl = MongoUserImpl()
 
@@ -63,7 +63,7 @@ async def register(req: RegisterRequest):
 
 
 @router.post("/login", response_model=ApiResponse[dict])
-async def login(req: LoginRequest):
+def login(req: LoginRequest):
     """用户登录"""
     ok, user_id, token, role = verify_login(req.account, req.password)
     if not ok:
@@ -77,7 +77,7 @@ async def login(req: LoginRequest):
 
 
 @router.post("/logout", response_model=ApiResponse[str])
-async def logout(
+def logout(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     user_id: str = Depends(get_current_user),
 ):
@@ -97,7 +97,7 @@ async def logout(
 
 
 @router.post("/online", response_model=ApiResponse[str])
-async def set_online_status(
+def set_online_status(
     req: SetOnlineRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -122,7 +122,7 @@ class DeleteAccountRequest(BaseModel):
 
 
 @router.delete("/account", response_model=ApiResponse[str])
-async def delete_account(
+def delete_account(
     req: DeleteAccountRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -137,12 +137,10 @@ async def delete_account(
         raise HTTPException(status_code=401, detail="密码错误")
     account = user.get("account", "")
 
-    # 级联删除：股票池
+    # 级联删除：股票池（含池内股票关联的清理）
     pool_impl = MongoStockPoolImpl()
-    res, pools = pool_impl.query_stock_pools_by_user(user_id)
-    if res and pools:
-        for pool in pools:
-            pool_impl.delete_stock_pool(pool.get("name", ""))
+    if not pool_impl.delete_stock_pools_by_user(user_id):
+        raise HTTPException(status_code=500, detail="清理用户股票池失败")
 
     # 级联删除：用户策略关联
     user_strategy_impl = MongoUserStrategyImpl()

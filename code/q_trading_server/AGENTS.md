@@ -8,7 +8,7 @@
 # AI Coding Agent Instructions for q_trading_server
 
 ## Purpose
-This repository implements a Chinese A-share stock data proxy service with unified storage and web API access. The main responsibilities are data fetching, caching, and persistence.
+This repository implements a Chinese A-share stock data proxy service with unified storage and web API access. The main responsibilities are data fetching, persistence, and web API access.
 
 ## Key Concepts
 - Entry point: `main.py`
@@ -35,8 +35,7 @@ This repository implements a Chinese A-share stock data proxy service with unifi
 - Keep business logic out of the web entrypoint; focus API logic in `web_api/api_run.py` and service orchestration in `stock_fetch/stock_fetch.py`.
 - Prefer `AppContext()` instead of creating multiple DB or scheduler instances.
 - DAO objects should support `from_db()` deserialization and `to_db()` serialization.
-- Historical and financial data flows should use Redis caching when data comes from Akshare or TickFlow.
-- For real-time and cached data, follow the existing pattern: check Redis first, then fallback to Akshare, then TickFlow.
+- K-line / historical / financial data does **not** go through Redis. Read it straight from MongoDB and write it straight to MongoDB; there is no cache-aside layer on this path.
 
 ## Important Notes
 - `cfg/stock.cfg` contains credentials and API tokens; do not hardcode secrets in new source files.
@@ -46,7 +45,8 @@ This repository implements a Chinese A-share stock data proxy service with unifi
 ## When Changing Code
 - Preserve existing data model field names unless there is a strong reason to rename them.
 - When modifying `from_db()` logic, ensure all fields are assigned and missing values are handled safely.
-- Maintain the repository’s current data flow: Akshare first, TickFlow fallback, Redis cache-aside.
+- Maintain the repository’s current data flow: Akshare first, TickFlow fallback, then persist to MongoDB.
+- Do **not** add Redis caching to data read paths. `db/redis` is only for auth tokens / login state, not for market data.
 - Keep web API route definitions and startup behavior aligned with `main.py` and `web_api/api_run.py`.
 
 ## Useful Files

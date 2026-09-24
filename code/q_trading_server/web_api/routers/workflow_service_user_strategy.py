@@ -39,7 +39,7 @@ class WorkflowServiceUserStrategyItem(BaseModel):
 
 
 @router.post("/create", response_model=ApiResponse[WorkflowServiceUserStrategyItem])
-async def create_workflow_service_user_strategy(
+def create_workflow_service_user_strategy(
     req: WorkflowServiceUserStrategyCreateRequest,
     user_id: str = Depends(require_admin),
 ):
@@ -59,7 +59,7 @@ async def create_workflow_service_user_strategy(
 
 
 @router.get("/list", response_model=ApiResponse[list[WorkflowServiceUserStrategyItem]])
-async def list_workflow_service_user_strategies(
+def list_workflow_service_user_strategies(
     service_name: str = Query(default="", description="服务名称（可选）"),
     user_id: str = Depends(require_admin),
 ):
@@ -80,7 +80,7 @@ async def list_workflow_service_user_strategies(
 
 
 @router.get("/service/{service_name}", response_model=ApiResponse[list[WorkflowServiceUserStrategyItem]])
-async def list_workflow_service_user_strategies_by_service(
+def list_workflow_service_user_strategies_by_service(
     service_name: str,
     user_id: str = Depends(require_admin),
 ):
@@ -105,7 +105,7 @@ async def list_workflow_service_user_strategies_by_service(
 
 
 @router.get("/{id}", response_model=ApiResponse[WorkflowServiceUserStrategyItem])
-async def get_workflow_service_user_strategy(
+def get_workflow_service_user_strategy(
     id: str,
     user_id: str = Depends(require_admin),
 ):
@@ -125,7 +125,7 @@ async def get_workflow_service_user_strategy(
 
 
 @router.put("/{id}", response_model=ApiResponse[WorkflowServiceUserStrategyItem])
-async def update_workflow_service_user_strategy(
+def update_workflow_service_user_strategy(
     id: str,
     req: WorkflowServiceUserStrategyUpdateRequest,
     user_id: str = Depends(require_admin),
@@ -157,7 +157,7 @@ async def update_workflow_service_user_strategy(
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_workflow_service_user_strategy(
+def delete_workflow_service_user_strategy(
     id: str,
     user_id: str = Depends(require_admin),
 ):

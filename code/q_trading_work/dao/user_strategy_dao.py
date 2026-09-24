@@ -28,6 +28,7 @@ class UserStrategyDao:
     """用户策略关联数据对象，通过 strategy_id 关联 StrategyDao"""
 
     id: str
+    name: str # 自定义名称
     strategy_id: str  # 关联策略 ID（StrategyDao._id）
     status: str  # 策略状态: running / stopped / paused
     user_id: str  # 所属用户 ID（关联 UserDao.id）
@@ -36,11 +37,13 @@ class UserStrategyDao:
     total_profit: float  # 总收益金额
     max_stock_count: int  # 最大持仓数量
     strategy_params: dict  # 策略运行参数
+    update_time: str # 更新状态的时间
     create_time: str  # 创建时间
 
     def __init__(
         self,
         id: str = "",
+        name: str = "",
         strategy_id: str = "",
         status: str = StrategyStatus.STOPPED.value,
         user_id: str = "",
@@ -49,20 +52,24 @@ class UserStrategyDao:
         total_profit: float = 0.0,
         max_stock_count: int = 0,
         strategy_params: dict = {},
+        update_time: str = "",
         create_time: str = "",
     ) -> None:
         """初始化用户策略关联对象
 
         :param id: 记录 ID（MongoDB _id）
+        :param name: 个人策略自定义名称
         :param strategy_id: 关联的全局策略 ID
         :param status: 策略状态
         :param user_id: 所属用户 ID
         :param pool_id: 关联股票池 ID
         :param initial_amount: 初始金额
         :param strategy_params: 策略运行参数
+        :param update_time: 更新状态时间
         :param create_time: 创建时间
         """
         self.id = id
+        self.name = name
         self.strategy_id = strategy_id
         self.status = status
         self.user_id = user_id
@@ -71,6 +78,7 @@ class UserStrategyDao:
         self.total_profit = total_profit
         self.max_stock_count = max_stock_count
         self.strategy_params = strategy_params
+        self.update_time = update_time
         self.create_time = create_time
 
     def from_db(self, data: dict[str, Any]) -> None:
@@ -79,6 +87,7 @@ class UserStrategyDao:
         :param data: MongoDB 文档字典
         """
         self.id = str(data.get("_id", ""))
+        self.name = data.get("name", "")
         self.strategy_id = data.get("strategy_id", "")
         self.status = data.get("status", StrategyStatus.STOPPED.value)
         self.user_id = data.get("user_id", "")
@@ -87,6 +96,7 @@ class UserStrategyDao:
         self.total_profit = float(data.get("total_profit", 0.0) or 0.0)
         self.max_stock_count = int(data.get("max_stock_count", 0) or 0)
         self.strategy_params = data.get("strategy_params", {})
+        self.update_time = str(data.get("update_time", ""))
         self.create_time = str(data.get("create_time", ""))
 
     def to_db(self) -> dict[str, Any]:
@@ -95,6 +105,7 @@ class UserStrategyDao:
         :return: 数据库文档字典
         """
         return {
+            "name": self.name,
             "strategy_id": self.strategy_id,
             "status": self.status,
             "user_id": self.user_id,
@@ -103,5 +114,6 @@ class UserStrategyDao:
             "total_profit": self.total_profit,
             "max_stock_count": self.max_stock_count,
             "strategy_params": self.strategy_params,
+            "update_time": self.update_time,
             "create_time": self.create_time,
         }

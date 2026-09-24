@@ -37,6 +37,7 @@ class UserStrategyDao:
     total_profit: float  # 总收益金额
     max_stock_count: int  # 最大持仓数量
     strategy_params: dict  # 策略运行参数
+    update_time: str # 更新状态的时间
     create_time: str  # 创建时间
 
     def __init__(
@@ -51,6 +52,7 @@ class UserStrategyDao:
         total_profit: float = 0.0,
         max_stock_count: int = 0,
         strategy_params: dict = {},
+        update_time: str = "",
         create_time: str = "",
     ) -> None:
         """初始化用户策略关联对象
@@ -63,6 +65,7 @@ class UserStrategyDao:
         :param pool_id: 关联股票池 ID
         :param initial_amount: 初始金额
         :param strategy_params: 策略运行参数
+        :param update_time: 更新状态时间
         :param create_time: 创建时间
         """
         self.id = id
@@ -75,6 +78,7 @@ class UserStrategyDao:
         self.total_profit = total_profit
         self.max_stock_count = max_stock_count
         self.strategy_params = strategy_params
+        self.update_time = update_time
         self.create_time = create_time
 
     def from_db(self, data: dict[str, Any]) -> None:
@@ -92,6 +96,7 @@ class UserStrategyDao:
         self.total_profit = float(data.get("total_profit", 0.0) or 0.0)
         self.max_stock_count = int(data.get("max_stock_count", 0) or 0)
         self.strategy_params = data.get("strategy_params", {})
+        self.update_time = str(data.get("update_time", ""))
         self.create_time = str(data.get("create_time", ""))
 
     def to_db(self) -> dict[str, Any]:
@@ -109,5 +114,6 @@ class UserStrategyDao:
             "total_profit": self.total_profit,
             "max_stock_count": self.max_stock_count,
             "strategy_params": self.strategy_params,
+            "update_time": self.update_time,
             "create_time": self.create_time,
         }

@@ -4,17 +4,19 @@ Author: liguoqiang
 Date: 2026-09-07
 Description: 策略选股页面 — 顶部 Tab 为用户策略，点击 Tab 查询该策略当日选股内容。
   数据来源：
-  - Tab 列表：user_strategy_api.list() 拿用户策略关联，每条取自身 ID
+  - Tab 列表：UserStrategyManager 会话缓存（user_strategy 记录），每条取自身 ID
     （_id/id）作为 user_strategy_id；显示名称优先用 user_strategy.name
-    （自定义名称），未设置时回退策略模板名。
+    （自定义名称），未设置时回退策略模板名（走 strategy_cache 进程级缓存）。
   - 选股行情：strategy_select_stock_api.list(user_strategy_id=xxx, 当天) 返回
     StrategySelectStockWithRtItem，已自带实时行情字段（name/price/
-    change_percent/change_amount/turnover/high/low/open/preclose 等）；
+    change_percent/change_amount/turnover/score 等）；后端默认按 score 正向
+    排序并已做同 code 去重，故前端不再自行去重/排序，仅展示分数（保留 2 位小数）。
     仅动态市盈率（ttm_pe）与利润增长率（net_profit_growth_rate）需 finance_api 补充。
   注意：选股结果以 user_strategy_id（用户策略实例）关联，不再使用 strategy_id
   （策略模板 ID）。
-  颜色遵循 theme 新约定：positive=#f87171 红=涨，negative=#34d399 绿=跌
+  颜色遵循 theme 新约定：positive=var(--qs-positive) 红=涨，negative=var(--qs-negative) 绿=跌
   （中国股市红涨绿跌）。切换 Tab/刷新均有加载进度显示，401 静默等待跳转登录。
+  首屏不阻塞：页面渲染完成后用一次性定时器异步拉取（见页面末尾）。
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ from nicegui import ui
 from api.client import UnauthorizedError
 from app_context import AppContext
 from components import custom_tabs
+from core.concurrency import run_blocking
 from core.user_strategy_manager import UserStrategyManager
 
 logger = logging.getLogger(__name__)
@@ -61,16 +64,16 @@ def _today_range() -> tuple[str, str]:
 def show_strategy_select_page() -> None:
     """策略选股页面入口 — Tab 显示用户策略，点击查询该策略当日选股内容。"""
     custom_tabs.load_page_tab_css()
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    border_color: str = current_theme.get("widget_border_color", "#334155")
+    theme_manager = AppContext().theme_manager
+    bg_color: str = theme_manager.var("page")
+    border_color: str = theme_manager.var("border")
     # theme 新约定：positive=红=涨，negative=绿=跌（中国股市红涨绿跌）
-    positive_color: str = current_theme.get("positive", "#f87171")   # 涨 红
-    negative_color: str = current_theme.get("negative", "#34d399")   # 跌 绿
-    card_bg: str = "#1e293b"
-    input_bg: str = "#111827"
-    muted: str = "#9ca3af"
-    normal: str = "#e5e7eb"
+    positive_color: str = theme_manager.var("positive")   # 涨 红
+    negative_color: str = theme_manager.var("negative")   # 跌 绿
+    card_bg: str = "var(--qs-surface)"
+    input_bg: str = "var(--qs-surface-alt)"
+    muted: str = "var(--qs-muted)"
+    normal: str = "var(--qs-text)"
 
     # ---- 1. 查询用户策略列表，作为 Tab 来源 ----
     user_strategies: list[dict[str, Any]] = []
@@ -80,7 +83,7 @@ def show_strategy_select_page() -> None:
     name_cache: dict[str, str] = {}
 
     def _get_template_name(strategy_id: str) -> str:
-        """获取策略模板名称（带缓存，失败回退 ID）。
+        """获取策略模板名称（走进程级缓存 strategy_cache，失败回退 ID）。
 
         :param strategy_id: 策略模板 ID
         :return: 策略模板名称
@@ -89,16 +92,9 @@ def show_strategy_select_page() -> None:
             return "未命名策略"
         if strategy_id in name_cache:
             return name_cache[strategy_id]
-        name: str = strategy_id
-        try:
-            tpl: dict[str, Any] = AppContext().strategy_api.get_by_id(strategy_id)
-            n: str = str(tpl.get("name", "") or "")
-            if n:
-                name = n
-        except UnauthorizedError:
-            logger.debug("查询策略名称未授权（401）：%s，等待跳转登录", strategy_id)
-        except Exception:
-            logger.warning("查询策略名称失败: %s", strategy_id, exc_info=True)
+        name: str = str(AppContext().strategy_cache.get(strategy_id).get("name", "") or "")
+        if not name:
+            name = strategy_id
         name_cache[strategy_id] = name
         return name
 
@@ -132,7 +128,9 @@ def show_strategy_select_page() -> None:
 
     state: dict[str, Any] = {
         "quotes": [], "active_tab": active_tab,
-        "active_sid": active_us_id, "loading": False,
+        "active_sid": active_us_id,
+        # 有首个策略时先置为加载中，首屏由异步任务填充（见页面末尾）
+        "loading": bool(active_us_id),
     }
 
     # 行情缓存：user_strategy_id -> list[dict]，避免重复请求
@@ -171,22 +169,29 @@ def show_strategy_select_page() -> None:
             return []
         if not data:
             return []
-        # 同 code 去重保序（仅保留首条）
-        uniq: list[dict[str, Any]] = []
-        codes_seen: set[str] = set()
-        for rec in data:
+        rows: list[dict[str, Any]] = list(data)
+        # 说明（CR-12/CR-13）：后端已按 score 正向排序并对同 code 去重，
+        # 前端不再自行"保留首条"去重——那会让展示的 price/rt_update_time
+        # 依赖后端返回顺序而在刷新之间抖动。排序同样交给后端，前端只展示分数。
+        #
+        # 代码列表按返回顺序去重（仅供批量补充估值/利润使用，
+        # 保证请求参数确定可复现；CR-14：原实现用 set 拼接，顺序不确定）
+        codes_list: list[str] = []
+        seen_codes: set[str] = set()
+        for rec in rows:
             c: str = str(rec.get("code", "") or "")
-            if c and c not in codes_seen:
-                codes_seen.add(c)
-                uniq.append(rec)
+            if c and c not in seen_codes:
+                seen_codes.add(c)
+                codes_list.append(c)
         # 补充估值/利润数据（返回数据未含这两个字段）
-        codes_str: str = ",".join(codes_seen)
+        codes_str: str = ",".join(codes_list)
         if codes_str:
             # 补充估值数据（动态市盈率）
+            # 注：后端 get_valuation 内部按 report_date 排序，参数顺序不影响结果
             try:
                 valuation: dict[str, Any] = AppContext().finance_api.get_valuation(codes=codes_str)
                 if valuation:
-                    for item in uniq:
+                    for item in rows:
                         item_code: str = str(item.get("code", ""))
                         val: dict[str, Any] | None = valuation.get(item_code) if item_code else None
                         if isinstance(val, dict) and not item.get("ttm_pe"):
@@ -199,7 +204,7 @@ def show_strategy_select_page() -> None:
             try:
                 profit: dict[str, Any] = AppContext().finance_api.get_profit(codes=codes_str)
                 if profit:
-                    for item in uniq:
+                    for item in rows:
                         item_code = str(item.get("code", ""))
                         pft: dict[str, Any] | None = profit.get(item_code) if item_code else None
                         if isinstance(pft, dict) and not item.get("net_profit_growth_rate"):
@@ -208,8 +213,8 @@ def show_strategy_select_page() -> None:
                 logger.debug("加载利润数据未授权（401），等待跳转登录")
             except Exception:
                 logger.warning("加载利润数据失败", exc_info=True)
-        quotes_cache[user_strategy_id] = uniq
-        return quotes_cache[user_strategy_id]
+        quotes_cache[user_strategy_id] = rows
+        return rows
 
     async def on_tab_switch(user_strategy_id: str, tab_name: str) -> None:
         """切换策略 Tab 并加载对应选股行情（异步，显示加载进度）。
@@ -223,10 +228,10 @@ def show_strategy_select_page() -> None:
         tab_bar.refresh()
         table_panel.refresh()
         await asyncio.sleep(0)
-        loop = asyncio.get_running_loop()
         # 切换 Tab 时强制重新拉取（行情可能已更新）
         quotes_cache.pop(user_strategy_id, None)
-        state["quotes"] = await loop.run_in_executor(None, _load_quotes, user_strategy_id)
+        # run_blocking 会继承请求上下文，保证线程池内仍能取到本会话 token
+        state["quotes"] = await run_blocking(_load_quotes, user_strategy_id)
         state["loading"] = False
         table_panel.refresh()
 
@@ -238,22 +243,21 @@ def show_strategy_select_page() -> None:
         state["loading"] = True
         table_panel.refresh()
         await asyncio.sleep(0)
-        loop = asyncio.get_running_loop()
         quotes_cache.pop(cur_sid, None)
-        state["quotes"] = await loop.run_in_executor(None, _load_quotes, cur_sid)
+        state["quotes"] = await run_blocking(_load_quotes, cur_sid)
         state["loading"] = False
         table_panel.refresh()
 
-    # 初始加载首个策略行情
-    if active_us_id:
-        state["quotes"] = _load_quotes(active_us_id)
+    # 初始加载首个策略行情：不在此处同步发起 HTTP（会阻塞事件循环、拖慢首屏），
+    # 改为页面渲染完成后用一次性定时器异步加载（CR-15）。
+    # 注意：这里是 async 回调，run_blocking 会继承请求上下文，token 解析正常。
 
     # ---- 顶部栏 ----
     with ui.row().classes("w-full items-center justify-between").style(
         f"height: 64px; padding: 0 32px; background-color: {card_bg}; "
         f"border-bottom: 1px solid {border_color};"
     ):
-        ui.label("策略选股").classes("text-xl font-bold").style("color: #f3f4f6;")
+        ui.label("策略选股").classes("text-xl font-bold").style("color: var(--qs-heading);")
         with ui.row().classes("items-center gap-4"):
             today_str: str = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
             ui.label(f"今日选股 · {today_str}").classes("text-sm").style(f"color: {muted};")
@@ -278,7 +282,7 @@ def show_strategy_select_page() -> None:
                         is_active: bool = (us_id == state["active_sid"])
                         if is_active:
                             ui.label(label).classes("text-sm font-bold").style(
-                                "color: #60a5fa; border-bottom: 2px solid #3b82f6; "
+                                "color: var(--qs-link); border-bottom: 2px solid var(--qs-primary); "
                                 "padding: 12px 24px; cursor: pointer;"
                             ).on("click", lambda _u=us_id, _l=label: on_tab_switch(_u, _l))
                         else:
@@ -302,11 +306,11 @@ def show_strategy_select_page() -> None:
             with ui.card().classes("w-full gap-0 overflow-hidden").style(
                 f"background-color: {card_bg}; border: 1px solid {border_color}; border-radius: 12px;"
             ):
-                # 表头
+                # 表头（选股评分紧随代码/名称，因为后端默认按 score 正向排序）
                 headers: list[tuple[str, str]] = [
-                    ("代码/名称", "left"), ("最新价", "left"), ("涨跌幅", "left"),
-                    ("涨跌额", "left"), ("换手率", "left"), ("动态市盈率", "left"),
-                    ("利润增长率", "left"),
+                    ("代码/名称", "left"), ("选股评分", "left"), ("最新价", "left"),
+                    ("涨跌幅", "left"), ("涨跌额", "left"), ("换手率", "left"),
+                    ("动态市盈率", "left"), ("利润增长率", "left"),
                 ]
                 with ui.row().classes("w-full items-center").style(
                     f"background-color: {input_bg}; border-bottom: 1px solid {border_color}; "
@@ -335,6 +339,8 @@ def show_strategy_select_page() -> None:
                 for q in quotes:
                     code: str = str(q.get("code", ""))
                     name: str = str(q.get("name", ""))
+                    # 选股评分（后端按此字段正向排序，前端仅展示，保留 2 位小数）
+                    score: float = _sf(q.get("score", 0))
                     price: float = _sf(q.get("price", q.get("close", 0)))
                     chg_pct: float = _sf(q.get("change_pct", q.get("change_percent", 0))) * 100
                     chg_amt: float = _sf(q.get("change_amt", q.get("change_amount", price * chg_pct / 100)))
@@ -347,15 +353,16 @@ def show_strategy_select_page() -> None:
                     elif chg_pct < 0:
                         price_color = negative_color  # 跌为绿
                     else:
-                        price_color = "#ffffff"  # 平为白
+                        price_color = "var(--qs-on-accent)"  # 平为白
 
                     with ui.row().classes("w-full items-center").style(
-                        f"padding: 16px 24px; border-bottom: 1px solid {border_color}33;"
+                        "padding: 16px 24px; border-bottom: 1px solid var(--qs-divider);"
                     ):
                         # 代码/名称
                         with ui.column().classes("gap-0").style("flex: 2;"):
                             ui.label(code).classes("font-bold tracking-wider").style(f"color: {normal};")
-                            ui.label(name).classes("text-xs").style("color: #6b7280;")
+                            ui.label(name).classes("text-xs").style("color: var(--qs-faint);")
+                        ui.label(f"{score:.2f}").classes("font-medium").style(f"color: {normal}; flex: 1;")
                         ui.label(f"{price:,.2f}").classes("font-bold").style(f"color: {price_color}; flex: 1;")
                         sign: str = "+" if chg_pct >= 0 else ""
                         ui.label(f"{sign}{chg_pct:.2f}%").classes("font-bold").style(f"color: {price_color}; flex: 1;")
@@ -366,3 +373,15 @@ def show_strategy_select_page() -> None:
                         ui.label(f"{profit_growth:.1f}%").classes("text-sm").style(f"color: {muted}; flex: 1;")
 
         table_panel()
+
+        # ---- 首屏异步加载（CR-15） ----
+        # 页面构建阶段同步发起 3 个 HTTP 会阻塞 asyncio 事件循环、拖慢所有用户；
+        # 这里改为渲染完成后用一次性定时器异步拉取，期间表格显示加载进度。
+        if active_us_id:
+            async def _load_initial() -> None:
+                """异步加载首个 Tab 的选股行情。"""
+                state["quotes"] = await run_blocking(_load_quotes, active_us_id)
+                state["loading"] = False
+                table_panel.refresh()
+
+            ui.timer(0.05, _load_initial, once=True)

@@ -42,7 +42,7 @@ class DataAgentPoolStockItem(BaseModel):
 
 
 @router.post("/create", response_model=ApiResponse[DataAgentPoolStockItem])
-async def create_data_agent_pool_stock(
+def create_data_agent_pool_stock(
     req: DataAgentPoolStockCreateRequest,
     user_id: str = Depends(require_admin),
 ):
@@ -69,7 +69,7 @@ async def create_data_agent_pool_stock(
 
 
 @router.get("/list", response_model=ApiResponse[list[DataAgentPoolStockItem]])
-async def list_data_agent_pool_stocks(
+def list_data_agent_pool_stocks(
     agent_name: str = Query(default="", description="代理名称（可选）"),
     skip: int = Query(default=0, description="分页跳过条数"),
     limit: int = Query(default=0, description="分页限制条数，0 表示不限制"),
@@ -101,7 +101,7 @@ async def list_data_agent_pool_stocks(
 
 
 @router.get("/{id}", response_model=ApiResponse[DataAgentPoolStockItem])
-async def get_data_agent_pool_stock(
+def get_data_agent_pool_stock(
     id: str,
     user_id: str = Depends(require_admin),
 ):
@@ -124,7 +124,7 @@ async def get_data_agent_pool_stock(
 
 
 @router.put("/{id}", response_model=ApiResponse[DataAgentPoolStockItem])
-async def update_data_agent_pool_stock(
+def update_data_agent_pool_stock(
     id: str,
     req: DataAgentPoolStockUpdateRequest,
     user_id: str = Depends(require_admin),
@@ -160,7 +160,7 @@ async def update_data_agent_pool_stock(
 
 
 @router.delete("/agent/{agent_name}", response_model=ApiResponse[str])
-async def delete_data_agent_pool_stocks_by_agent_name(
+def delete_data_agent_pool_stocks_by_agent_name(
     agent_name: str,
     user_id: str = Depends(require_admin),
 ):
@@ -180,7 +180,7 @@ async def delete_data_agent_pool_stocks_by_agent_name(
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_data_agent_pool_stock(
+def delete_data_agent_pool_stock(
     id: str,
     user_id: str = Depends(require_admin),
 ):

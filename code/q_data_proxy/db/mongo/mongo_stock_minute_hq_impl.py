@@ -139,7 +139,7 @@ class MongoStockMinuteHqImpl:
     ) -> tuple[bool, Any | None]:
         """查询指定分钟时间的所有股票分频行情
 
-        用于获取前一分钟所有股票的收盘价，作为当前分钟 preclose 的计算依据。
+        用于按分钟时间回溯某一分钟的全部分频行情记录。
 
         :param minute_time: 分钟时间字符串，格式 "YYYY-MM-DD HH:MM:00"
         :return: 成功返回 True 和记录列表，否则返回 False 和 None

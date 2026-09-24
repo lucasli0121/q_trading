@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from api.system_message import SystemMessageApi
     from api.trade_signal import TradeSignalApi
     from api.user_strategy import UserStrategyApi
+    from core.strategy_cache import StrategyTemplateCache
     from mq.signal_manager import SignalManager
 
 
@@ -142,6 +143,18 @@ class AppContext:
             from api.user_strategy import UserStrategyApi
             self._user_strategy_api = UserStrategyApi(self.api_client)
         return self._user_strategy_api
+
+    @property
+    def strategy_cache(self) -> "StrategyTemplateCache":
+        """获取策略模板缓存实例（懒加载，进程级单例）。
+
+        缓存策略模板（全局公共数据，不区分用户），供页面高频查询复用，
+        避免 strategy_api.get_by_id() 反复请求后端。
+        """
+        if not hasattr(self, '_strategy_cache'):
+            from core.strategy_cache import StrategyTemplateCache
+            self._strategy_cache = StrategyTemplateCache()
+        return self._strategy_cache
 
     @property
     def order_api(self) -> "OrderApi":

@@ -43,7 +43,7 @@ def _verify_ownership(impl: MongoUserFactorImpl, user_factor_id: str, user_id: s
 
 
 @router.post("/create", response_model=ApiResponse[UserFactorItem])
-async def create_user_factor(
+def create_user_factor(
     req: UserFactorCreateRequest, user_id: str = Depends(get_current_user)
 ):
     """创建用户因子关联（同一用户不能重复关联同一因子）"""
@@ -72,7 +72,7 @@ async def create_user_factor(
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_user_factor(
+def delete_user_factor(
     id: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)
 ):
     """删除用户因子关联"""
@@ -86,7 +86,7 @@ async def delete_user_factor(
 
 
 @router.patch("/{id}", response_model=ApiResponse[str])
-async def update_user_factor(
+def update_user_factor(
     id: str,
     req: UserFactorUpdateRequest,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
@@ -107,7 +107,7 @@ async def update_user_factor(
 
 
 @router.get("/list", response_model=ApiResponse[list[UserFactorItem]])
-async def list_user_factors(user_id: str = Depends(get_current_user)):
+def list_user_factors(user_id: str = Depends(get_current_user)):
     """查询当前用户的所有因子关联（需登录）"""
     impl = MongoUserFactorImpl()
     res, records = impl.query_user_factors_by_user(user_id)
@@ -127,7 +127,7 @@ async def list_user_factors(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/all", response_model=ApiResponse[list[UserFactorItem]])
-async def list_all_user_factors(
+def list_all_user_factors(
     skip: int = Query(default=0, description="分页跳过条数"),
     limit: int = Query(default=0, description="分页限制条数，0 表示不限制"),
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
@@ -154,7 +154,7 @@ async def list_all_user_factors(
 
 
 @router.get("/{id}", response_model=ApiResponse[UserFactorItem])
-async def get_user_factor(
+def get_user_factor(
     id: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)
 ):
     """查询单个用户因子详情"""

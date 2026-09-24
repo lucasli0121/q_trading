@@ -7,15 +7,15 @@ Description:
 '''
 # coding="utf8"
 
-from configparser import ConfigParser, NoSectionError
+from configparser import NoSectionError
 import logging
+from utils.config import load_stock_cfg
 
 
 class DbBaseImpl:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        cp = ConfigParser()
-        cp.read("cfg/stock.cfg")
+        cp = load_stock_cfg()
         try:
             self.mongo_host = cp.get("mongo", "host")
             self.mongo_port = cp.get("mongo", "port")

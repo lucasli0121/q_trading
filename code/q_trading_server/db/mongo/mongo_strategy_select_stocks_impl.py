@@ -42,10 +42,18 @@ class MongoStrategySelectStocksImpl:
             else:
                 query["create_time"] = {"$lte": end_time}
 
+    @staticmethod
+    def _normalize_score(data: dict[str, Any]) -> None:
+        """规范化 score 字段（缺失或 None 时补 0.0，统一为 float）
+
+        :param data: 选股数据字典（原地修改）
+        """
+        data["score"] = float(data.get("score", 0.0) or 0.0)
+
     def add_select_stock(self, data: dict[str, Any]) -> tuple[bool, str | None]:
         """添加一条策略选股记录
 
-        :param data: 选股数据字典，需包含 user_strategy_id、code、create_time
+        :param data: 选股数据字典，需包含 user_strategy_id、code、create_time，可选 score
         :return: (ok, record_id_or_None)
         """
         try:
@@ -57,6 +65,7 @@ class MongoStrategySelectStocksImpl:
             if not user_strategy_id or not code:
                 self.logger.error("user_strategy_id or code is empty.")
                 return False, None
+            self._normalize_score(data)
             result = self.strategy_select_stocks_table.insert_one(data)
             return True, str(result.inserted_id)
         except Exception as e:
@@ -66,7 +75,7 @@ class MongoStrategySelectStocksImpl:
     def bulk_add_select_stocks(self, records: list[dict[str, Any]]) -> tuple[bool, list[str]]:
         """批量添加策略选股记录
 
-        :param records: 选股数据字典列表，每条需包含 user_strategy_id、code、create_time
+        :param records: 选股数据字典列表，每条需包含 user_strategy_id、code、create_time，可选 score
         :return: (ok, record_id_list)
         """
         try:
@@ -80,6 +89,7 @@ class MongoStrategySelectStocksImpl:
                 if not data.get("user_strategy_id") or not data.get("code"):
                     self.logger.error("user_strategy_id or code is empty in bulk add.")
                     continue
+                self._normalize_score(data)
                 docs.append(data)
             if not docs:
                 return False, []
@@ -89,6 +99,28 @@ class MongoStrategySelectStocksImpl:
         except Exception as e:
             self.logger.error(f"批量添加策略选股记录失败: {e}")
             return False, []
+
+    def query_select_stock_by_id(self, id: str) -> tuple[bool, Any | None]:
+        """按记录 ID 查询单条策略选股记录
+
+        用于删除前的归属校验（先取记录的 user_strategy_id 再比对是否属于当前用户）。
+
+        :param id: 记录 ID（MongoDB _id）
+        :return: (ok, record_or_None)；ID 格式非法时返回 (True, None) 而非报错
+        """
+        try:
+            if not ObjectId.is_valid(id):
+                return True, None
+            return self.mongo_exec.query_by_condition(
+                table=self.strategy_select_stocks_table,
+                condition={"_id": ObjectId(id)},
+                sort=None,
+                skip=None,
+                limit=1,
+            )
+        except Exception as e:
+            self.logger.error(f"按 ID 查询策略选股记录失败: {e}")
+            return False, None
 
     def delete_select_stock(
         self,

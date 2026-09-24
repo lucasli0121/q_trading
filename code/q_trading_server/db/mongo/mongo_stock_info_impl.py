@@ -2,11 +2,11 @@
 
 import logging
 from collections.abc import Mapping, Sequence
-import re
 from typing import Any, Hashable
 
 from pymongo import UpdateOne
 from app_context import AppContext
+from utils import tools
 
 class MongoStockInfoImpl():
     def __init__(self):
@@ -18,10 +18,25 @@ class MongoStockInfoImpl():
     """
     :function normalize_code
     提取code中的数字部分(code可能为sh1111,也可能为1111.sh格式)
+
+    实现已下沉到 utils.tools.pure_stock_code，这里只做转发：
+    外部模块（如 AkStockProxy）需要纯代码时应当直接调用 tools.pure_stock_code，
+    不要再通过本类获取——本类实例化会连带构造 AppContext。
     """
     def normalize_code(self, code: str) -> str:
-        match = re.search(r"\d+", code)
-        return match.group() if match else code
+        return tools.pure_stock_code(code)
+
+    """
+    :function full_code
+    归一化为库中统一使用的完整代码格式：xxxx.SH / xxxx.SZ / xxxx.BJ
+
+    写入与查询都必须用这个格式做**等值匹配**，不再使用 $regex。
+    原因：正则形如 ^(sh|sz)?600519(\\.(SH|SZ))?$，开头是交替分支，
+    MongoDB 无法提取固定前缀；配合 $or 时每个分支都要单独评估，
+    索引完全用不上。归一化后等值匹配可以直接命中 {code: 1} 索引。
+    """
+    def full_code(self, code: str) -> str:
+        return tools.guess_stock_code_suffix(self.normalize_code(code))
 
     """
     插入或更新股票信息
@@ -34,13 +49,13 @@ class MongoStockInfoImpl():
             if "id" in data:
                 del data["id"]
             code = data.get("code", "")
-            pure_code = self.normalize_code(code)
-            if not pure_code:
+            full_code = self.full_code(code)
+            if not full_code:
                 self.logger.error("code is empty.")
                 return False, None
-            # 先查询是否存在记录
-            filter = {"code": {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}}
-            result = self.stock_info_table.update_one(filter, {"$set": data}, upsert=True)
+            # 统一按规范格式落库，保证后续等值查询可命中
+            data["code"] = full_code
+            result = self.stock_info_table.update_one({"code": full_code}, {"$set": data}, upsert=True)
             return True, str(result.upserted_id) if result.upserted_id else None
         except Exception as e:
             self.logger.error(f"插入或更新股票信息失败: {e}")
@@ -58,15 +73,21 @@ class MongoStockInfoImpl():
             data = data.copy()
             if "id" in data:
                 del data["id"]
-            code = data["code"]
-            pure_code = self.normalize_code(code)
+            full_code = self.full_code(data.get("code", ""))
+            if not full_code:
+                self.logger.warning("跳过 code 为空的股票信息记录")
+                continue
+            data["code"] = full_code
             requests.append(
                 UpdateOne(
-                    {"code": {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}},
+                    {"code": full_code},
                     {"$set": dict(data)},
                     upsert=True,
                 )
             )
+        if not requests:
+            self.logger.warning("批量upsert股票信息：无有效记录")
+            return False
         result = self.stock_info_table.bulk_write(requests, ordered=False)
         self.logger.info(
             "批量upsert股票信息: matched=%d, modified=%d, upserted=%d",
@@ -77,18 +98,17 @@ class MongoStockInfoImpl():
     """
     查询股票信息
     :param code: 股票代码
-    :param start_time: 开始时间
-    :param end_time: 结束时间
     :return: 成功返回True和记录列表，否则返回False和None
     """
     def query_stock_info(self, code: str) -> tuple[bool, Any|None]:
         try:
-            pure_code = self.normalize_code(code)
-            query :dict[str, Any]= {}
-            query["code"] = {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}
+            full_code = self.full_code(code)
+            if not full_code:
+                self.logger.error("code is empty.")
+                return False, None
             return self.mongo_exec.query_by_condition(
                 table=self.stock_info_table,
-                condition=query,
+                condition={"code": full_code},
                 sort={"code": 1},
                 skip=None,
                 limit=None)
@@ -130,15 +150,12 @@ class MongoStockInfoImpl():
     """
     def query_by_codes(self, codes: list[str]) -> tuple[bool, Any|None]:
         try:
-            regex_conditions: list[dict[str, Any]] = []
-            for code in codes:
-                pure_code = self.normalize_code(code)
-                regex_conditions.append(
-                    {"code": {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}}
-                )
+            full_codes = [c for c in (self.full_code(code) for code in codes) if c]
+            if not full_codes:
+                return True, None
             return self.mongo_exec.query_by_condition(
                 table=self.stock_info_table,
-                condition={"$or": regex_conditions},
+                condition={"code": {"$in": full_codes}},
                 sort={"code": 1},
                 skip=None,
                 limit=None,
@@ -190,16 +207,17 @@ class MongoStockInfoImpl():
     """
     删除股票信息
     :param code: 股票代码
-    :param start_time: 开始时间
-    :param end_time: 结束时间
     :return: 成功返回True，否则返回False
     """
     def delete_stock_info(self, code: str) -> bool:
         try:
-            pure_code = self.normalize_code(code)
-            query :dict[str, Any]= {}
-            query["code"] = {"$regex": f"^(sh|sz)?{pure_code}(\\.(SH|SZ))?$"}
-            result = self.mongo_exec.delete(table=self.stock_info_table, condition=query)
+            full_code = self.full_code(code)
+            if not full_code:
+                self.logger.error("code is empty.")
+                return False
+            result = self.mongo_exec.delete(
+                table=self.stock_info_table, condition={"code": full_code}
+            )
             return result
         except Exception as e:
             self.logger.error(f"删除股票信息失败: {e}")

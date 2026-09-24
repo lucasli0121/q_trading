@@ -9,6 +9,9 @@ handlers:
     formatter: simpler
     stream: ext://sys.stdout
 
+  # filename 支持 {instance} 占位符（替换为 [data_proxy] name）。
+  # 多实例共用同一个 log 目录时改成 log/info_{instance}.log，避免多个进程
+  # 同时轮转同一个文件造成日志错乱或丢失；单实例部署可保持原样。
   info_file_handler:
     class: logging.handlers.TimedRotatingFileHandler
     level: INFO

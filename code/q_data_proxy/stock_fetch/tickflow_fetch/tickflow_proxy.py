@@ -1,6 +1,5 @@
 
 import asyncio
-from configparser import ConfigParser
 from datetime import datetime
 import logging
 import re
@@ -17,12 +16,12 @@ from db.mongo.mongo_stock_info_impl import MongoStockInfoImpl
 from db.mongo.mongo_stock_pool_impl import MongoStockPoolImpl
 from stock_fetch.tickflow_fetch import TickFlowBase
 import exchange_calendars as xcals
+from utils.config import load_stock_cfg
 
 class TickFlowProxy(TickFlowBase):
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
-        cp = ConfigParser()
-        cp.read("cfg/stock.cfg")
+        cp = load_stock_cfg()
         api_token = cp.get("tickflow", "api_token")
         server_url = cp.get("tickflow", "server_url")
         super().__init__(api_token=api_token, server_url=server_url)

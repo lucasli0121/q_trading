@@ -15,6 +15,24 @@ from pymongo.collection import Collection
 import logging
 from db.db_base import DbBaseImpl
 
+# 查询缺省条数上限。
+# pymongo 中 .limit(0) 等于「不限制」，调用方完全不指定 limit（None）时会整表物化，
+# 因此给一个兜底上限，触发时打 WARNING 日志，便于定位漏传的调用点。
+#
+# 取值约束：必须大于单表「全市场」的自然行数（A 股约 5400 只）。
+# 否则 query_all_stock_info / query_by_codes / query_minute_hq_by_time 这类
+# 按设计就要返回全市场记录的查询会被误截断，反而制造出静默的数据缺失。
+DEFAULT_QUERY_LIMIT: int = 10000
+
+# 「需要完整结果集」的哨兵值。
+# 确需全量读取的调用方（如 K 线同步任务要靠 db_codes 判断缺失股票）显式传该值，
+# 让「全表扫描」成为有意为之的行为，而不是默认行为。
+UNLIMITED_QUERY_LIMIT: int = -1
+
+# 中文排序 collation。仅在需要拼音排序或忽略大小写比较时由调用方显式传入。
+# 注意：带 collation 的索引与不带 collation 的查询互不匹配，两者必须成对出现。
+COLLATION_ZH: dict[str, Any] = {"locale": "zh", "strength": 1}
+
 class MongoExec(DbBaseImpl):
     _initialized = False
 
@@ -94,8 +112,23 @@ class MongoExec(DbBaseImpl):
     def query_by_condition(self,
             table: Collection,
             condition: dict[str, Any],
-            sort: dict[str, Any]|None,
-            skip: int|None, limit: int|None ) -> tuple[bool, Any]:
+            sort: dict[str, Any]|None = None,
+            skip: int|None = None,
+            limit: int|None = None,
+            collation: dict[str, Any]|None = None,
+            max_limit: int|None = None ) -> tuple[bool, Any]:
+        """按条件查询。
+
+        :param limit: 返回条数上限。
+            - 未传 / None：完全没指定上限，按 DEFAULT_QUERY_LIMIT（或 max_limit）兜底截断并打 WARNING
+            - 0：按既有 impl / API 的「0 表示不限制」约定，不截断
+            - 负数（UNLIMITED_QUERY_LIMIT）：显式声明需要完整结果集，不截断
+            - 正数：按值截断
+        :param collation: 排序规则。默认不指定（simple 二进制比较），
+            这样查询才能命中不带 collation 的索引。
+            需要拼音排序 / 忽略大小写时显式传 COLLATION_ZH。
+        :param max_limit: 覆盖本次调用的缺省上限
+        """
         try:
             if table is None:
                 self.logger.error("table not found in MongoDB.")
@@ -103,21 +136,21 @@ class MongoExec(DbBaseImpl):
             if skip is None:
                 skip = 0
             if limit is None:
-                limit = 0
+                # 调用方完全没有指定上限：按兜底值截断，并提示调用点，避免静默全表扫描
+                limit = DEFAULT_QUERY_LIMIT if max_limit is None else max_limit
+                self.logger.warning(
+                    "query_by_condition 未指定 limit，按 %d 条截断（如需全量请显式传 limit=%d）: %s",
+                    limit, UNLIMITED_QUERY_LIMIT, condition,
+                )
+            elif limit < 0:
+                limit = 0  # pymongo 语义：0 表示不限制
+            cursor = table.find(condition)
+            if collation:
+                cursor = cursor.collation(collation)
             if sort is not None and len(sort) > 0:
-                # 执行排序查询
-                results = list(table.find(condition).collation({'locale':'zh', 'strength':1})
-                        .sort(sort)
-                        .skip(skip)
-                        .limit(limit))
-                return True, results if results else None
-            else:
-                # 执行查询
-                results = list(table.find(condition)
-                        .collation({'locale':'zh', 'strength':1})
-                        .skip(skip)
-                        .limit(limit))
-                return True, results if results else None
+                cursor = cursor.sort(sort)
+            results = list(cursor.skip(skip).limit(limit))
+            return True, results if results else None
         except Exception as e:
             self.logger.error(f"查询信息失败: {e}")
             return False, None

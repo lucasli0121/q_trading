@@ -192,6 +192,7 @@ class UserStrategyItem(BaseModel):
     total_profit: float = Field(default=0.0, description="总收益金额")
     max_stock_count: int = Field(default=0, description="最大持仓数量")
     strategy_params: dict[str, Any] = Field(default_factory=dict, description="策略运行参数")
+    update_time: str = Field(default="", description="status 最近一次变更的时间")
     create_time: str = Field(default="", description="创建时间")
 
 
@@ -360,10 +361,16 @@ class HotIndustryCreateRequest(BaseModel):
 # ==================== 策略选股 ====================
 
 
+class StrategySelectStockInput(BaseModel):
+    """单只选股输入（股票代码 + 评分）"""
+    code: str = Field(..., description="股票代码")
+    score: float = Field(default=0.0, description="评分")
+
+
 class StrategySelectStockCreateRequest(BaseModel):
     """添加策略选股记录请求"""
     user_strategy_id: str = Field(..., description="用户策略 ID")
-    codes: list[str] = Field(..., description="股票代码列表")
+    stocks: list[StrategySelectStockInput] = Field(..., description="股票列表（每项含 code 与 score）")
 
 
 class StrategySelectStockItem(BaseModel):
@@ -371,6 +378,7 @@ class StrategySelectStockItem(BaseModel):
     id: str = Field(default="", description="记录 ID")
     user_strategy_id: str = Field(default="", description="用户策略 ID")
     code: str = Field(default="", description="股票代码")
+    score: float = Field(default=0.0, description="评分")
     create_time: str = Field(default="", description="创建时间")
 
 
@@ -379,6 +387,7 @@ class StrategySelectStockWithRtItem(BaseModel):
     id: str = Field(default="", description="记录 ID")
     user_strategy_id: str = Field(default="", description="用户策略 ID")
     code: str = Field(default="", description="股票代码")
+    score: float = Field(default=0.0, description="评分")
     create_time: str = Field(default="", description="策略选股创建时间")
     # 实时行情字段
     name: str = Field(default="", description="股票名称")

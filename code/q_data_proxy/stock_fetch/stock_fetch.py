@@ -1,19 +1,16 @@
 # stock_fetch package initializer
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from configparser import ConfigParser
 from datetime import datetime, timedelta
 import json
 import logging
 import re
 import time
-import threading
 from typing import Any
 import pandas as pd
 from db.mongo.mongo_company_valuation_impl import MongoCompanyValuationImpl
 from db.mongo.mongo_data_agent_industry_stocks_impl import MongoDataAgentIndustryStocksImpl
 from db.mongo.mongo_data_agent_pool_stocks_impl import MongoDataAgentPoolStocksImpl
-from db.mongo.mongo_hot_industry_impl import MongoHotIndustryImpl
 from db.mongo.mongo_rt_stocks_impl import MongoRtStocksImpl
 from db.mongo.mongo_stock_info_impl import MongoStockInfoImpl
 from db.mongo.mongo_stock_pool_impl import MongoStockPoolImpl
@@ -27,18 +24,105 @@ from stock_fetch.tickflow_fetch.tickflow_proxy import TickFlowProxy
 from apscheduler.schedulers.background import BackgroundScheduler
 from app_context import AppContext
 from mq.mqtt_client import MqttTopic
+from utils.config import load_stock_cfg, stock_instance_name
 from apscheduler.events import (
     JobEvent,
     JobExecutionEvent,
-    JobSubmissionEvent,
     EVENT_ALL,
     EVENT_JOB_ERROR,
     EVENT_JOB_MAX_INSTANCES,
     EVENT_JOB_MISSED,
-    EVENT_JOB_REMOVED,
-    EVENT_ALL_JOBS_REMOVED,
-    EVENT_SCHEDULER_SHUTDOWN
 )
+
+
+def pure_stock_code(raw_code: str) -> str:
+    """取股票代码的纯数字部分，用于跨格式归组。
+
+    库里可能混存 000001 / 000001.SZ / sh000001，只做字符串精确比较会把同一只
+    股票拆成多组，进而生成多条 minute_time 相同的分钟记录在 upsert 时互相覆盖。
+    """
+    if not raw_code:
+        return ""
+    matched = re.search(r"\d+", raw_code)
+    return matched.group() if matched else raw_code
+
+
+def session_open_of(xshg: Any, day) -> datetime:
+    """取指定交易日的开盘时间（返回 naive 本地时间）。
+
+    交易所日历不可用时退回 09:30，保证调用方逻辑仍然确定。
+    """
+    try:
+        opened = xshg.session_open(day)
+        if getattr(opened, "tzinfo", None) is not None:
+            opened = opened.tz_localize(None)
+        if hasattr(opened, "to_pydatetime"):
+            opened = opened.to_pydatetime()
+        return opened
+    except Exception:
+        return datetime(day.year, day.month, day.day, 9, 30)
+
+
+def split_minute_window_records(
+    records: list[dict], minute_start: str
+) -> tuple[dict[str, list[dict]], dict[str, dict]]:
+    """按窗口左边界切分查询结果。
+
+    实时快照的 volume / amount 是当日累计值，窗口内的量要靠「窗口开始前的末条
+    累计值」（基线）差分得到，因此查询起点比窗口起点前移一段，取回后在这里切成
+    两部分。
+
+    :param records: 实时行情查询结果（含前移部分）
+    :param minute_start: 窗口左边界，格式 %Y-%m-%d %H:%M:%S
+    :return: (窗口内记录，按 code 归组且组内升序；窗口开始前的末条记录，按 code 索引)
+    """
+    grouped: dict[str, list[dict]] = {}
+    baselines: dict[str, dict] = {}
+    for r in records:
+        key = pure_stock_code(r.get("code", ""))
+        if key == "":
+            continue
+        create_time = r.get("create_time", "")
+        if create_time < minute_start:
+            prev = baselines.get(key)
+            if prev is None or create_time > prev.get("create_time", ""):
+                baselines[key] = r
+        else:
+            grouped.setdefault(key, []).append(r)
+    for key in grouped:
+        grouped[key].sort(key=lambda r: r.get("create_time", ""))
+    return grouped, baselines
+
+
+def cumulative_delta(
+    window_records: list[dict],
+    baseline_rec: dict | None,
+    field: str,
+    zero_baseline: bool,
+) -> tuple[float, bool]:
+    """按累计值口径算窗口内的增量（成交量 / 成交额）。
+
+    沪深实时快照的成交量、成交额是当日累计值，行业口径为：
+    窗口内的量 = 窗口末条累计值 − 窗口开始前的末条累计值。
+
+    不能用窗口内首尾作差，那会丢掉窗口内首条快照的增量（上一窗口结束到本窗口
+    首条快照之间成交的部分）；窗口内只有 n 条采样时，偏差恒为 -1/n。
+
+    :param window_records: 窗口内记录，按 create_time 升序
+    :param baseline_rec: 窗口开始前的末条记录，可为 None
+    :param field: 字段名，volume 或 amount
+    :param zero_baseline: 基线缺失时是否以 0 为基线（当日首窗，含早盘集合竞价成交量）
+    :return: (增量, 是否用到了基线)
+    """
+    last_value = window_records[-1].get(field, 0) or 0
+    if baseline_rec is not None:
+        return last_value - (baseline_rec.get(field, 0) or 0), True
+    if zero_baseline:
+        return last_value, False
+    # 基线缺失且非当日首窗（服务中途启动、数据缺口）：退回首尾作差，
+    # 避免把当日累计量整体灌进单分钟记录
+    first_value = window_records[0].get(field, 0) or 0
+    return last_value - first_value, False
 
 
 class StockFetch(FetchBase):
@@ -47,8 +131,7 @@ class StockFetch(FetchBase):
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        cp = ConfigParser()
-        cp.read("cfg/stock.cfg")
+        cp = load_stock_cfg()
         self.real_time_sync_interval = cp.get("stock_fetch", "real_time_sync_interval", fallback=6)
         self.akshare_industry_hq_sync_interval = cp.get("akshare", "industry_hq_sync_interval", fallback=30)
         self.tickflow_real_time_sync_interval = cp.get("tickflow", "real_time_sync_interval", fallback=6)
@@ -57,7 +140,12 @@ class StockFetch(FetchBase):
         self.minute_sync_interval = cp.getint("stock_fetch", "minute_sync_interval", fallback=1)
         start_date = cp.get("stock", "start_date", fallback="2024-01-01")
         self.real_time_skip = 0
-        self.real_time_limit = int(cp.get("tickflow", "real_time_stock_limit", fallback=5))
+        # real_time_stock_limit 配置位于 [stock_fetch] 段（兼容历史上写在 [tickflow] 段的配置）
+        self.real_time_limit = cp.getint(
+            "stock_fetch",
+            "real_time_stock_limit",
+            fallback=cp.getint("tickflow", "real_time_stock_limit", fallback=5),
+        )
         super().__init__(start_date = start_date)
         self.real_time_sync_stocks = []
         self.ak_proxy = AkStockProxy()
@@ -74,6 +162,27 @@ class StockFetch(FetchBase):
     def start(self) -> None:
         if self.stock_scheduler is not None:
             interval = int(self.real_time_sync_interval)
+            # cron 只能精确表达 60 的约数（秒级）或 60 的整数倍（分钟级）。
+            # 例如配置 90 秒会落入 minute="*/1" + second="*/30"，实际每 30 秒触发一次，
+            # 与配置严重不符且无任何提示，因此在此显式校正并告警。
+            if interval < 60:
+                if interval <= 0 or 60 % interval != 0:
+                    candidates = [v for v in (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30) if v <= interval]
+                    adjusted = candidates[-1] if candidates else 1
+                    self.logger.warning(
+                        "real_time_sync_interval=%s 秒无法被 cron 精确表达，已就近调整为 %s 秒",
+                        interval,
+                        adjusted,
+                    )
+                    interval = adjusted
+            elif interval % 60 != 0:
+                adjusted = (interval // 60) * 60
+                self.logger.warning(
+                    "real_time_sync_interval=%s 秒无法被 cron 精确表达（60 秒以上需为 60 的整数倍），已就近调整为 %s 秒",
+                    interval,
+                    adjusted,
+                )
+                interval = adjusted
             minute_interval = int(interval / 60)
             minute: str = "*"
             if minute_interval <= 0:
@@ -94,6 +203,9 @@ class StockFetch(FetchBase):
                 minute=minute,
                 second=second_interval,
                 id="real_time_hq_sync_task",
+                # 任务内 real_time_skip / real_time_sync_stocks 是实例级共享状态，
+                # 读改写不原子，显式锁定单实例执行
+                max_instances=1,
             )
 
             # 每分钟行情快照任务：开盘期间每分钟整点执行
@@ -109,16 +221,20 @@ class StockFetch(FetchBase):
                 minute=minute_interval,
                 second="0",
                 id="minute_hq_sync_task",
+                max_instances=1,
             )
-            # 交易日11, 15执行一次，获取历史K线行情并入库
+            # 交易日 15:00 执行一次，获取历史K线行情并入库。
+            # 原实现为 11:00 与 15:00 各一次：11:00 处于盘中，取到的当日K线未收市，
+            # 且 15:00 会把全部股票再拉一遍，两次请求大部分重复，故只保留 15:00。
             self.stock_scheduler.add_job(
                 self.his_hq_sync_task,
                 trigger="cron",
                 day_of_week="mon-fri",
-                hour="11,15",
+                hour="15",
                 minute="0",
                 second="0",
                 id="his_hq_sync_task",
+                max_instances=1,
             )
             # 同步akshare行业行情数据9-15点执行
             # interval = int(self.akshare_industry_hq_sync_interval)
@@ -245,17 +361,15 @@ class StockFetch(FetchBase):
                 event.job_id,
                 event.jobstore)
         elif code == EVENT_JOB_MAX_INSTANCES:
-            # 任务达到最大实例数，自动增加上限
+            # APScheduler 在实例数达到上限时会跳过本次执行并抛出该事件。
+            # 原实现在此把 max_instances 每次 +10 自动扩容，会让同一个 job 并发执行，
+            # 而 real_time_skip / real_time_sync_stocks 是实例级共享状态，读改写三步不原子，
+            # 并发实例会重复同步同一批股票或错乱分批指针，故不再扩容，只记录告警。
             self.logger.warning(
-                "jobListener, code:%d, job_id:%s, jobstore:%s, 任务达到最大实例数，自动扩容",
+                "jobListener, code:%d, job_id:%s, jobstore:%s, 任务达到最大实例数，本次执行已被跳过",
                 code,
                 event.job_id,
                 event.jobstore)
-            job = self.stock_scheduler.get_job(event.job_id)
-            if job is not None:
-                jobCount = job.max_instances
-                jobCount = jobCount + 10
-                self.stock_scheduler.modify_job(event.job_id, max_instances=jobCount)
 
     """
     function: load_agent_pool_stocks
@@ -264,9 +378,8 @@ class StockFetch(FetchBase):
     return {*}
     """
     def load_agent_pool_stocks(self) -> list:
-        cp = ConfigParser()
-        cp.read("cfg/stock.cfg")
-        agent_name = cp.get("data_proxy", "name", fallback="q_share_proxy_1")
+        cp = load_stock_cfg()
+        agent_name = stock_instance_name(cp)
         agent_pool_impl = MongoDataAgentPoolStocksImpl()
         real_time_stocks = []
         res, agent_pool_stocks = agent_pool_impl.query_data_agent_pool_stock_by_agent_name(agent_name)
@@ -287,10 +400,14 @@ class StockFetch(FetchBase):
     def find_pool_id_in_sync_stocks(self, code: str, sync_stocks: list) -> None | list[str]:
         if code == "":
             return None
+        # 纯数字归一化兜底：tickflow 返回的 symbol（如 000001/SZ）与库内存储格式
+        # （000001、000001.SZ、sh000001）可能不一致，仅用精确比较会导致 MQTT 推送被静默跳过。
+        pure_code = re.sub(r"\D", "", code)
         for stocks in sync_stocks:
             stock_code = stocks.get("code", "")
             if stock_code != code:
-                continue
+                if not pure_code or re.sub(r"\D", "", stock_code) != pure_code:
+                    continue
             pool_id_list = stocks.get("pool_ids", [])
             if not isinstance(pool_id_list, list):
                 if isinstance(pool_id_list, str):
@@ -390,9 +507,11 @@ class StockFetch(FetchBase):
     function: minute_hq_sync_task
     description: 每分钟行情快照任务
         1. 从股票池获取所有待监控的股票代码
-        2. 从 rt_stocks_tbl 聚合当前分钟内所有实时行情记录，计算分钟OHLC
-        3. 查询前一分钟分频行情收盘价作为 preclose，重算涨跌幅/涨跌额
-        4. 组装 StockMinuteHqDao 记录，minute_time 取当前分钟整点
+        2. 从 rt_stocks_tbl 聚合窗口内（当前时间往前 minute_sync_interval 分钟）的实时行情记录，
+           查询起点额外前移一段用于取累计值基线
+        3. 逐只股票统计分钟行情：open/high/low/preclose 取窗口首条记录的当日字段，
+           close 取窗口末条记录的 price；volume/amount 取当日累计值的窗口增量
+        4. 组装 StockMinuteHqDao 记录，minute_time 取窗口开始分钟整点
         5. 保存到 minute_hq_tbl
         6. 通过 MQTT 推送到分频行情 topic（q_share/stock/minute）
     param {*} self
@@ -416,59 +535,88 @@ class StockFetch(FetchBase):
             # 7. 通过 MQTT 推送分频行情
             self._publish_minute_hq(real_time_stocks, minute_records)
 
-    def do_minute_hq_sync_with_time(self, codes: list, start_time: str, end_time: str) -> tuple[bool, list|None]:
+    def do_minute_hq_sync_with_time(
+        self,
+        codes: list,
+        start_time: str,
+        end_time: str,
+        baseline_lookback_minutes: int = 30,
+    ) -> tuple[bool, list|None]:
         """执行分钟行情快照同步（按指定时间）
 
-        通过 query_rt_stocks 查询当前分钟内的实时行情记录，按 code 分组后
-        手动统计分钟 OHLC 及指标：
-        - volume / amount：计算每条记录的差值之和
+        通过 query_rt_stocks 查询窗口内的实时行情记录，按 code 归组后手动统计
+        分钟 OHLC 及指标：
+
+        - volume / amount：实时快照的成交量、成交额是当日累计值，按行业口径取
+          「窗口末条累计值 − 窗口开始前的末条累计值」；当日首窗以 0 为基线，
+          因此包含早盘集合竞价的成交量
         - turnover / amp / qrr：求平均值
 
-        :param codes: 股票代码列表，为空时查询当前分钟内全部实时行情记录
-        :param now: 当前时间（分钟整点）
+        :param codes: 股票代码列表，为空时查询窗口内全部实时行情记录
+        :param start_time: 窗口左边界，格式 %Y-%m-%d %H:%M:%S
+        :param end_time: 窗口右边界，格式 %Y-%m-%d %H:%M:%S
+        :param baseline_lookback_minutes: 查询起点相对窗口左边界前移的分钟数，
+            用于取「窗口开始前的末条累计值」作为基线
         :return: (是否成功, 分钟行情记录列表或 None)
         """
         minute_time = start_time
         minute_start = start_time
         minute_end = end_time
 
+        minute_start_dt = datetime.strptime(minute_start, "%Y-%m-%d %H:%M:%S")
+        # 查询起点前移，以便取到窗口开始前的末条累计值；同时不早于当日开盘，
+        # 开盘前的快照累计值只含集合竞价成交量，不能当作连续竞价的基线
+        session_open_dt = session_open_of(self.xshg, minute_start_dt.date())
+        query_start_dt = minute_start_dt - timedelta(minutes=baseline_lookback_minutes)
+        if query_start_dt < session_open_dt:
+            query_start_dt = session_open_dt
+        query_start = query_start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        # 窗口起点落在开盘后的第一个窗口内 → 当日首窗，基线取 0（含集合竞价成交量）
+        first_window = minute_start_dt < session_open_dt + timedelta(minutes=self.minute_sync_interval)
+
         rt_impl = MongoRtStocksImpl()
 
-        # 查询当前分钟内的实时行情记录
+        # 查询窗口内的实时行情记录（起点已前移，含基线部分）
         # codes 为空时 code="" 查询全部，非空时传入列表一次查询
         query_code: str | list[str] = codes if codes else ""
         # 去重
         query_code = list(set(query_code))
         res, all_rt_records = rt_impl.query_rt_stocks(
             code=query_code,
-            start_time=minute_start,
+            start_time=query_start,
             end_time=minute_end,
         )
         if not res or all_rt_records is None or len(all_rt_records) == 0:
             self.logger.info("当前分钟无实时行情数据，跳过分钟行情快照")
             return False, None
 
-        # 按 code 分组：通过提取纯数字归一化 key
-        grouped: dict[str, list[dict]] = {}
-        for r in all_rt_records:
-            code = r.get("code", "")
-            if code == "":
-                continue
-            if code not in grouped:
-                grouped[code] = []
-            grouped[code].append(r)
+        # 按窗口左边界切分：窗口内记录按 code 归组（纯数字归一化，避免同一只股票
+        # 因 code 格式不同被拆成多组），窗口前的末条记录作为累计值基线
+        grouped, baselines = split_minute_window_records(all_rt_records, minute_start)
+        if len(grouped) == 0:
+            self.logger.info("当前分钟无实时行情数据，跳过分钟行情快照")
+            return False, None
 
-        # 每组内按 create_time 排序
-        for key in grouped:
-            grouped[key].sort(key=lambda r: r.get("create_time", ""))
+        missing_baseline = len(grouped) - len([k for k in grouped if k in baselines])
+        if missing_baseline > 0:
+            self.logger.warning(
+                "分钟行情未取到累计值基线, 窗口: %s ~ %s, 股票数: %d, 查询起点: %s, 当日首窗: %s",
+                minute_start,
+                minute_end,
+                missing_baseline,
+                query_start,
+                first_window,
+            )
 
         # 组装分频行情记录
         minute_records: list[dict] = []
 
         for pure_code, rt_records in grouped.items():
             count = len(rt_records)
+            baseline_rec = baselines.get(pure_code)
 
-            # OHLC：取首条为 open，末条为 price（收盘），最高/最低价取 price 字段极值
+            # open/high/low/preclose 取首条记录的当日字段（不是窗口内 price 极值），
+            # close 取末条记录的 price，price 取首条记录的 price
             first_rec = rt_records[0]
             last_rec = rt_records[-1]
             agg_price = first_rec.get("price", 0.0)
@@ -485,15 +633,25 @@ class StockFetch(FetchBase):
             name = last_rec.get("name", "")
             code = last_rec.get("code", pure_code)
 
-            # volume, amount：计算每条记录的差值之和
-            volume_sum_diff = sum(
-                rt_records[i].get("volume", 0) - rt_records[i - 1].get("volume", 0)
-                for i in range(1, count)
+            # volume, amount：当日累计值差分，窗口末条累计 − 窗口开始前的末条累计
+            volume_diff, _ = cumulative_delta(
+                rt_records, baseline_rec, "volume", first_window
             )
-            amount_sum_diff = sum(
-                rt_records[i].get("amount", 0.0) - rt_records[i - 1].get("amount", 0.0)
-                for i in range(1, count)
+            amount_diff, _ = cumulative_delta(
+                rt_records, baseline_rec, "amount", first_window
             )
+            if volume_diff < 0 or amount_diff < 0:
+                # 累计值回落（跨日残留、数据源异常）时按 0 处理，避免写入负数
+                self.logger.warning(
+                    "分钟行情累计值回落, code: %s, 窗口: %s ~ %s, volume: %s, amount: %s, 按 0 处理",
+                    code,
+                    minute_start,
+                    minute_end,
+                    volume_diff,
+                    amount_diff,
+                )
+                volume_diff = max(volume_diff, 0)
+                amount_diff = max(amount_diff, 0)
 
             # turnover, amp, qrr：求平均值
             turnover_avg = sum(r.get("turnover", 0.0) for r in rt_records) / count
@@ -506,8 +664,8 @@ class StockFetch(FetchBase):
                 "price": agg_price,
                 "change_percent": change_percent,
                 "change_amount": change_amount,
-                "volume": volume_sum_diff,
-                "amount": amount_sum_diff,
+                "volume": volume_diff,
+                "amount": amount_diff,
                 "amp": amp_avg,
                 "high": agg_high,
                 "low": agg_low,
@@ -705,28 +863,26 @@ class StockFetch(FetchBase):
                     )
 
     def load_agent_hot_industry_stocks(self) -> tuple[bool, Any | None]:
-        cp = ConfigParser()
-        cp.read("cfg/stock.cfg")
-        agent_name = cp.get("data_proxy", "name", fallback="q_share_proxy_1")
+        cp = load_stock_cfg()
+        agent_name = stock_instance_name(cp)
         agent_industry_impl = MongoDataAgentIndustryStocksImpl()
         return agent_industry_impl.query_by_agent_name(agent_name=agent_name)
                     
     """
     function: his_hq_sync_task
-    description: 交易日每2小时执行一次，获取股票池中所有股票的历史K线（日线/周线/月线）并入库
+    description: 交易日15:00执行一次，补拉股票池与热门行业中尚未入库的日K线
     param {*} self
     return {*}
     """
     def his_hq_sync_task(self):
         self.logger.info("开始执行历史K线同步任务...")
-        if not self.xshg.is_session(datetime.now().date()):
+        today = datetime.now().date()
+        if not self.xshg.is_session(today):
             self.logger.info("非交易日，跳过历史K线同步")
             return
-        today = datetime.now().date()
-        if self.xshg.is_session(today):
-            start_day = (today - timedelta(days=3)).strftime("%Y-%m-%d")
-            end_day = today.strftime("%Y-%m-%d")
-            self.do_his_hq_sync_task(start_day, end_day)
+        start_day = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+        end_day = today.strftime("%Y-%m-%d")
+        self.do_his_hq_sync_task(start_day, end_day)
         self.logger.info("历史K线同步任务完成")
 
     def get_hot_industry_stocks(self) -> list:
@@ -737,7 +893,8 @@ class StockFetch(FetchBase):
         hot_codes = []
         for industry_stocks in industry_stocks_list:
             codes_industry_list = industry_stocks.get("stock_codes_industry", [])
-            hot_codes = [s["code"] for s in codes_industry_list if s.get("code")]
+            # 必须用 extend：用 = 赋值会被每轮循环覆盖，最终只剩最后一个行业的代码
+            hot_codes.extend(s["code"] for s in codes_industry_list if s.get("code"))
         return hot_codes
 
     def get_industry_and_pool_stocks(self) -> list:
@@ -752,25 +909,37 @@ class StockFetch(FetchBase):
         return all_codes
     
     def do_his_hq_sync_task(self, start_day: str, end_day: str):
-        # 先获取热门板块所有去重代码
-        all_codes = self.get_industry_and_pool_stocks()  
+        # 先获取热门板块和股票池的所有去重代码
+        all_codes = self.get_industry_and_pool_stocks()
         if len(all_codes) == 0:
             self.logger.info("股票中无有效代码，跳过历史K线同步")
             return
+        # 只拉取「最近一个交易日的日线尚未入库」的股票：
+        # 判断基准是最近交易日而非拉取区间，这样同一交易日内重复执行不会重复请求 API，
+        # 同时区间内若有缺口（上次请求失败或进程被杀死），下一轮拉取 3 天窗口时会一并补齐。
+        latest_session = self.get_recent_trading_day()
+        missing_codes = self.filter_codes_without_day_hq(all_codes, latest_session)
         self.logger.info(
-            "历史K线同步: %d 只股票, 开始日期=%s， 结束日期=%s",
-            len(all_codes), start_day, end_day,
+            "历史K线同步: 股票总数=%d, 最近交易日=%s, 已有日线=%d, 待拉取=%d, 拉取区间=%s ~ %s",
+            len(all_codes),
+            latest_session,
+            len(all_codes) - len(missing_codes),
+            len(missing_codes),
+            start_day,
+            end_day,
         )
-        cp = ConfigParser()
-        cp.read("cfg/stock.cfg")
+        if len(missing_codes) == 0:
+            self.logger.info("历史K线同步: 最近交易日日线已全部入库，无需拉取")
+            return
+        cp = load_stock_cfg()
         number_of_once = int(cp.get("tickflow", "history_hq_sync_number_of_once", fallback=1))
         work_interval = int(cp.get("tickflow", "history_hq_sync_interval", fallback=5))
-        # 分批提交到线程池，批次间 sleep 控制 API 请求频率
+        # 分批提交，批次间 sleep 控制 API 请求频率
         completed = 0
-        total = len(all_codes)
+        total = len(missing_codes)
         total_batches = (total + number_of_once - 1) // number_of_once
         for i in range(0, total, number_of_once):
-            batch_codes = all_codes[i : i + number_of_once]
+            batch_codes = missing_codes[i : i + number_of_once]
             batch_idx = i // number_of_once + 1
             self.logger.info(
                 "历史K线同步: 批次 %d/%d, 股票数=%d, 代码=%s",
@@ -779,13 +948,9 @@ class StockFetch(FetchBase):
                 len(batch_codes),
                 batch_codes,
             )
-            thread = threading.Thread(
-                target=self._fetch_and_save_his_hq,
-                args=(batch_codes, start_day, end_day, "day"),
-                daemon=True,
-            )
-            thread.start()
-            thread.join()
+            # 直接同步调用：原实现 Thread.start()+join() 等于串行阻塞，
+            # 线程只带来创建/销毁开销，没有任何并发收益，故移除。
+            self._fetch_and_save_his_hq(batch_codes, start_day, end_day, "day")
             completed += len(batch_codes)
             self.logger.info(
                 "历史K线同步进度: %d/%d", completed, total
@@ -793,6 +958,36 @@ class StockFetch(FetchBase):
             # 批次间休眠，控制 API 请求频率，最后一轮不需要 sleep
             if batch_idx < total_batches:
                 time.sleep(work_interval)
+
+    """
+    function: filter_codes_without_day_hq
+    description: 筛选出在指定交易日尚未入库日K线的股票代码
+    param {list[str]} codes: 待检查的股票代码列表
+    param {str} session_day: 交易日，格式 %Y-%m-%d
+    return {list[str]} 缺失日K线的股票代码列表
+    """
+    def filter_codes_without_day_hq(self, codes: list[str], session_day: str) -> list[str]:
+        db_impl = MongoStockHisHqImpl()
+        res, db_records = db_impl.query_day_hq(
+            codes=codes, start_time=session_day, end_time=session_day
+        )
+        # 库内 code 为归一化后的格式（000001.SZ），调用方传入的可能是 000001 / sh000001，
+        # 统一取纯数字比较，避免格式不一致导致已入库的股票被误判为缺失
+        have_codes: set[str] = set()
+        if res and db_records:
+            for rec in db_records:
+                matched = re.search(r"\d+", rec.get("code", ""))
+                if matched:
+                    have_codes.add(matched.group())
+        missing_codes: list[str] = []
+        for code in codes:
+            matched = re.search(r"\d+", code)
+            pure_code = matched.group() if matched else code
+            if pure_code in have_codes:
+                continue
+            have_codes.add(pure_code)
+            missing_codes.append(code)
+        return missing_codes
 
     def _fetch_and_save_his_hq(
             self,

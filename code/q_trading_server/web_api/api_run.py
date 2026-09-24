@@ -54,7 +54,7 @@ app.add_middleware(
 
 # 自定义 /docs 路由，使用国内可访问的 CDN
 @app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html():
+def custom_swagger_ui_html():
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=app.title + " - Swagger UI",
@@ -92,7 +92,7 @@ class BizException(Exception):
 
 
 @app.exception_handler(BizException)
-async def biz_exception_handler(request: Request, exc: BizException):
+def biz_exception_handler(request: Request, exc: BizException):
     return JSONResponse(
         status_code=400,
         content={
@@ -101,7 +101,7 @@ async def biz_exception_handler(request: Request, exc: BizException):
         }
     )
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
         content={

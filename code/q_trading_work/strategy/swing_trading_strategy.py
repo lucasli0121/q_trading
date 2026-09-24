@@ -54,7 +54,7 @@ class SwingTradingStrategy(BaseStrategy):
         3. KlineSRFactor 因子返回的分值 < 0.0，卖出
     """
 
-    strategy_name: str = "低频波段交易策略"
+    strategy_name: str = "波段交易策略"
     description: str = (
         "是用于网格交易模式，通过支撑价位和阻力价位来回交易，适合震荡行情"
     )

@@ -191,7 +191,11 @@ DO NOT create new instances of these services — always use `AppContext()`.
 - `cards.py` — Tax report cards (carryover from tax system)
 - `custom_tabs.py` — CSS theming for left-drawer and page-level tabs
 
-**Theme** ([colors/theme.py](colors/theme.py)): `ThemeManager` with `dark` and `light` presets, sets NiceGUI global colors and dark mode. Default: dark.
+**Theme** ([colors/theme.py](colors/theme.py)): `ThemeManager` with `dark` / `light` presets. All UI colours are written as `var(--qs-*)` design tokens (`TOKENS` dict = one variable name, two values). Dark values live on `:root`, light values under `body.qs-light`, both in a single shared stylesheet, so `set_theme()` only updates Quasar colours and toggles the body class — switching is instant with no re-render. Theme ownership is **session-scoped** (`app.storage.user["theme_mode"]`), seeded once from the user preference API. Default: dark.
+
+> ⚠️ ECharts draws on canvas and cannot resolve CSS variables — chart colours must come from `get_color()` / `get_chart_colors()`, never from `get_current_theme()`.
+> ⚠️ Quasar element props (`ui.switch(...).props("color=...")`) also need real colour values, not `var()`.
+> ⚠️ The preference API returns `theme_mode="light"` as a *model default* when the user has never saved preferences — use `resolve_mode_from_prefs()` to tell a real choice apart from "no record".
 
 **Other UI files**: [menu/top_menu.py](menu/top_menu.py) — user menu with login/register/profile/logout; [pages/login_page.py](pages/login_page.py) — login page; `widght/` — mostly empty.
 

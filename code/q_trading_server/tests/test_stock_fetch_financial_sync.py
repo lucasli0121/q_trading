@@ -17,6 +17,7 @@ sys.path.append(curPath)
 
 from stock_fetch.stock_fetch import StockFetch
 from db.mongo.mongo_company_finance_impl import MongoCompanyFinanceImpl
+from utils.tools import pure_stock_code
 
 
 class TestStockFetchFinancialSync(unittest.TestCase):
@@ -62,7 +63,7 @@ class TestStockFetchFinancialSync(unittest.TestCase):
 
         # 使用一个稳定无前缀的测试代码，避免网络波动影响
         test_code = "000001"
-        pure_code = db_impl.normalize_code(test_code)
+        pure_code = pure_stock_code(test_code)
 
         # 执行同步
         from stock_fetch.akshare_fetch.ak_stock_proxy import AkStockProxy

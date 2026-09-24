@@ -9,29 +9,22 @@ Description: 股票黑名单表 MongoDB 操作实现
 # coding="utf8"
 
 import logging
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Hashable
 
 from pymongo import UpdateOne
 from app_context import AppContext
+from utils import tools
 
 
-def _normalize_code(code: str) -> str:
-    """提取股票代码中的纯数字部分，兼容 xxx、xxx.SH、xxx.SZ、shxxx、szxxx 格式。"""
-    m = re.search(r"\d+", code)
-    return m.group() if m else code
+def _full_code(code: str) -> str:
+    """归一化为库中统一使用的完整代码格式：xxxx.SH / xxxx.SZ / xxxx.BJ
 
-
-def _code_regex(code: str) -> dict[str, Any]:
-    """返回 code 字段的正则匹配条件。"""
-    pure = _normalize_code(code)
-    return {"$regex": f"^(sh|sz)?{pure}(\\.(SH|SZ))?$"}
-
-
-def _codes_or(codes: list[str]) -> dict[str, Any]:
-    """返回多个 code 的 $or 正则匹配条件。"""
-    return {"$or": [{"code": _code_regex(c)} for c in codes]}
+    写入与查询都用这个格式做等值匹配，不再使用 $regex。
+    正则 ^(sh|sz)?600519(\\.(SH|SZ))?$ 开头是交替分支，MongoDB 提取不到固定前缀，
+    配合 $or 时每个分支都要单独评估，{user_id:1, code:1} 索引完全用不上。
+    """
+    return tools.guess_stock_code_suffix(tools.pure_stock_code(code))
 
 
 class MongoBlacklistImpl:
@@ -52,12 +45,14 @@ class MongoBlacklistImpl:
             data = data.copy()
             user_id = data.get("user_id", "")
             code = data.get("code", "")
-            if not user_id or not code:
+            full_code = _full_code(code)
+            if not user_id or not full_code:
                 self.logger.error("user_id or code is empty.")
                 return False, None
             if "id" in data:
                 del data["id"]
-            filter: dict[str, Any] = {"user_id": user_id, "code": _code_regex(code)}
+            data["code"] = full_code
+            filter: dict[str, Any] = {"user_id": user_id, "code": full_code}
             result = self.blacklist_table.update_one(filter, {"$set": data}, upsert=True)
             return True, str(result.upserted_id) if result.upserted_id else None
         except Exception as e:
@@ -77,14 +72,21 @@ class MongoBlacklistImpl:
                 if "id" in data:
                     del data["id"]
                 user_id = data["user_id"]
-                code = data["code"]
+                full_code = _full_code(data["code"])
+                if not full_code:
+                    self.logger.warning("跳过 code 为空的记录")
+                    continue
+                data["code"] = full_code
                 requests.append(
                     UpdateOne(
-                        {"user_id": user_id, "code": _code_regex(code)},
+                        {"user_id": user_id, "code": full_code},
                         {"$set": {k: v for k, v in data.items() if k != "id"}},
                         upsert=True,
                     )
                 )
+            if not requests:
+                self.logger.warning("批量upsert黑名单：无有效记录")
+                return False
             result = self.blacklist_table.bulk_write(requests, ordered=False)
             self.logger.info(
                 "批量upsert黑名单: matched=%d, modified=%d, upserted=%d",
@@ -102,7 +104,11 @@ class MongoBlacklistImpl:
         :return: 成功返回 True，否则返回 False
         """
         try:
-            query: dict[str, Any] = {"user_id": user_id, "code": _code_regex(code)}
+            full_code = _full_code(code)
+            if not full_code:
+                self.logger.error("code is empty.")
+                return False
+            query: dict[str, Any] = {"user_id": user_id, "code": full_code}
             result = self.mongo_exec.delete(table=self.blacklist_table, condition=query)
             return result
         except Exception as e:
@@ -116,7 +122,10 @@ class MongoBlacklistImpl:
         :return: 成功返回 True，否则返回 False
         """
         try:
-            query: dict[str, Any] = {"user_id": user_id, **_codes_or(list(codes))}
+            full_codes = [c for c in (_full_code(c) for c in codes) if c]
+            if not full_codes:
+                return False
+            query: dict[str, Any] = {"user_id": user_id, "code": {"$in": full_codes}}
             result = self.mongo_exec.delete(table=self.blacklist_table, condition=query)
             return result
         except Exception as e:
@@ -148,13 +157,16 @@ class MongoBlacklistImpl:
         :return: (操作成功, 是否在黑名单中)
         """
         try:
-            query: dict[str, Any] = {"user_id": user_id, "code": _code_regex(code)}
+            full_code = _full_code(code)
+            if not full_code:
+                return True, False
+            query: dict[str, Any] = {"user_id": user_id, "code": full_code}
             success, result = self.mongo_exec.query_by_condition(
                 table=self.blacklist_table,
                 condition=query,
                 sort=None,
                 skip=None,
-                limit=None,
+                limit=1,
             )
             if success:
                 return True, result is not None and len(result) > 0
@@ -162,3 +174,32 @@ class MongoBlacklistImpl:
         except Exception as e:
             self.logger.error(f"检查黑名单失败: {e}")
             return False, False
+
+    def query_blacklisted_codes(
+        self, user_id: str, codes: Sequence[str]
+    ) -> tuple[bool, set[str]]:
+        """批量查出给定代码中哪些在该用户的黑名单里（一次查询）
+
+        用于替换「循环里逐个 is_stock_blacklisted」的 N+1 写法。
+        :param user_id: 用户 ID
+        :param codes: 待检查的股票代码列表
+        :return: (操作成功, 命中的完整代码集合)
+        """
+        try:
+            full_codes = [c for c in (_full_code(c) for c in codes) if c]
+            if not full_codes:
+                return True, set()
+            query: dict[str, Any] = {"user_id": user_id, "code": {"$in": full_codes}}
+            success, records = self.mongo_exec.query_by_condition(
+                table=self.blacklist_table,
+                condition=query,
+                sort=None,
+                skip=None,
+                limit=None,
+            )
+            if not success:
+                return False, set()
+            return True, {r.get("code", "") for r in (records or [])}
+        except Exception as e:
+            self.logger.error(f"批量检查黑名单失败: {e}")
+            return False, set()

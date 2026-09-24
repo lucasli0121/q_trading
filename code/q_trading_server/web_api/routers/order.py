@@ -48,7 +48,7 @@ def _verify_order_ownership(order_id: str, user_id: str, role: int) -> dict:
 
 
 @router.post("/create", response_model=ApiResponse[OrderInfo])
-async def create_order(req: OrderCreateRequest, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
+def create_order(req: OrderCreateRequest, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
     """创建订单。管理员（role==0）可为任意用户策略创建订单，普通用户仅可为自己的策略创建。"""
     user_id, role = user_info
     impl = MongoOrderImpl()
@@ -101,7 +101,7 @@ async def create_order(req: OrderCreateRequest, user_info: tuple[str, int] = Dep
 
 
 @router.get("/list/{user_strategy_id}", response_model=ApiResponse[list[OrderInfo]])
-async def list_orders(user_strategy_id: str, user_id: str = Depends(get_current_user)):
+def list_orders(user_strategy_id: str, user_id: str = Depends(get_current_user)):
     """查询某个用户策略下的订单列表。"""
     impl = MongoOrderImpl()
     ok, orders = impl.query_orders_by_user_strategy(user_strategy_id)
@@ -129,7 +129,7 @@ async def list_orders(user_strategy_id: str, user_id: str = Depends(get_current_
 
 
 @router.get("/user/list", response_model=ApiResponse[list[OrderInfo]])
-async def list_orders_by_user(
+def list_orders_by_user(
     start_time: str | None = Query(default=None, description="起始时间，格式 %Y-%m-%d %H:%M:%S，为空则不限制"),
     end_time: str | None = Query(default=None, description="结束时间，格式 %Y-%m-%d %H:%M:%S，为空则不限制"),
     status: str | None = Query(default=None, description="订单状态，为空则查询所有状态"),
@@ -183,7 +183,7 @@ async def list_orders_by_user(
 
 
 @router.get("/latest", response_model=ApiResponse[list[OrderInfo]])
-async def query_latest_order(
+def query_latest_order(
     stock_codes: str = Query(description="股票代码，多个用英文逗号分隔，如: 600519,000001"),
     user_strategy_id: str = Query(description="用户策略 ID"),
     action: str = Query(default="", description="订单动作（买入/卖出），为空则不限制"),
@@ -225,7 +225,7 @@ async def query_latest_order(
 
 
 @router.get("/{order_id}", response_model=ApiResponse[OrderInfo])
-async def get_order(order_id: str, user_id: str = Depends(get_current_user)):
+def get_order(order_id: str, user_id: str = Depends(get_current_user)):
     """查询单个订单。"""
     impl = MongoOrderImpl()
     ok, orders = impl.query_order_by_id(order_id)
@@ -252,7 +252,7 @@ async def get_order(order_id: str, user_id: str = Depends(get_current_user)):
 
 
 @router.put("/{order_id}/status", response_model=ApiResponse[OrderInfo])
-async def update_order_status(
+def update_order_status(
     order_id: str, req: OrderUpdateStatusRequest, user_info: tuple[str, int] = Depends(get_current_user_with_role)
 ):
     """更新订单状态。管理员可更新任意订单，普通用户仅可更新自己的订单。"""
@@ -287,7 +287,7 @@ async def update_order_status(
 
 
 @router.put("/{order_id}", response_model=ApiResponse[OrderInfo])
-async def update_order(
+def update_order(
     order_id: str, req: OrderUpdateRequest, user_info: tuple[str, int] = Depends(get_current_user_with_role)
 ):
     """更新订单（仅更新传入的非空字段，user_strategy_id 不可修改）。

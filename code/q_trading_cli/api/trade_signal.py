@@ -98,7 +98,7 @@ class TradeSignalApi:
 
     def list(
         self,
-        stock_codes: list | None = None,
+        stock_codes: list[str] | None = None,
         strategy_id: str | None = None,
         action: str | None = None,
         start_time: str | None = None,
@@ -108,6 +108,8 @@ class TradeSignalApi:
     ) -> list[dict[str, Any]]:
         """查询交易信号列表。
 
+        :param stock_codes: 股票代码列表（可选，为空则不过滤；以列表形式传给
+            后端，由 requests 编码为重复的同名 query 参数）
         :param strategy_id: 策略模板 ID（可选）
         :param action: 交易方向筛选（可选，买入/卖出）
         :param start_time: 开始时间（可选，格式 YYYY-MM-DD HH:MM:SS）

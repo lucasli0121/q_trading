@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/factor", tags=["因子管理"])
 
 
 @router.post("/create", response_model=ApiResponse[dict])
-async def create_factor(
+def create_factor(
     req: FactorCreateRequest, user_id: str = Depends(require_admin)
 ):
     """创建因子（仅管理员，同名因子返回错误）"""
@@ -34,7 +34,7 @@ async def create_factor(
 
 
 @router.delete("/{name}", response_model=ApiResponse[str])
-async def delete_factor(name: str, user_id: str = Depends(require_admin)):
+def delete_factor(name: str, user_id: str = Depends(require_admin)):
     """删除因子（仅管理员）"""
     impl = MongoFactorImpl()
     # 验证因子存在
@@ -48,7 +48,7 @@ async def delete_factor(name: str, user_id: str = Depends(require_admin)):
 
 
 @router.get("/list", response_model=ApiResponse[list])
-async def list_factors():
+def list_factors():
     """查询所有因子（公开接口，无需登录）"""
     impl = MongoFactorImpl()
     res, factors = impl.query_all_factors()
@@ -62,7 +62,7 @@ async def list_factors():
 
 
 @router.get("/id/{id}", response_model=ApiResponse[dict])
-async def get_factor_by_id(id: str, user_id: str = Depends(get_current_user)):
+def get_factor_by_id(id: str, user_id: str = Depends(get_current_user)):
     """按记录 ID 查询单个因子详情"""
     impl = MongoFactorImpl()
     res, factors = impl.query_factor_by_id(id)
@@ -74,7 +74,7 @@ async def get_factor_by_id(id: str, user_id: str = Depends(get_current_user)):
 
 
 @router.get("/{name}", response_model=ApiResponse[dict])
-async def get_factor(name: str, user_id: str = Depends(get_current_user)):
+def get_factor(name: str, user_id: str = Depends(get_current_user)):
     """查询单个因子详情"""
     impl = MongoFactorImpl()
     res, factors = impl.query_factor_by_name(name)

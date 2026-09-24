@@ -46,9 +46,9 @@ class StrongReboundStrategy(BaseStrategy):
         3. 积分项：1）当天股价超出阻力位；2）当天股价低开；3）股价低于平均价次数百分率
     """
 
-    strategy_name: str = "强势反弹策略"
+    strategy_name: str = "强趋势策略"
     description: str = (
-        "强势反弹策略：股价最近连续反弹，最近涨幅增大而跌幅有限"
+        "强趋势策略：股价最近连续反弹，最近涨幅增大而跌幅有限"
     )
 
     #适配

@@ -140,6 +140,28 @@ class MongoTradeSignalImpl:
             self.logger.error(f"按策略 ID 列表删除交易信号记录失败: {e}")
             return False
 
+    def query_signal_by_id(self, id: str) -> tuple[bool, Any | None]:
+        """按记录 ID 查询单条交易信号
+
+        用于删除前的归属校验（先取记录的 user_strategy_id 再比对是否属于当前用户）。
+
+        :param id: 记录 ID（MongoDB _id）
+        :return: (ok, record_or_None)；ID 格式非法时返回 (True, None) 而非报错
+        """
+        try:
+            if not ObjectId.is_valid(id):
+                return True, None
+            return self.mongo_exec.query_by_condition(
+                table=self.trade_signal_table,
+                condition={"_id": ObjectId(id)},
+                sort=None,
+                skip=None,
+                limit=1,
+            )
+        except Exception as e:
+            self.logger.error(f"按 ID 查询交易信号记录失败: {e}")
+            return False, None
+
     def query_signals(
         self,
         stock_codes: list = [],

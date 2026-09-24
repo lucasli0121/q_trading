@@ -261,25 +261,30 @@ class MongoCompanyValuationImpl:
                     cap_filter["$lte"] = cap_max
                 match["total_market_cap"] = cap_filter
 
-            pipeline: list[dict[str, Any]] = [
-                {"$sort": {"code": 1, "report_date": -1}},
+            pipeline: list[dict[str, Any]] = []
+            # $match 必须放在 $sort / $group 之前：
+            # 语义是「先按条件筛选记录，再在筛选结果中取各股票最新一条」。
+            # 若放在 $group 之后，会先对全表做「每股取最新」再过滤，
+            # total_market_cap / ttm_pe 上的索引完全用不上。
+            if match:
+                pipeline.append({"$match": match})
+            pipeline.append({"$sort": {"code": 1, "report_date": -1}})
+            pipeline.append(
                 {
                     "$group": {
                         "_id": "$code",
                         "doc": {"$first": "$$ROOT"},
                     }
-                },
-                {"$replaceRoot": {"newRoot": "$doc"}},
-            ]
-            if match:
-                pipeline.append({"$match": match})
+                }
+            )
+            pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
             pipeline.append({"$sort": {"code": 1}})
             if skip > 0:
                 pipeline.append({"$skip": skip})
             if limit > 0:
                 pipeline.append({"$limit": limit})
 
-            cursor = self.company_valuation_table.aggregate(pipeline)
+            cursor = self.company_valuation_table.aggregate(pipeline, allowDiskUse=True)
             return True, list(cursor)
         except Exception as e:
             self.logger.error(f"按市值范围查询代码失败: {e}")
@@ -310,25 +315,30 @@ class MongoCompanyValuationImpl:
                     ttm_filter["$lte"] = ttm_max
                 match["ttm_pe"] = ttm_filter
 
-            pipeline: list[dict[str, Any]] = [
-                {"$sort": {"code": 1, "report_date": -1}},
+            pipeline: list[dict[str, Any]] = []
+            # $match 必须放在 $sort / $group 之前：
+            # 语义是「先按条件筛选记录，再在筛选结果中取各股票最新一条」。
+            # 若放在 $group 之后，会先对全表做「每股取最新」再过滤，
+            # total_market_cap / ttm_pe 上的索引完全用不上。
+            if match:
+                pipeline.append({"$match": match})
+            pipeline.append({"$sort": {"code": 1, "report_date": -1}})
+            pipeline.append(
                 {
                     "$group": {
                         "_id": "$code",
                         "doc": {"$first": "$$ROOT"},
                     }
-                },
-                {"$replaceRoot": {"newRoot": "$doc"}},
-            ]
-            if match:
-                pipeline.append({"$match": match})
+                }
+            )
+            pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
             pipeline.append({"$sort": {"code": 1}})
             if skip > 0:
                 pipeline.append({"$skip": skip})
             if limit > 0:
                 pipeline.append({"$limit": limit})
 
-            cursor = self.company_valuation_table.aggregate(pipeline)
+            cursor = self.company_valuation_table.aggregate(pipeline, allowDiskUse=True)
             return True, list(cursor)
         except Exception as e:
             self.logger.error(f"按 TTM 市盈率范围查询代码失败: {e}")

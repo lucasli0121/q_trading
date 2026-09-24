@@ -14,6 +14,8 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 
+from core.routes import ALL_ROUTES
+
 # 已知扫描器/漏洞探针路径模式
 SUSPICIOUS_PATH_PATTERNS: list[re.Pattern] = [
     re.compile(r"\.env", re.IGNORECASE),
@@ -62,18 +64,30 @@ SUSPICIOUS_PATH_PATTERNS: list[re.Pattern] = [
     re.compile(r"\.save$", re.IGNORECASE),
 ]
 
-# 已知的合法应用路径（不会被误拦截）
+# 框架/静态资源路径（前缀匹配，含其子路径）
 ALLOWED_PREFIXES: tuple[str, ...] = (
     "/_nicegui",
-    "/login",
     "/api",
     "/static",
-    "/strategy-monitor",
-    "/stock-pools",
-    "/stock-quotes",
-    "/settings-blacklist",
-    "/settings-preferences",
 )
+
+# 应用页面路由（精确匹配）
+# 唯一来源：core/routes.ALL_ROUTES（由 PAGE_ROUTES 派生）。
+# 这样新增页面只需在 core/routes.py 登记一次，不会再出现「路由已注册、
+# 白名单漏登记」导致该路径走扫描器正则检查并被计入 IP 限流窗口
+# （60 秒 30 次）而误拦正常用户。
+ALLOWED_ROUTES: frozenset[str] = ALL_ROUTES
+
+
+def is_allowed_path(path: str) -> bool:
+    """判断路径是否为已知合法路径。
+
+    应用路由按精确匹配，框架/静态资源按前缀匹配。
+
+    :param path: 请求路径
+    :return: True 表示合法路径，应直接放行且不计入限流
+    """
+    return path in ALLOWED_ROUTES or path.startswith(ALLOWED_PREFIXES)
 
 
 def is_suspicious_path(path: str) -> bool:
@@ -95,7 +109,7 @@ class ScannerBlockMiddleware(BaseHTTPMiddleware):
         path: str = request.url.path
 
         # 根路径和已知合法路径直接放行
-        if path == "/" or path.startswith(ALLOWED_PREFIXES):
+        if is_allowed_path(path):
             return await call_next(request)
 
         # 检查是否为扫描器路径
@@ -143,7 +157,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     del self._blocks[client_ip]
 
             # 仅对非合法路径计数
-            if path != "/" and not path.startswith(ALLOWED_PREFIXES):
+            if not is_allowed_path(path):
                 # 清理过期记录
                 self._requests[client_ip] = [
                     t for t in self._requests[client_ip]

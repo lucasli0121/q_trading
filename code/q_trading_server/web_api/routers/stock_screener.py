@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/screener", tags=["股票筛选"])
 
 
 @router.get("/search", response_model=ApiResponse[list[StockScreenerItem]])
-async def search_stocks(
+def search_stocks(
     ttm_min: float = Query(default=0.0, description="TTM市盈率下限（含），0 表示不限制"),
     ttm_max: float = Query(default=0.0, description="TTM市盈率上限（含），0 表示不限制"),
     cap_min: float = Query(default=0.0, description="总市值下限（含），单位：亿元，0 表示不限制"),
@@ -33,8 +33,11 @@ async def search_stocks(
     综合查询公司估值表（TTM市盈率、总市值）和公司财务表（利润率=净利润/营业总收入），
     返回同时满足所有范围条件的股票列表。
     每个范围参数为 0 表示该维度不设限制。
+
+    分页在最后一次性完成：利润率来自财务表，必须等两表数据都到齐、过滤完之后才能分页。
+    原实现在库侧先按 skip/limit 切一刀、过滤后又切第二刀，skip>0 时几乎必然返回空。
     """
-    # 1. 从估值表按 TTM 和市值范围查询
+    # 1. 从估值表按 TTM 和市值范围查询（这里不分页）
     val_impl = MongoCompanyValuationImpl()
     # 参数单位为亿元，转换为实际数值后查询
     val_ok, val_records = val_impl.query_valuation_by_ranges(
@@ -42,8 +45,8 @@ async def search_stocks(
         ttm_max=ttm_max,
         cap_min=cap_min * 1e8 if cap_min > 0 else 0,
         cap_max=cap_max * 1e8 if cap_max > 0 else 0,
-        skip=skip,
-        limit=limit
+        skip=0,
+        limit=0,
     )
     if not val_ok:
         raise HTTPException(status_code=500, detail="查询估值数据失败")
@@ -95,7 +98,8 @@ async def search_stocks(
             report_date=f.get("report_date", ""),
         ))
 
-    # 5. 分页
+    # 5. 排序后一次性分页（按 code 排序，保证翻页结果稳定）
+    rlist.sort(key=lambda x: x.code)
     if skip > 0:
         rlist = rlist[skip:]
     if limit > 0:

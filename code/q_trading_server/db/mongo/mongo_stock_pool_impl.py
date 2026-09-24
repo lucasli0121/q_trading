@@ -51,7 +51,10 @@ class MongoStockPoolImpl:
                 return False, "重复的股票池名称已经存在，不能重复创建"
             if "id" in data:
                 del data["id"]
-            filter = {"name": name}
+            # upsert 条件必须带 user_id：
+            # 只用 name 的话，第二个用户创建同名股票池会直接覆盖第一个用户的记录
+            # （$set 会把 user_id 一并改写），属于跨用户数据污染。
+            filter = {"name": name, "user_id": user_id}
             result = self.pool_table.update_one(filter, {"$set": data}, upsert=True)
             return True, str(result.upserted_id) if result.upserted_id else None
         except Exception as e:
@@ -72,9 +75,13 @@ class MongoStockPoolImpl:
                 if "id" in data:
                     del data["id"]
                 name = data["name"]
+                user_id = data.get("user_id", "")
+                key: dict[str, Any] = {"name": name}
+                if user_id:
+                    key["user_id"] = user_id
                 requests.append(
                     UpdateOne(
-                        {"name": name},
+                        key,
                         {"$set": {k: v for k, v in data.items() if k != "id"}},
                         upsert=True,
                     )
@@ -128,7 +135,43 @@ class MongoStockPoolImpl:
     def delete_stock_pool_by_id(self, pool_id: str) -> bool:
         if pool_id == "":
             return False
+        # 级联清理池内股票关联，避免 pool_stock_tbl 留下孤儿记录
+        self.pool_stock_table.delete_many({"pool_id": pool_id})
         return self.mongo_exec.delete(table=self.pool_table, condition={"_id": ObjectId(pool_id)})
+
+    def delete_stock_pools_by_user(self, user_id: str) -> bool:
+        """删除该用户的全部股票池，并级联清理池内股票关联记录。
+
+        用于替换「先查列表再逐个 delete_stock_pool」的循环写法（原写法调用了
+        并不存在的 delete_stock_pool，注销账号时会抛 AttributeError）。
+
+        :param user_id: 用户 ID
+        :return: 成功返回 True，否则返回 False
+        """
+        try:
+            if not user_id:
+                self.logger.error("user_id is empty.")
+                return False
+            res, pools = self.query_stock_pools_by_user(user_id)
+            if not res:
+                self.logger.error("查询用户股票池失败，取消删除: user_id=%s", user_id)
+                return False
+            pool_ids = [
+                str(p.get("_id", p.get("id", ""))) for p in (pools or [])
+            ]
+            pool_ids = [pid for pid in pool_ids if pid]
+            if pool_ids:
+                self.pool_stock_table.delete_many({"pool_id": {"$in": pool_ids}})
+            # 直接用 delete_many：该用户没有股票池时 deleted_count 为 0，也算删除成功
+            result = self.pool_table.delete_many({"user_id": user_id})
+            self.logger.info(
+                "删除用户股票池: user_id=%s, 股票池=%d 个, 已删除=%d",
+                user_id, len(pool_ids), result.deleted_count,
+            )
+            return result.acknowledged
+        except Exception as e:
+            self.logger.error(f"删除用户股票池失败: {e}")
+            return False
 
 
 
@@ -190,9 +233,10 @@ class MongoStockPoolImpl:
             requests = []
             for data in records:
                 pool_id = data.get("pool_id", "")
-                code = data.get("code", "")
+                code = tools.guess_stock_code_suffix(data.get("code", ""))
                 if not pool_id or not code:
                     continue
+                data["code"] = code
                 requests.append(
                     UpdateOne(
                         {"pool_id": pool_id, "code": code},
@@ -220,9 +264,12 @@ class MongoStockPoolImpl:
         :return: 成功返回 True，否则返回 False
         """
         try:
+            real_codes = [c for c in (tools.guess_stock_code_suffix(c) for c in codes) if c]
+            if not real_codes:
+                return False
             query: dict[str, Any] = {
                 "pool_id": pool_id,
-                "code": {"$in": codes}
+                "code": {"$in": real_codes}
             }
             result = self.mongo_exec.delete(table=self.pool_stock_table, condition=query)
             return result

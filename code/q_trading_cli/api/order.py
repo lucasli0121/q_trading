@@ -167,7 +167,7 @@ class OrderApi:
         :param stock_codes: 股票代码列表，内部去重保序后用英文逗号拼接传后端
         :param action: 订单动作 买入/卖出（可选，为空则不限制）
         :param status: 订单状态（可选，为空则不限制）
-        :return: 最新订单信息字典，无匹配订单时返回空字典
+        :return: 最新订单列表（list[dict]），无匹配订单时返回空列表
         """
         # 去重保序、过滤空值，拼成逗号分隔字符串传后端
         seen: set[str] = set()

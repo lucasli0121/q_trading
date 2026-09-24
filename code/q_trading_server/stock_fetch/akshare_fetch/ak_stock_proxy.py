@@ -21,7 +21,7 @@ from db.mongo.mongo_company_valuation_impl import MongoCompanyValuationImpl
 from db.mongo.mongo_company_finance_impl import MongoCompanyFinanceImpl
 from db.mongo.mongo_industry_impl import MongoIndustryImpl
 from db.mongo.mongo_rt_stocks_impl import MongoRtStocksImpl
-from utils.tools import to_float
+from utils.tools import pure_stock_code, to_float
 from db.mongo.mongo_stock_info_impl import MongoStockInfoImpl
 from stock_fetch.akshare_fetch import AkStockBase
 import exchange_calendars as xcals
@@ -428,7 +428,7 @@ class AkStockProxy(AkStockBase):
     """
     def sync_stock_valuation(self, code: str) -> bool:
         db_impl = MongoCompanyValuationImpl()
-        pure_code = db_impl.normalize_code(code)
+        pure_code = pure_stock_code(code)
         try:
             # akshare 返回的数据通常为两列：指标(item) 和 值(value)
             df = self.get_stock_valuation(stock_code=pure_code)
@@ -556,7 +556,7 @@ class AkStockProxy(AkStockBase):
     """
     def sync_stock_financial(self, code: str) -> bool:
         db_impl = MongoCompanyFinanceImpl()
-        pure_code = db_impl.normalize_code(code)
+        pure_code = pure_stock_code(code)
         try:
             df = self.get_stock_financial(stock_code=pure_code)
         except Exception as e:

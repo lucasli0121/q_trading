@@ -16,6 +16,7 @@ from db.mongo.mongo_runlog_impl import MongoRunLogImpl
 from db.mongo.mongo_strategy_execution_impl import MongoStrategyExecutionImpl
 from db.mongo.mongo_user_strategy_impl import MongoUserStrategyImpl
 from db.mongo.mongo_workflow_service_user_strategy_impl import MongoWorkFlowServiceUserStrategyImpl
+from utils import tools
 from web_api.auth import get_current_user, get_current_user_with_role
 from web_api.models import (
     ApiResponse,
@@ -51,11 +52,33 @@ def _verify_ownership(impl: MongoUserStrategyImpl, user_strategy_id: str, user_i
     return record
 
 
+def _to_execution_item(record: dict[str, Any]) -> StrategyExecutionItem:
+    """把策略执行结果的库记录转成响应模型
+
+    三处执行结果查询共用一份字段映射，避免各自维护导致字段分叉
+    （此前 /executions 接口漏映射 remaining_cash，该字段恒定返回 0.0）。
+    """
+    return StrategyExecutionItem(
+        id=str(record.get("_id", "")),
+        user_strategy_id=record.get("user_strategy_id", ""),
+        current_return_rate=float(record.get("current_return_rate", 0) or 0),
+        current_profit=float(record.get("current_profit", 0) or 0),
+        annualized_return_rate=float(record.get("annualized_return_rate", 0) or 0),
+        benchmark_return_rate=float(record.get("benchmark_return_rate", 0) or 0),
+        positions=record.get("positions", []) or [],
+        initial_amount=float(record.get("initial_amount", 0) or 0),
+        remaining_cash=float(record.get("remaining_cash", 0) or 0),
+        start_date=record.get("start_date", ""),
+        execution_days=int(record.get("execution_days", 0) or 0),
+        update_time=record.get("update_time", ""),
+    )
+
+
 # ==================== 用户策略关联 CRUD ====================
 
 
 @router.post("/create", response_model=ApiResponse[UserStrategyItem])
-async def create_user_strategy(
+def create_user_strategy(
     req: UserStrategyCreateRequest, user_id: str = Depends(get_current_user)
 ):
     """创建用户策略关联（允许重复新增，不做重复检测）"""
@@ -71,13 +94,14 @@ async def create_user_strategy(
         "total_profit": req.total_profit,
         "max_stock_count": req.max_stock_count,
         "strategy_params": req.strategy_params,
+        "update_time": now,
         "create_time": now,
     })
     if error == "duplicate_name":
         raise HTTPException(status_code=409, detail="已存在同名策略，请更换名称")
     if error or not ok or not record_id:
         raise HTTPException(status_code=500, detail="创建用户策略失败")
-    await AppContext().stock_fetch.distribute_user_strategy_to_workflow()
+    AppContext().stock_fetch.submit_user_strategy_distribution()
     return ApiResponse(
         data=UserStrategyItem(
             id=record_id or "",
@@ -90,6 +114,7 @@ async def create_user_strategy(
             total_profit=req.total_profit,
             max_stock_count=req.max_stock_count,
             strategy_params=req.strategy_params,
+            update_time=now,
             create_time=now,
         ),
         message="创建成功",
@@ -97,7 +122,7 @@ async def create_user_strategy(
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
+def delete_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
     """删除用户策略关联"""
     user_id, role = user_info
     impl = MongoUserStrategyImpl()
@@ -111,7 +136,7 @@ async def delete_user_strategy(id: str, user_info: tuple[str, int] = Depends(get
 
 
 @router.patch("/{id}", response_model=ApiResponse[str])
-async def update_user_strategy(
+def update_user_strategy(
     id: str, req: UserStrategyUpdateRequest, user_info: tuple[str, int] = Depends(get_current_user_with_role)
 ):
     """更新用户策略关联（名称、状态、股票池、初始金额）"""
@@ -144,7 +169,7 @@ async def update_user_strategy(
 
 
 @router.get("/list", response_model=ApiResponse[list[UserStrategyItem]])
-async def list_user_strategies(user_id: str = Depends(get_current_user)):
+def list_user_strategies(user_id: str = Depends(get_current_user)):
     """查询当前用户的所有策略关联（需登录）"""
     impl = MongoUserStrategyImpl()
     res, records = impl.query_user_strategies_by_user(user_id)
@@ -162,6 +187,7 @@ async def list_user_strategies(user_id: str = Depends(get_current_user)):
             total_profit=float(r.get("total_profit", 0.0) or 0.0),
             max_stock_count=int(r.get("max_stock_count", 0) or 0),
             strategy_params=r.get("strategy_params", {}) or {},
+            update_time=r.get("update_time", ""),
             create_time=r.get("create_time", ""),
         )
         for r in (records or [])
@@ -170,7 +196,7 @@ async def list_user_strategies(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/all", response_model=ApiResponse[list[UserStrategyItem]])
-async def list_all_user_strategies():
+def list_all_user_strategies():
     """查询所有用户策略关联（公开接口，无需登录）"""
     impl = MongoUserStrategyImpl()
     res, records = impl.query_all_user_strategies()
@@ -188,6 +214,7 @@ async def list_all_user_strategies():
             total_profit=float(r.get("total_profit", 0.0) or 0.0),
             max_stock_count=int(r.get("max_stock_count", 0) or 0),
             strategy_params=r.get("strategy_params", {}) or {},
+            update_time=r.get("update_time", ""),
             create_time=r.get("create_time", ""),
         )
         for r in (records or [])
@@ -196,7 +223,7 @@ async def list_all_user_strategies():
 
 
 @router.get("/executions", response_model=ApiResponse[list[StrategyExecutionItem]])
-async def list_executions(user_info: tuple[str, int] = Depends(get_current_user_with_role)):
+def list_executions(user_info: tuple[str, int] = Depends(get_current_user_with_role)):
     """查询用户所有策略的执行结果列表"""
     user_id, role = user_info
     # 1. 先查用户的所有用户策略 ID
@@ -216,26 +243,11 @@ async def list_executions(user_info: tuple[str, int] = Depends(get_current_user_
     res, results = exec_impl.query_executions_by_user_strategy_ids(user_strategy_ids)
     if not res:
         raise HTTPException(status_code=500, detail="查询策略执行结果失败")
-    rlist = []
-    for r in (results or []):
-        rlist.append(StrategyExecutionItem(
-            id=str(r.get("_id", "")),
-            user_strategy_id=r.get("user_strategy_id", ""),
-            current_return_rate=float(r.get("current_return_rate", 0) or 0),
-            current_profit=float(r.get("current_profit", 0) or 0),
-            annualized_return_rate=float(r.get("annualized_return_rate", 0) or 0),
-            benchmark_return_rate=float(r.get("benchmark_return_rate", 0) or 0),
-            positions=r.get("positions", []) or [],
-            initial_amount=float(r.get("initial_amount", 0) or 0),
-            start_date=r.get("start_date", ""),
-            execution_days=int(r.get("execution_days", 0) or 0),
-            update_time=r.get("update_time", ""),
-        ))
-    return ApiResponse(data=rlist)
+    return ApiResponse(data=[_to_execution_item(r) for r in (results or [])])
 
 
 @router.get("/{id}", response_model=ApiResponse[UserStrategyItem])
-async def get_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
+def get_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
     """查询单个用户策略关联详情"""
     user_id, role = user_info
     impl = MongoUserStrategyImpl()
@@ -252,6 +264,7 @@ async def get_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_cu
             total_profit=float(record.get("total_profit", 0.0) or 0.0),
             max_stock_count=int(record.get("max_stock_count", 0) or 0),
             strategy_params=record.get("strategy_params", {}) or {},
+            update_time=record.get("update_time", ""),
             create_time=record.get("create_time", ""),
         )
     )
@@ -260,8 +273,61 @@ async def get_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_cu
 # ==================== 策略执行结果 ====================
 
 
+@router.get("/executions/range", response_model=ApiResponse[list[StrategyExecutionItem]])
+def list_executions_by_time_range(
+    user_info: tuple[str, int] = Depends(get_current_user_with_role),
+    start_time: str = Query(
+        default="", description="起始时间（含），YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS，为空表示不限"
+    ),
+    end_time: str = Query(
+        default="", description="结束时间（含），格式同上；只传日期按当天 23:59:59 处理"
+    ),
+    target_user_id: str = Query(
+        default="", description="目标用户 ID，仅管理员可指定；其他角色传入他人 ID 返回 403"
+    ),
+    skip: int = Query(default=0, ge=0, description="分页偏移"),
+    limit: int = Query(default=500, ge=1, le=10000, description="分页大小"),
+):
+    """按 update_time 时间范围查询策略执行结果
+
+    策略执行结果表只存 user_strategy_id、没有 user_id 字段，所以按用户筛选时
+    先取该用户的用户策略 ID 列表，再按 ID 列表 + update_time 范围查询。
+
+    越权控制：普通用户只能查自己的记录；管理员可用 target_user_id 指定用户，
+    不传则查全部用户策略的执行结果。
+
+    时间边界都是闭区间，且按字符串比较（库中 update_time 为
+    "%Y-%m-%d %H:%M:%S"，字典序与时间序一致），只传日期时上界补 23:59:59。
+    """
+    current_user_id, role = user_info
+    owner_id = current_user_id
+    if role == 0:
+        owner_id = target_user_id  # 管理员：空串表示不按用户过滤
+    elif target_user_id and target_user_id != current_user_id:
+        raise HTTPException(status_code=403, detail="无权查询其他用户的策略执行结果")
+
+    # 时间格式在入口处校验，非法参数返回 400，避免落到 Impl 里变成 500
+    try:
+        tools.normalize_query_time(start_time, is_end=False)
+        tools.normalize_query_time(end_time, is_end=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    exec_impl = MongoStrategyExecutionImpl()
+    res, results = exec_impl.query_executions_by_user_and_time_range(
+        user_id=owner_id,
+        start_time=start_time,
+        end_time=end_time,
+        skip=skip,
+        limit=limit,
+    )
+    if not res:
+        raise HTTPException(status_code=500, detail="查询策略执行结果失败")
+    return ApiResponse(data=[_to_execution_item(r) for r in (results or [])])
+
+
 @router.post("/{id}/execution", response_model=ApiResponse[str])
-async def save_execution(
+def save_execution(
     id: str,
     req: StrategyExecutionSaveRequest,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
@@ -292,7 +358,7 @@ async def save_execution(
 
 
 @router.get("/{id}/execution", response_model=ApiResponse[list[StrategyExecutionItem]])
-async def get_execution(
+def get_execution(
     id: str,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
 ):
@@ -305,26 +371,10 @@ async def get_execution(
     res, results = exec_impl.query_execution_by_user_strategy(id)
     if not res:
         raise HTTPException(status_code=500, detail="查询策略执行结果失败")
-    rlist = []
-    for r in (results or []):
-        rlist.append(StrategyExecutionItem(
-            id=str(r.get("_id", "")),
-            user_strategy_id=r.get("user_strategy_id", ""),
-            current_return_rate=float(r.get("current_return_rate", 0) or 0),
-            current_profit=float(r.get("current_profit", 0) or 0),
-            annualized_return_rate=float(r.get("annualized_return_rate", 0) or 0),
-            benchmark_return_rate=float(r.get("benchmark_return_rate", 0) or 0),
-            positions=r.get("positions", []) or [],
-            initial_amount=float(r.get("initial_amount", 0) or 0),
-            remaining_cash=float(r.get("remaining_cash", 0) or 0),
-            start_date=r.get("start_date", ""),
-            execution_days=int(r.get("execution_days", 0) or 0),
-            update_time=r.get("update_time", ""),
-        ))
-    return ApiResponse(data=rlist)
+    return ApiResponse(data=[_to_execution_item(r) for r in (results or [])])
 
 @router.get("/{id}/execution/latest", response_model=ApiResponse[StrategyExecutionItem])
-async def get_latest_execution(
+def get_latest_execution(
     id: str,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
 ):
@@ -339,25 +389,11 @@ async def get_latest_execution(
         raise HTTPException(status_code=500, detail="查询策略执行结果失败")
     if not results or len(results) == 0:
         raise HTTPException(status_code=404, detail="未找到该策略的执行结果")
-    r = results[0]
-    return ApiResponse(data=StrategyExecutionItem(
-        id=str(r.get("_id", "")),
-        user_strategy_id=r.get("user_strategy_id", ""),
-        current_return_rate=float(r.get("current_return_rate", 0) or 0),
-        current_profit=float(r.get("current_profit", 0) or 0),
-        annualized_return_rate=float(r.get("annualized_return_rate", 0) or 0),
-        benchmark_return_rate=float(r.get("benchmark_return_rate", 0) or 0),
-        positions=r.get("positions", []) or [],
-        initial_amount=float(r.get("initial_amount", 0) or 0),
-        remaining_cash=float(r.get("remaining_cash", 0) or 0),
-        start_date=r.get("start_date", ""),
-        execution_days=int(r.get("execution_days", 0) or 0),
-        update_time=r.get("update_time", ""),
-    ))
+    return ApiResponse(data=_to_execution_item(results[0]))
 
 
 @router.delete("/{id}/execution", response_model=ApiResponse[str])
-async def delete_execution(
+def delete_execution(
     id: str,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
 ):
@@ -377,7 +413,7 @@ async def delete_execution(
 
 
 @router.post("/{id}/runlog", response_model=ApiResponse[str])
-async def save_runlog(
+def save_runlog(
     id: str,
     req: RunLogSaveRequest,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
@@ -401,7 +437,7 @@ async def save_runlog(
 
 
 @router.get("/{id}/runlog", response_model=ApiResponse[list])
-async def get_runlog(
+def get_runlog(
     id: str,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
     skip: int = Query(default=0, description="分页偏移"),

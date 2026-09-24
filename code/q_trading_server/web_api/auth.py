@@ -27,7 +27,7 @@ optional_security = HTTPBearer(auto_error=False)
 _PASSWORD_SALT = "q_share_pwd_salt"
 
 
-async def get_optional_current_user_with_role(
+def get_optional_current_user_with_role(
     credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
 ) -> tuple[str | None, int]:
     """可选依赖：返回当前用户ID和角色，如果未提供 token，则默认为普通用户。"""
@@ -104,7 +104,7 @@ def _resolve_token(credentials: HTTPAuthorizationCredentials) -> tuple[str, int]
     return value, 1
 
 
-async def get_current_user(
+def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
     """FastAPI 依赖：从 Authorization Header 解析当前用户 ID
@@ -125,7 +125,7 @@ async def get_current_user(
     return user_id
 
 
-async def get_current_user_with_role(
+def get_current_user_with_role(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> tuple[str, int]:
     """FastAPI 依赖：从 Authorization Header 解析当前用户 ID 和角色
@@ -145,7 +145,7 @@ async def get_current_user_with_role(
     return _resolve_token(credentials)
 
 
-async def require_admin(
+def require_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
     """FastAPI 依赖：验证当前用户为管理员（role == 0），否则返回 403

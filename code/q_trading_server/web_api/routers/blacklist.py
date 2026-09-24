@@ -37,25 +37,38 @@ class BlacklistInfo(BaseModel):
     reason: str = ""
 
 
+def _resolve_real_codes(codes: list[str]) -> list[str]:
+    """批量查出代码在库中对应的规范代码。
+
+    原写法在 for 循环里逐个 query_by_codes([code])，N 只股票就是 N 次往返；
+    这里改成一次 $in 查询。
+    :raises HTTPException: 查询失败 500；存在库中不存在的代码 400
+    """
+    stock_impl = MongoStockInfoImpl()
+    ok, infos = stock_impl.query_by_codes(codes)
+    if not ok:
+        raise HTTPException(status_code=500, detail="查询股票信息失败")
+    found = {r.get("code", ""): r for r in (infos or [])}
+    missing = [c for c in codes if stock_impl.full_code(c) not in found]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"股票不存在: {', '.join(missing)}")
+    return [
+        found[full].get("code", "")
+        for full in (stock_impl.full_code(c) for c in codes)
+        if full in found
+    ]
+
+
 @router.post("/add", response_model=ApiResponse[str])
-async def add_blacklist(
+def add_blacklist(
     req: BlacklistAddRequest,
     user_id: str = Depends(get_current_user),
 ):
     """添加股票到黑名单"""
     impl = MongoBlacklistImpl()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 获取系统要求的真实代码
-    stock_impl = MongoStockInfoImpl()
-    stock_real_codes = []
-    for code in req.codes:
-        ok, exists = stock_impl.query_by_codes([code])
-        if not ok:
-            raise HTTPException(status_code=500, detail=f"查询股票信息失败: {code}")
-        if not exists or len(exists) == 0:
-            raise HTTPException(status_code=400, detail=f"股票不存在: {code}")
-        stock_real_codes.append(exists[0].get("code", ""))
-        
+    stock_real_codes = _resolve_real_codes(req.codes)
+
     records = [
         {"user_id": user_id, "code": c, "add_time": now, "reason": req.reason}
         for c in stock_real_codes
@@ -67,20 +80,11 @@ async def add_blacklist(
 
 
 @router.post("/remove", response_model=ApiResponse[str])
-async def remove_blacklist(
+def remove_blacklist(
     req: BlacklistRemoveRequest,
     user_id: str = Depends(get_current_user),
 ):
-    # 获取系统要求的真实代码
-    stock_impl = MongoStockInfoImpl()
-    stock_real_codes = []
-    for code in req.codes:
-        ok, exists = stock_impl.query_by_codes([code])
-        if not ok:
-            raise HTTPException(status_code=500, detail=f"查询股票信息失败: {code}")
-        if not exists or len(exists) == 0:
-            raise HTTPException(status_code=400, detail=f"股票不存在: {code}")
-        stock_real_codes.append(exists[0].get("code", ""))
+    stock_real_codes = _resolve_real_codes(req.codes)
     """从黑名单中移除股票"""
     impl = MongoBlacklistImpl()
     ok = impl.batch_remove_from_blacklist(user_id, stock_real_codes)
@@ -90,7 +94,7 @@ async def remove_blacklist(
 
 
 @router.get("/list", response_model=ApiResponse[list[BlacklistInfo]])
-async def list_blacklist(user_id: str = Depends(get_current_user)):
+def list_blacklist(user_id: str = Depends(get_current_user)):
     """查询用户的所有黑名单股票"""
     impl = MongoBlacklistImpl()
     res, records = impl.query_blacklist_by_user(user_id)
@@ -108,7 +112,7 @@ async def list_blacklist(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/check", response_model=ApiResponse[dict])
-async def check_blacklist(
+def check_blacklist(
     code: str = Query(..., description="股票代码"),
     user_id: str = Depends(get_current_user),
 ):

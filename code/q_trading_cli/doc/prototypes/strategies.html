@@ -130,7 +130,7 @@
             <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
                 <iconify-icon icon="lucide:trending-up"></iconify-icon>
             </div>
-            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+            <span class="text-xl font-bold text-gray-100">QTrade</span>
         </div>
         <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
             <a class="flex items-center px-4 py-3 text-sm font-medium text-gray-400 rounded-lg hover:bg-[#1e293b] hover:text-gray-100" href="home.html">
@@ -343,6 +343,16 @@
                                         <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">持仓数量</th>
                                         <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">成本价</th>
                                         <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">现价</th>
+                                        <!-- 盈亏（2026-09-22 变更，实现见 pages/strategies.py::_render_positions）
+                                             原稿只给金额（'+5,040'），现改为**收益率(收益额)**，形如 +10.00%(2000.00)：
+                                             正负号由百分率承担，金额取绝对值 + 两位小数，列内禁止折行。
+                                             口径：两者都用**实时行情价与成本价现算**。PositionItem 的
+                                             profit_rate/profit_amount 是**成交时点值**（买入时写入、持仓期间
+                                             后端不参与计算、卖出那一刻才重算），拿它显示等于显示建仓当刻的收益。
+                                             同理「现价」也不回退 PositionItem.current_price（同属成交时点写入）；
+                                             取不到实时价时，现价与盈亏一并显示 '--'。
+                                             颜色照 A 股惯例（盈利红 / 亏损绿）—— 注意下方 data 里的 'text-green-400'
+                                             仍是原稿的欧美惯例残留，**以实现为准，别按本原型回改实现**。 -->
                                         <th class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase">盈亏</th>
                                     </tr>
                                 </thead>
@@ -480,6 +490,20 @@
                                 <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm">¥</span>
                                 <input class="w-full pl-8 pr-4 py-2 border border-[#334155] rounded-lg text-sm font-bold text-blue-400 tracking-wider bg-[#111827]" type="number" value="1000000" />
                             </div>
+                        </div>
+                        <!-- 运行状态（2026-09-17 新增，实现见 pages/strategies.py）
+                             创建：勾选「立即运行」→ 以 running 创建；取消勾选 → 以 stopped 创建。**默认勾选**。
+                             编辑：同一位置为「运行状态」下拉（运行中 / 已暂停 / 已停止），默认选中当前状态，
+                                   保存即切换状态（等价于监控卡片上的启动 / 暂停 / 停止）。
+                             注：本原型的模态框为「步骤 1/2/3 + 保存并回测」，而当前实现是
+                             「策略 / 参数」两个标签页的单页表单，字段位置以实现为准。 -->
+                        <div class="col-span-2 space-y-1.5">
+                            <label class="text-sm font-medium text-gray-300">运行状态</label>
+                            <label class="flex items-center gap-2 text-sm text-gray-200">
+                                <input type="checkbox" checked class="w-4 h-4 rounded border-[#334155] bg-[#111827]" />
+                                立即运行
+                                <span class="text-xs text-gray-500">勾选后创建完成即开始运行</span>
+                            </label>
                         </div>
                     </div>
                 </section>

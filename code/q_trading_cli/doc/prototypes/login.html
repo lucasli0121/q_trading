@@ -27,7 +27,14 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            padding: 1rem;
+            /* 卡片中心落在窗口横向黄金分割点：容器水平居中卡片，
+               卡片中心 = (padding-left + 视口宽 − padding-right)/2，
+               取 padding-left = calc(23.6% + 1rem)、padding-right = 1rem
+               ⇒ 中心 = (23.6% + 100%)/2 = 61.8%。<768px 回退为居中。 */
+            padding: 1rem 1rem 1rem calc(23.6% + 1rem);
+        }
+        @media (max-width: 767px) {
+            body { padding: 1rem; }
         }
         .login-card {
             background-color: #1e293b;
@@ -234,7 +241,7 @@
             <div class="brand-icon">
                 <iconify-icon icon="lucide:trending-up"></iconify-icon>
             </div>
-            <span class="brand-text">QuantSys</span>
+            <span class="brand-text">QTrade</span>
         </div>
 
         <!-- Tabs -->

@@ -22,7 +22,7 @@ router = APIRouter(
 
 
 @router.post("/create", response_model=ApiResponse[str])
-async def create_system_message(
+def create_system_message(
     req: SystemMessageCreateRequest,
     user_id: str = Depends(require_admin),
 ):
@@ -47,7 +47,7 @@ async def create_system_message(
 
 
 @router.get("/list", response_model=ApiResponse[list[SystemMessageItem]])
-async def list_system_messages(
+def list_system_messages(
     skip: int = Query(default=0, description="分页跳过条数"),
     limit: int = Query(default=0, description="分页限制条数，0 表示不限制"),
     _user_id: str = Depends(require_admin),
@@ -72,7 +72,7 @@ async def list_system_messages(
 
 
 @router.get("/user_messages", response_model=ApiResponse[list[SystemMessageItem]])
-async def get_user_messages(
+def get_user_messages(
     user_id: str = Depends(get_current_user),
 ):
     """查询当前用户可收到的系统消息（广播 + 定向推送）"""
@@ -95,7 +95,7 @@ async def get_user_messages(
 
 
 @router.delete("/delete", response_model=ApiResponse[str])
-async def delete_system_message(
+def delete_system_message(
     id: str = Query(..., description="系统消息 ID"),
     _user_id: str = Depends(require_admin),
 ):

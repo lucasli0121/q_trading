@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/market", tags=["行情管理"])
 
 
 @router.get("/real_time", response_model=ApiResponse[list])
-async def get_real_time(
+def get_real_time(
     code: str = Query(default="", description="单只股票代码"),
     codes: str = Query(default="", description="多只股票代码，逗号分隔，如 000001,600519"),
     start_time: str = Query(default="", description="开始时间 YYYY-MM-DD HH:MM:SS"),
@@ -63,7 +63,7 @@ async def get_real_time(
 
 
 @router.get("/kline/day", response_model=ApiResponse[list])
-async def get_day_kline(
+def get_day_kline(
     code: str = Query(default="", description="单只股票代码"),
     codes: str = Query(default="", description="多只股票代码，逗号分隔，如 000001,600519"),
     start: str = Query(default="", description="开始日期 YYYY-MM-DD"),
@@ -85,7 +85,7 @@ async def get_day_kline(
 
 
 @router.get("/kline/week", response_model=ApiResponse[list])
-async def get_week_kline(
+def get_week_kline(
     code: str = Query(default="", description="单只股票代码"),
     codes: str = Query(default="", description="多只股票代码，逗号分隔，如 000001,600519"),
     start: str = Query(default="", description="开始日期 YYYY-MM-DD"),
@@ -107,7 +107,7 @@ async def get_week_kline(
 
 
 @router.get("/kline/month", response_model=ApiResponse[list])
-async def get_month_kline(
+def get_month_kline(
     code: str = Query(default="", description="单只股票代码"),
     codes: str = Query(default="", description="多只股票代码，逗号分隔，如 000001,600519"),
     start: str = Query(default="", description="开始日期 YYYY-MM-DD"),
@@ -129,7 +129,7 @@ async def get_month_kline(
 
 
 @router.get("/kline/minute", response_model=ApiResponse[list])
-async def get_minute_kline(
+def get_minute_kline(
     code: str = Query(..., description="股票代码"),
     start: str = Query(default="", description="开始分钟时间 YYYY-MM-DD HH:MM:00"),
     end: str = Query(default="", description="结束分钟时间 YYYY-MM-DD HH:MM:00"),
@@ -152,7 +152,7 @@ async def get_minute_kline(
 
 
 @router.get("/valuation/by_cap", response_model=ApiResponse[list])
-async def get_codes_by_cap_range(
+def get_codes_by_cap_range(
     cap_min: float = Query(default=0.0, description="总市值下限（含），单位：亿元，0 表示不限制"),
     cap_max: float = Query(default=0.0, description="总市值上限（含），单位：亿元，0 表示不限制"),
     skip: int = Query(default=0, description="分页跳过条数"),
@@ -182,7 +182,7 @@ async def get_codes_by_cap_range(
 
 
 @router.get("/valuation/by_ttm_pe", response_model=ApiResponse[list])
-async def get_codes_by_ttm_range(
+def get_codes_by_ttm_range(
     ttm_min: float = Query(default=0.0, description="TTM市盈率下限（含），0 表示不限制"),
     ttm_max: float = Query(default=0.0, description="TTM市盈率上限（含），0 表示不限制"),
     skip: int = Query(default=0, description="分页跳过条数"),

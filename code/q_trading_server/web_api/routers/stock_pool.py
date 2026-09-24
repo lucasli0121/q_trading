@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/pool", tags=["股票池管理"], dependencies=[D
 
 
 @router.post("/create", response_model=ApiResponse[PoolInfo])
-async def create_pool(req: PoolCreateRequest, user_id: str = Depends(get_current_user)):
+def create_pool(req: PoolCreateRequest, user_id: str = Depends(get_current_user)):
     """创建股票池"""
     impl = MongoStockPoolImpl()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -54,7 +54,7 @@ async def create_pool(req: PoolCreateRequest, user_id: str = Depends(get_current
 
 
 @router.delete("/{name}", response_model=ApiResponse[str])
-async def delete_pool(name: str, user_id: str = Depends(get_current_user)):
+def delete_pool(name: str, user_id: str = Depends(get_current_user)):
     """删除股票池（级联删除关联股票）"""
     impl = MongoStockPoolImpl()
     # 验证池属于当前用户
@@ -89,7 +89,7 @@ async def delete_pool(name: str, user_id: str = Depends(get_current_user)):
 
 
 @router.get("/list", response_model=ApiResponse[list[PoolInfo]])
-async def list_pools(user_info: tuple[str, int] = Depends(get_current_user_with_role)):
+def list_pools(user_info: tuple[str, int] = Depends(get_current_user_with_role)):
     """查询股票池列表（管理员可查看全部股票池）"""
     user_id, role = user_info
     impl = MongoStockPoolImpl()
@@ -110,7 +110,7 @@ async def list_pools(user_info: tuple[str, int] = Depends(get_current_user_with_
 
 
 @router.post("/{name}/stocks/add", response_model=ApiResponse[str])
-async def add_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depends(get_current_user)):
+def add_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depends(get_current_user)):
     """向股票池添加股票（自动过滤黑名单中的股票）"""
     impl = MongoStockPoolImpl()
     # 验证池属于当前用户
@@ -119,41 +119,43 @@ async def add_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depe
         raise HTTPException(status_code=404, detail="股票池不存在")
 
     pool_id: str = str(pools[0].get("_id"))
-    # 获取系统要求的真实代码
+    # 批量校验代替逐只往返：原写法每只股票 2 次查询（股票信息 + 黑名单命中），
+    # 500 只票就是 1000 次数据库往返。
     stock_impl = MongoStockInfoImpl()
-    stock_real_codes = []
     blacklist_impl = MongoBlacklistImpl()
-    blocked_codes: list[str] = []
-    for code in req.codes:
-        ok, exists = stock_impl.query_by_codes([code])
-        if not ok:
-            raise HTTPException(status_code=500, detail=f"查询股票信息失败: {code}")
-        if not exists or len(exists) == 0:
-            raise HTTPException(status_code=400, detail=f"股票不存在: {code}")
-        real_code = exists[0].get("code", "")
-        if real_code:
-            ok, is_blocked = blacklist_impl.is_stock_blacklisted(user_id, code)
-            if ok and is_blocked:
-                blocked_codes.append(real_code)
-            else:
-                stock_real_codes.append(real_code)
-    if blocked_codes:
+    ok, infos = stock_impl.query_by_codes(req.codes)
+    if not ok:
+        raise HTTPException(status_code=500, detail="查询股票信息失败")
+    found = {r.get("code", ""): r for r in (infos or [])}
+    missing = [c for c in req.codes if stock_impl.full_code(c) not in found]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"股票不存在: {', '.join(missing)}")
+    stock_real_codes = [
+        code for code in (found[stock_impl.full_code(c)].get("code", "") for c in req.codes)
+        if code
+    ]
+    ok, blocked = blacklist_impl.query_blacklisted_codes(user_id, stock_real_codes)
+    if not ok:
+        raise HTTPException(status_code=500, detail="查询黑名单失败")
+    if blocked:
         raise HTTPException(
             status_code=400,
-            detail=f"以下股票在黑名单中，无法添加: {', '.join(blocked_codes)}",
+            detail=f"以下股票在黑名单中，无法添加: {', '.join(sorted(blocked))}",
         )
+    stock_real_codes = [c for c in stock_real_codes if c not in blocked]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     records = [{"pool_id": pool_id, "code": c, "add_time": now} for c in stock_real_codes]
     ok = impl.add_stocks_to_pool(records)
     if not ok:
         raise HTTPException(status_code=500, detail="添加失败")
     # 将股票池的股票分配给数据代理对象进行抓取和处理
-    await AppContext().stock_fetch.distribute_pool_stocks_to_data_agents(pool_id=pool_id)
+    # 后台执行：全量重分配是长任务，不能在请求里同步跑
+    AppContext().stock_fetch.submit_pool_stocks_distribution(pool_id=pool_id)
     return ApiResponse(data=f"已添加 {len(stock_real_codes)} 只股票", message="添加成功")
 
 
 @router.delete("/{name}/stocks/remove", response_model=ApiResponse[str])
-async def remove_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depends(get_current_user)):
+def remove_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depends(get_current_user)):
     """从股票池剔除股票"""
     impl = MongoStockPoolImpl()
     res, pools = impl.query_stock_pool_by_name_and_user(name, user_id)
@@ -161,26 +163,30 @@ async def remove_stocks(name: str, req: PoolStockModifyRequest, user_id: str = D
         raise HTTPException(status_code=404, detail="股票池不存在")
     pool_dao = pools[0]
     pool_id: str = str(pool_dao.get("_id", pool_dao.get("id", "")))
-    # 获取系统要求的真实代码
+    # 批量校验（原写法在循环里逐只查询）
     stock_impl = MongoStockInfoImpl()
-    stock_real_codes = []
-    for code in req.codes:
-        ok, exists = stock_impl.query_by_codes([code])
-        if not ok:
-            raise HTTPException(status_code=500, detail=f"查询股票信息失败: {code}")
-        if not exists or len(exists) == 0:
-            raise HTTPException(status_code=400, detail=f"股票不存在: {code}")
-        stock_real_codes.append(exists[0].get("code", ""))
+    ok, infos = stock_impl.query_by_codes(req.codes)
+    if not ok:
+        raise HTTPException(status_code=500, detail="查询股票信息失败")
+    found = {r.get("code", ""): r for r in (infos or [])}
+    missing = [c for c in req.codes if stock_impl.full_code(c) not in found]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"股票不存在: {', '.join(missing)}")
+    stock_real_codes = [
+        code for code in (found[stock_impl.full_code(c)].get("code", "") for c in req.codes)
+        if code
+    ]
     ok = impl.remove_stocks_from_pool(pool_id = pool_id, codes = stock_real_codes)
     if not ok:
         raise HTTPException(status_code=500, detail="剔除失败")
     # 将股票池的股票分配给数据代理对象进行抓取和处理
-    await AppContext().stock_fetch.distribute_pool_stocks_to_data_agents(pool_id=pool_id)
+    # 后台执行：全量重分配是长任务，不能在请求里同步跑
+    AppContext().stock_fetch.submit_pool_stocks_distribution(pool_id=pool_id)
     return ApiResponse(data=f"已剔除 {len(stock_real_codes)} 只股票", message="剔除成功")
 
 
 @router.get("/{name}/stocks", response_model=ApiResponse[list[PoolStockInfo]])
-async def get_pool_stocks(name: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
+def get_pool_stocks(name: str, user_info: tuple[str, int] = Depends(get_current_user_with_role)):
     """获取股票池中所有股票（管理员可查看任意股票池）"""
     user_id, role = user_info
     impl = MongoStockPoolImpl()

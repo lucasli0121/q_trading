@@ -15,8 +15,19 @@ from typing import Any
 from nicegui import ui
 
 from app_context import AppContext
+from colors.theme import resolve_mode_from_prefs
 
 logger = logging.getLogger(__name__)
+
+# /api/user/preference 请求体字段（PUT 为全量替换，提交前只保留这些字段，
+# 避免把服务端响应里的 id / user_id / update_time 一并回传）
+_PREF_FIELDS: tuple[str, ...] = (
+    "theme_mode",
+    "enable_wx_push",
+    "wx_push_url",
+    "enable_phone_text",
+    "phone",
+)
 
 
 def _load_preferences() -> dict[str, Any]:
@@ -76,19 +87,35 @@ def _render_preferences_content(is_dialog: bool) -> None:
 
     :param is_dialog: 是否在对话框中显示
     """
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = "#334155"
-    card_bg: str = "#1e293b"
-    input_bg: str = "#111827"
+    theme_manager = AppContext().theme_manager
 
     # 加载已有偏好
     saved_prefs: dict[str, Any] = _load_preferences()
+    # 读取失败 / 无记录时为空字典：此时不能做「只改主题」的全量提交，
+    # 否则会把服务端其余字段一并覆盖成默认值。
+    prefs_available: bool = bool(saved_prefs)
+
+    # 以服务端偏好为准对齐本会话主题：页面由 main_page 渲染时已应用过一次主题，
+    # 这里把「后端记录值」与「会话当前值」拉平，避免两处不一致。
+    # resolve_mode_from_prefs 会区分"用户真的选过"与"记录不存在时的默认值"。
+    chosen: str | None = resolve_mode_from_prefs(saved_prefs) or theme_manager.session_mode()
+    live_mode: str = theme_manager.normalize_mode(chosen)
+    theme_manager.set_theme(live_mode)
+    theme_manager.remember_mode(live_mode)
+
+    # 服务端偏好快照：切换主题时只改动其中 theme_mode 一项再整体提交
+    # （preference_api.update 是全量替换语义）
+    server_prefs: dict[str, Any] = {**saved_prefs, "theme_mode": live_mode}
+
+    bg_color: str = theme_manager.var("page")
+    font_color: str = theme_manager.var("text")
+    border_color: str = "var(--qs-border)"
+    card_bg: str = "var(--qs-surface)"
+    input_bg: str = "var(--qs-surface-alt)"
 
     # 可变的绑定变量（列表包装以支持闭包内修改）
     state: dict[str, Any] = {
-        "theme_mode": saved_prefs.get("theme_mode", "dark"),
+        "theme_mode": live_mode,
         "enable_wx_push": _bool_val(saved_prefs.get("enable_wx_push", False)),
         "wx_push_url": saved_prefs.get("wx_push_url", ""),
         "enable_phone_text": _bool_val(saved_prefs.get("enable_phone_text", False)),
@@ -105,18 +132,36 @@ def _render_preferences_content(is_dialog: bool) -> None:
             "phone": state["phone"],
         }
         if _save_preferences(prefs):
+            server_prefs.update(prefs)
+            theme_manager.remember_mode(prefs["theme_mode"])
             ui.notify("设置已保存", type="positive")
         else:
             ui.notify("保存失败，请稍后重试", type="negative")
 
     def on_toggle_dark() -> None:
-        """切换深色模式并同步偏好。"""
-        AppContext().theme_manager.toggle()
-        state["theme_mode"] = "dark" if AppContext().theme_manager.is_dark() else "light"
-        ui.notify(
-            f"已切换到{'深色' if state['theme_mode'] == 'dark' else '浅色'}主题",
-            type="positive",
-        )
+        """切换深色 / 浅色主题：即时生效并立即落库。
+
+        主题是「即时生效」型开关（开关本身就已表达用户意图），因此不等
+        「保存更改」；否则用户切完主题一翻页就又变回去，会被当成 bug。
+        由于界面颜色全部走 CSS 变量，切换后当前页面无需重新渲染即整体变色。
+        """
+        mode: str = theme_manager.toggle()
+        state["theme_mode"] = mode
+        theme_manager.remember_mode(mode)
+        label: str = "深色" if mode == "dark" else "浅色"
+
+        if not prefs_available:
+            ui.notify(f"已切换到{label}主题（未能保存到服务器）", type="warning")
+            return
+
+        server_prefs["theme_mode"] = mode
+        payload: dict[str, Any] = {
+            key: server_prefs[key] for key in _PREF_FIELDS if key in server_prefs
+        }
+        if _save_preferences(payload):
+            ui.notify(f"已切换到{label}主题", type="positive")
+        else:
+            ui.notify(f"已切换到{label}主题，但保存失败；下次登录可能回到原主题", type="warning")
 
     def render_body(close_fn: Any = None) -> None:
         """渲染主体内容。"""
@@ -125,15 +170,15 @@ def _render_preferences_content(is_dialog: bool) -> None:
             f"height: 64px; padding: 0 32px; background-color: {card_bg}; "
             f"border-bottom: 1px solid {border_color};"
         ):
-            ui.label("个人喜好设置").classes("text-xl font-bold").style("color: #f3f4f6;")
+            ui.label("个人喜好设置").classes("text-xl font-bold").style("color: var(--qs-heading);")
             with ui.row().classes("items-center gap-4"):
                 ui.button("保存更改", on_click=on_save).props("flat").style(
-                    "background-color: #3b82f6; color: #ffffff !important; padding: 8px 24px; "
+                    "background-color: var(--qs-primary); color: var(--qs-on-accent) !important; padding: 8px 24px; "
                     "border-radius: 8px; font-size: 14px; font-weight: 500;"
                 )
                 if close_fn:
                     ui.button(icon="close", on_click=close_fn).props("flat round dense").style(
-                        "color: #9ca3af;"
+                        "color: var(--qs-muted);"
                     )
 
         with ui.column().classes("w-full gap-0").style(
@@ -147,16 +192,16 @@ def _render_preferences_content(is_dialog: bool) -> None:
                 with ui.row().classes("w-full").style(
                     f"padding: 24px; border-bottom: 1px solid {border_color};"
                 ):
-                    ui.label("界面显示").classes("font-bold").style("color: #f3f4f6;")
+                    ui.label("界面显示").classes("font-bold").style("color: var(--qs-heading);")
 
                 with ui.column().classes("w-full gap-6").style("padding: 24px;"):  # noqa: SIM117
                     with ui.row().classes("w-full items-center justify-between"):
                         with ui.column().classes("gap-0"):
-                            ui.label("深色模式").classes("text-sm font-semibold").style("color: #e5e7eb;")
-                            ui.label("切换系统的显示主题风格").classes("text-xs").style("color: #6b7280;")
-                        is_dark: bool = AppContext().theme_manager.is_dark()
+                            ui.label("深色模式").classes("text-sm font-semibold").style("color: var(--qs-text);")
+                            ui.label("切换系统的显示主题风格").classes("text-xs").style("color: var(--qs-faint);")
+                        is_dark: bool = theme_manager.is_dark()
                         ui.switch(value=is_dark, on_change=lambda _e: on_toggle_dark()).props(
-                            "color=#3b82f6"
+                            f"color={theme_manager.get_color('primary')}"
                         )
 
             # ---- 区2: 企业微信推送 ----
@@ -167,24 +212,24 @@ def _render_preferences_content(is_dialog: bool) -> None:
                 with ui.row().classes("w-full").style(
                     f"padding: 24px; border-bottom: 1px solid {border_color};"
                 ):
-                    ui.label("企业微信推送").classes("font-bold").style("color: #f3f4f6;")
+                    ui.label("企业微信推送").classes("font-bold").style("color: var(--qs-heading);")
 
                 with ui.column().classes("w-full gap-6").style("padding: 24px;"):
                     with ui.row().classes("w-full items-center justify-between"):
                         with ui.column().classes("gap-0"):
-                            ui.label("启用推送").classes("text-sm font-semibold").style("color: #e5e7eb;")
+                            ui.label("启用推送").classes("text-sm font-semibold").style("color: var(--qs-text);")
                             ui.label("当策略触发买入或卖出信号时，通过企业微信发送通知").classes(
                                 "text-xs"
-                            ).style("color: #6b7280;")
+                            ).style("color: var(--qs-faint);")
                         ui.switch(
                             value=state["enable_wx_push"],
                             on_change=lambda e: _update_wx_state(e.value),
-                        ).props("color=#3b82f6")
+                        ).props(f"color={theme_manager.get_color('primary')}")
 
                     # Webhook URL（仅在启用推送时显示）
                     url_container = ui.column().classes("w-full gap-2")
                     with url_container:
-                        ui.label("Webhook 地址").classes("text-sm font-semibold").style("color: #e5e7eb;")
+                        ui.label("Webhook 地址").classes("text-sm font-semibold").style("color: var(--qs-text);")
                         (
                             ui.input(
                                 value=state["wx_push_url"],
@@ -206,24 +251,24 @@ def _render_preferences_content(is_dialog: bool) -> None:
                 with ui.row().classes("w-full").style(
                     f"padding: 24px; border-bottom: 1px solid {border_color};"
                 ):
-                    ui.label("手机短信推送").classes("font-bold").style("color: #f3f4f6;")
+                    ui.label("手机短信推送").classes("font-bold").style("color: var(--qs-heading);")
 
                 with ui.column().classes("w-full gap-6").style("padding: 24px;"):
                     with ui.row().classes("w-full items-center justify-between"):
                         with ui.column().classes("gap-0"):
-                            ui.label("启用短信推送").classes("text-sm font-semibold").style("color: #e5e7eb;")
+                            ui.label("启用短信推送").classes("text-sm font-semibold").style("color: var(--qs-text);")
                             ui.label("当策略信号触发时，向指定手机号发送短信通知").classes(
                                 "text-xs"
-                            ).style("color: #6b7280;")
+                            ).style("color: var(--qs-faint);")
                         ui.switch(
                             value=state["enable_phone_text"],
                             on_change=lambda e: _update_phone_state(e.value),
-                        ).props("color=#3b82f6")
+                        ).props(f"color={theme_manager.get_color('primary')}")
 
                     # 手机号（仅在启用短信时显示）
                     phone_container = ui.column().classes("w-full gap-2")
                     with phone_container:
-                        ui.label("推送手机号").classes("text-sm font-semibold").style("color: #e5e7eb;")
+                        ui.label("推送手机号").classes("text-sm font-semibold").style("color: var(--qs-text);")
                         (
                             ui.input(
                                 value=state["phone"],

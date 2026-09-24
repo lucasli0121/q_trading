@@ -7,19 +7,18 @@ Description:
 """
 
 import abc
-from configparser import ConfigParser
 from datetime import datetime, timedelta
 import logging
 import pandas as pd
 import exchange_calendars as xcals
+from utils.config import load_stock_cfg
 
 class FetchBase(metaclass=abc.ABCMeta):
     def __init__(self, **kargs) -> None:
         if "start_date" in kargs:
             start_date_str = kargs["start_date"]
         else:
-            cp = ConfigParser()
-            cp.read("cfg/stock.cfg")
+            cp = load_stock_cfg()
             start_date_str = cp.get("stock", "start_date", fallback="2004-01-01")
         self.start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
         self.xshg = xcals.get_calendar("XSHG", start=self.start_date)

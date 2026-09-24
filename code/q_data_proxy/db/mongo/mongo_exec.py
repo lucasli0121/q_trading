@@ -11,12 +11,24 @@ from copy import deepcopy
 from typing import Any
 from bson import ObjectId
 from pymongo import MongoClient, ReadPreference
+from pymongo.collation import Collation
 from pymongo.collection import Collection
 import logging
 from db.db_base import DbBaseImpl
 
 class MongoExec(DbBaseImpl):
     _initialized = False
+
+    # 需要建立的复合索引：表名 -> [(字段, 方向), ...]
+    # 依据 query_by_condition 的实际查询条件与排序字段确定：
+    # rt_stocks_tbl 按 code 过滤 + create_time 范围，排序 create_time 倒序
+    # minute_hq_tbl 按 code 过滤 + minute_time 范围，排序 minute_time 正序
+    # day_hq_tbl   按 code 过滤 + create_time 范围，排序 code 正序 + create_time 正序
+    INDEX_SPECS: dict[str, list[list[tuple[str, int]]]] = {
+        "rt_stocks_tbl": [[("code", 1), ("create_time", -1)]],
+        "minute_hq_tbl": [[("code", 1), ("minute_time", 1)]],
+        "day_hq_tbl": [[("code", 1), ("create_time", 1)]],
+    }
 
     def __init__(self):
          if not self._initialized:
@@ -40,6 +52,27 @@ class MongoExec(DbBaseImpl):
                 self.conn.close()
         except Exception as e:
             pass
+
+    """
+    建立高频查询表的复合索引（幂等，已存在则跳过）
+    必须带与 query_by_condition 相同的 collation：MongoDB 只会使用
+    collation 完全一致的索引，否则查询依然走全表扫描。
+    :return: 无
+    """
+    def ensure_indexes(self) -> None:
+        db = getattr(self, "db", None)
+        if db is None:
+            self.logger.error("MongoDB 未初始化，跳过索引创建")
+            return
+        collation = Collation(locale="zh", strength=1)
+        for table_name, index_list in self.INDEX_SPECS.items():
+            for fields in index_list:
+                name = "_".join(field for field, _ in fields)
+                try:
+                    db[table_name].create_index(fields, name=name, collation=collation)
+                    self.logger.info("MongoDB 索引已就绪: %s.%s", table_name, name)
+                except Exception as e:
+                    self.logger.error("创建 MongoDB 索引失败: %s.%s, %s", table_name, name, e)
     
     """
     添加

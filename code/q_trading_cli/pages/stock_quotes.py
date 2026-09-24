@@ -7,7 +7,7 @@ LastEditTime: 2026-08-30
 Description: 股票行情页面 — 严格按 stock-quotes.html 原型实现
   区1: 股票池 Tab (动态加载用户股票池)
   区2: 行情表格 (代码/名称, 最新价, 涨跌幅, 涨跌额, 换手率, 动态市盈率, 利润率, 操作)
-  颜色遵循 theme 新约定：positive=#f87171 红=买入/涨，negative=#34d399 绿=卖出/跌
+  颜色遵循 theme 新约定：positive=var(--qs-positive) 红=买入/涨，negative=var(--qs-negative) 绿=卖出/跌
   （中国股市红买绿卖、红涨绿跌，买入红圈、卖出绿圈）。
   搜索支持股票代码和公司名称，切换 Tab/刷新/搜索均有加载进度显示。
   分析按钮：打开个股分析对话框（最近15天日K + 实时行情 + 买卖信号，
@@ -27,6 +27,7 @@ from nicegui import ui
 from api.client import UnauthorizedError
 from app_context import AppContext
 from components import custom_tabs
+from core.concurrency import run_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ def _build_day_k_option(
             },
             {
                 "name": "成交量", "type": "bar", "xAxisIndex": 1, "yAxisIndex": 1,
-                "data": volumes, "itemStyle": {"color": "#4b5563"},
+                "data": volumes, "itemStyle": {"color": colors["volume"]},
             },
             _signal_scatter_series("买入", buy_data, up, "买入"),
             _signal_scatter_series("卖出", sell_data, down, "卖出"),
@@ -421,13 +422,13 @@ def _build_minute_option(
         "series": [
             {
                 "name": "价格", "type": "line", "data": price_data, "symbol": "none",
-                "lineStyle": {"color": "#3b82f6", "width": 2},
+                "lineStyle": {"color": colors["line"], "width": 2},
                 "areaStyle": {
                     "color": {
                         "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
                         "colorStops": [
-                            {"offset": 0, "color": "rgba(59,130,246,0.25)"},
-                            {"offset": 1, "color": "rgba(59,130,246,0)"},
+                            {"offset": 0, "color": colors["line_area_top"]},
+                            {"offset": 1, "color": colors["line_area_bottom"]},
                         ],
                     },
                 },
@@ -445,14 +446,14 @@ def _build_minute_option(
 def show_stock_quotes_page() -> None:
     """股票行情页面入口 — Tab 显示用户股票池，点击切换对应股票行情。"""
     custom_tabs.load_page_tab_css()
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    border_color: str = current_theme.get("widget_border_color", "#334155")
+    theme = AppContext().theme_manager
+    bg_color: str = theme.var("page")
+    border_color: str = theme.var("border")
     # theme 新约定：positive=红=买入/涨，negative=绿=卖出/跌（中国股市红买绿卖、红涨绿跌）
-    positive_color: str = current_theme.get("positive", "#f87171")   # 买入 / 涨 红
-    negative_color: str = current_theme.get("negative", "#34d399")   # 卖出 / 跌 绿
-    card_bg: str = "#1e293b"
-    input_bg: str = "#111827"
+    positive_color: str = theme.var("positive")   # 买入 / 涨 红
+    negative_color: str = theme.var("negative")   # 卖出 / 跌 绿
+    card_bg: str = theme.var("surface")
+    input_bg: str = theme.var("surface-alt")
 
     # ---- 加载股票池列表 ----
     pools: list[dict[str, Any]] = []
@@ -528,15 +529,15 @@ def show_stock_quotes_page() -> None:
         state["loading"] = True
         table_panel.refresh()
         await asyncio.sleep(0)
-        loop = asyncio.get_running_loop()
         keyword: str = (search_input.value or "").strip()
         if keyword:
-            state["quotes"] = await loop.run_in_executor(None, _search_stocks, keyword)
+            # run_blocking：线程池 + 继承请求上下文（线程内仍能取到本会话 token）
+            state["quotes"] = await run_blocking(_search_stocks, keyword)
         else:
             cur: str = state["active_tab"]
             if cur:
                 pool_quotes_cache.pop(cur, None)
-                state["quotes"] = await loop.run_in_executor(None, load_quotes_for_pool, cur)
+                state["quotes"] = await run_blocking(load_quotes_for_pool, cur)
         state["loading"] = False
         table_panel.refresh()
 
@@ -635,8 +636,7 @@ def show_stock_quotes_page() -> None:
         state["loading"] = True
         table_panel.refresh()
         await asyncio.sleep(0)
-        loop = asyncio.get_running_loop()
-        state["quotes"] = await loop.run_in_executor(None, load_quotes_for_pool, tab_name)
+        state["quotes"] = await run_blocking(load_quotes_for_pool, tab_name)
         state["loading"] = False
         table_panel.refresh()
 
@@ -661,8 +661,8 @@ def show_stock_quotes_page() -> None:
         :param realtime: 最新实时行情字典
         :param signals: 最近15天买卖信号列表
         """
-        muted: str = "#9ca3af"
-        normal: str = "#e5e7eb"
+        muted: str = "var(--qs-muted)"
+        normal: str = "var(--qs-text)"
 
         # ---- 实时行情摘要 ----
         with ui.column().classes("w-full gap-0").style(
@@ -682,7 +682,7 @@ def show_stock_quotes_page() -> None:
                 elif rt_chg_pct < 0:
                     rt_color = negative_color  # 跌为绿色（卖出色）
                 else:
-                    rt_color = "#ffffff"
+                    rt_color = "var(--qs-on-accent)"
                 rt_sign: str = "+" if rt_chg_pct >= 0 else ""
                 with ui.row().classes("w-full items-end gap-3").style("margin-top: 8px;"):
                     ui.label(f"{rt_price:,.2f}").classes("text-2xl font-bold").style(
@@ -715,13 +715,8 @@ def show_stock_quotes_page() -> None:
                 )
 
         # ---- 价格走势图（日K 蜡烛图 / 分时 折线图，含买卖信号圆圈标注）----
-        chart_colors: dict[str, str] = {
-            "up": positive_color,        # 涨 / 买入 红
-            "down": negative_color,      # 跌 / 卖出 绿
-            "axis": muted,
-            "grid": "#2d3748",
-            "axis_line": border_color,
-        }
+        # ECharts 用 canvas 绘制，不解析 CSS 变量，这里必须取真实色值
+        chart_colors: dict[str, str] = AppContext().theme_manager.get_chart_colors()
         # 候选日期（K 线日期，最新在前），用于分时模式选择
         kline_dates: list[str] = sorted(
             {_record_date_str(it) for it in kline if _record_date_str(it)},
@@ -782,9 +777,8 @@ def show_stock_quotes_page() -> None:
                 return
             chart_state["minute_loading"] = True
             chart_panel.refresh()
-            loop = asyncio.get_running_loop()
-            minute: list[dict[str, Any]] = await loop.run_in_executor(
-                None, _fetch_minute_data, code, date_str
+            minute: list[dict[str, Any]] = await run_blocking(
+                _fetch_minute_data, code, date_str
             )
             chart_state["minute_cache"][date_str] = minute
             chart_state["minute_loading"] = False
@@ -815,8 +809,8 @@ def show_stock_quotes_page() -> None:
             """同步模式按钮高亮与日期选择器可见性。"""
             is_day: bool = chart_state["mode"] == "day"
             active_style: str = (
-                "border: 1px solid #3b82f6; background-color: rgba(59,130,246,0.3); "
-                "color: #60a5fa; padding: 4px 12px; border-radius: 6px; "
+                "border: 1px solid var(--qs-primary); background-color: rgba(var(--qs-primary-rgb), 0.3); "
+                "color: var(--qs-link); padding: 4px 12px; border-radius: 6px; "
                 "font-size: 12px; font-weight: 600;"
             )
             inactive_style: str = (
@@ -879,7 +873,7 @@ def show_stock_quotes_page() -> None:
                     create_time: str = str(sg.get("create_time", "") or "")
                     reason: str = str(sg.get("reason", "") or "")
                     with ui.row().classes("w-full items-center gap-4").style(
-                        f"padding: 10px 0; border-bottom: 1px solid {border_color}33;"
+                        "padding: 10px 0; border-bottom: 1px solid var(--qs-divider);"
                     ):
                         ui.label(create_time[:16]).classes("text-xs").style(
                             f"color: {muted}; width: 110px; flex-shrink: 0;"
@@ -926,10 +920,10 @@ def show_stock_quotes_page() -> None:
             ):
                 ui.label(f"个股分析 — {name or code}({code})").classes(
                     "text-lg font-bold"
-                ).style("color: #f3f4f6;")
+                ).style("color: var(--qs-heading);")
                 ui.button(icon="close", on_click=dialog.close).props(
                     "flat round dense"
-                ).style("color: #9ca3af;")
+                ).style("color: var(--qs-muted);")
             # ---- 内容区（先加载动画，数据到位后重绘）----
             content: ui.column = ui.column().classes("w-full gap-0").style(
                 "overflow-y: auto;"
@@ -940,12 +934,9 @@ def show_stock_quotes_page() -> None:
             "padding: 48px;"
         ):
             ui.spinner(size="md", color="blue")
-            ui.label("正在加载分析数据...").classes("text-sm").style("color: #9ca3af;")
+            ui.label("正在加载分析数据...").classes("text-sm").style("color: var(--qs-muted);")
 
-        loop = asyncio.get_running_loop()
-        kline, realtime, signals = await loop.run_in_executor(
-            None, _fetch_analysis_data, code
-        )
+        kline, realtime, signals = await run_blocking(_fetch_analysis_data, code)
 
         content.clear()
         with content:
@@ -973,7 +964,7 @@ def show_stock_quotes_page() -> None:
         f"height: 64px; padding: 0 32px; background-color: {card_bg}; "
         f"border-bottom: 1px solid {border_color};"
     ):
-        ui.label("股票实时行情").classes("text-xl font-bold").style("color: #f3f4f6;")
+        ui.label("股票实时行情").classes("text-xl font-bold").style("color: var(--qs-heading);")
         with ui.row().classes("items-center gap-4"):
             search_input: ui.input = (
                 ui.input(placeholder="输入代码或名称...")
@@ -982,7 +973,7 @@ def show_stock_quotes_page() -> None:
             )
             search_input.on("keydown.enter", on_search)
             ui.button(icon="refresh", on_click=on_search).props("flat round dense") \
-                .style(f"color: #9ca3af; background-color: {input_bg};")
+                .style(f"color: var(--qs-muted); background-color: {input_bg};")
 
     # ---- 页面主体 ----
     with ui.column().classes("w-full gap-0").style(
@@ -997,17 +988,17 @@ def show_stock_quotes_page() -> None:
                     is_active: bool = pn == state["active_tab"]
                     if is_active:
                         ui.label(pn).classes("text-sm font-bold").style(
-                            "color: #60a5fa; border-bottom: 2px solid #3b82f6; "
+                            "color: var(--qs-link); border-bottom: 2px solid var(--qs-primary); "
                             "padding: 12px 24px; cursor: pointer;"
                         ).on("click", lambda _n=pn: on_tab_switch(_n))
                     else:
                         ui.label(pn).classes("text-sm").style(
-                            "color: #9ca3af; border-bottom: 2px solid transparent; "
+                            "color: var(--qs-muted); border-bottom: 2px solid transparent; "
                             "padding: 12px 24px; cursor: pointer;"
                         ).on("click", lambda _n=pn: on_tab_switch(_n))
             else:
                 ui.label("暂无股票池，请先创建股票池").classes("text-sm").style(
-                    "color: #9ca3af; padding: 12px 24px;"
+                    "color: var(--qs-muted); padding: 12px 24px;"
                 )
 
         # ---- 行情表格 ----
@@ -1032,14 +1023,14 @@ def show_stock_quotes_page() -> None:
                     for hdr, _align in headers:
                         flex_val: str = "2" if hdr == "代码/名称" else "1"
                         ui.label(hdr).classes("text-xs font-semibold uppercase tracking-wider").style(
-                            f"color: #9ca3af; flex: {flex_val};"
+                            f"color: var(--qs-muted); flex: {flex_val};"
                         )
 
                 # 加载进度
                 if state.get("loading", False):
                     with ui.row().classes("w-full justify-center items-center gap-3").style("padding: 48px;"):
                         ui.spinner(size="md", color="blue")
-                        ui.label("正在加载行情数据...").classes("text-sm").style("color: #9ca3af;")
+                        ui.label("正在加载行情数据...").classes("text-sm").style("color: var(--qs-muted);")
 
                 # 数据行
                 for q in quotes:
@@ -1057,27 +1048,27 @@ def show_stock_quotes_page() -> None:
                     elif chg_pct < 0:
                         price_color = negative_color  # 跌为绿色（卖出色）
                     else:
-                        price_color = "#ffffff"  # 平为白色
+                        price_color = "var(--qs-on-accent)"  # 平为白色
 
                     with ui.row().classes("w-full items-center").style(
-                        f"padding: 16px 24px; border-bottom: 1px solid {border_color}33;"
+                        "padding: 16px 24px; border-bottom: 1px solid var(--qs-divider);"
                     ):
                         # 代码/名称
                         with ui.column().classes("gap-0").style("flex: 2;"):
-                            ui.label(code).classes("font-bold tracking-wider").style("color: #e5e7eb;")
-                            ui.label(name).classes("text-xs").style("color: #6b7280;")
+                            ui.label(code).classes("font-bold tracking-wider").style("color: var(--qs-text);")
+                            ui.label(name).classes("text-xs").style("color: var(--qs-faint);")
 
                         ui.label(f"{price:,.2f}").classes("font-bold").style(f"color: {price_color}; flex: 1;")
                         sign: str = "+" if chg_pct >= 0 else ""
                         ui.label(f"{sign}{chg_pct:.2f}%").classes("font-bold").style(f"color: {price_color}; flex: 1;")
                         ui.label(f"{sign}{chg_amt:,.2f}").classes("font-medium").style(f"color: {price_color}; flex: 1;")
-                        ui.label(f"{to_rate:.2f}%").classes("text-sm").style("color: #9ca3af; flex: 1;")
+                        ui.label(f"{to_rate:.2f}%").classes("text-sm").style("color: var(--qs-muted); flex: 1;")
                         pe_text: str = "亏损" if dynamic_pe < 0 else f"{dynamic_pe:.1f}"
-                        ui.label(pe_text).classes("text-sm").style("color: #9ca3af; flex: 1;")
-                        ui.label(f"{profit_growth:.1f}%").classes("text-sm").style("color: #9ca3af; flex: 1;")
+                        ui.label(pe_text).classes("text-sm").style("color: var(--qs-muted); flex: 1;")
+                        ui.label(f"{profit_growth:.1f}%").classes("text-sm").style("color: var(--qs-muted); flex: 1;")
                         ui.button("分析", on_click=_make_analysis_handler(code, name)) \
                             .props("flat dense") \
-                            .style("color: #60a5fa; font-size: 12px; font-weight: 700; flex: 1; text-align: right;")
+                            .style("color: var(--qs-link); font-size: 12px; font-weight: 700; flex: 1; text-align: right;")
 
         table_panel()
 

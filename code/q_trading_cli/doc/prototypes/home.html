@@ -139,7 +139,7 @@
             <div class="w-8 h-8 bg-blue-600 rounded flex items-center justify-center text-white">
                 <iconify-icon icon="lucide:trending-up"></iconify-icon>
             </div>
-            <span class="text-xl font-bold text-gray-100">QuantSys</span>
+            <span class="text-xl font-bold text-gray-100">QTrade</span>
         </div>
         <nav class="flex-1 px-4 space-y-1 py-4 overflow-y-auto">
             <a class="flex items-center px-4 py-3 text-sm font-medium rounded-lg sidebar-active" href="home.html">
@@ -240,6 +240,20 @@
             </div>
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <!--收益图表-->
+                <!--
+                  口径（2026-09-23 改版，原型未画到这一层，以实现为准）：
+                  · 系统总收益曲线 = 按 update_time 落到日期后，当天**全部**执行记录
+                    current_return_rate 的算术平均（同一天多条直接平均，不按策略去重）。
+                  · 末点单独覆盖 = 各用户策略最新记录的 (current_profit + 持仓未实现盈亏)
+                    / base_amount × 100 再取平均；缺实时价的策略退化为其 current_return_rate
+                    （不从平均里剔除，否则分母变化会让末点跳变）。
+                    历史点不含浮盈：历史记录对应当时的持仓，实时价无法回溯。
+                  · 原型原稿**没有**「对比策略」下拉框，实现里加了：选中某个用户策略后
+                    追加一条琥珀色曲线（无线宽面积、更细）与之并行显示；两条曲线日期取并集、
+                    缺失日期留空断线（不补 0）。下拉框默认不选。
+                  · 取数：全量执行记录定窗口基准（**最后一个数据点**，不是今天）与末点，
+                    再调 GET /api/user_strategy/executions/range 按窗口取曲线数据点。
+                -->
                 <div class="lg:col-span-2 bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
                     <div class="flex items-center justify-between mb-6">
                         <h3 class="text-lg font-bold text-gray-100">系统累计收益概览</h3>
@@ -252,6 +266,11 @@
                     <div class="h-80 w-full" id="revenueChart"></div>
                 </div>
                 <!--近期活动-->
+                <!-- ⚠ 实现说明（以实现为准）：这里的策略名取**用户策略名称**
+                     user_strategy.name，信号里的 strategy_id 是策略模板 ID，
+                     同模板多实例会显示成同一个名字，因此按 user_strategy_id 归并；
+                     回退链 用户策略名 → 模板名 → --。第三行时间在实现里是绝对时间
+                     （create_time 前 16 位），不是「10分钟前」。 -->
                 <div class="bg-[#1e293b] p-6 rounded-xl border border-[#334155] shadow-sm">
                     <h3 class="text-lg font-bold text-gray-100 mb-6">近期运行状态</h3>
                     <div class="space-y-6">
@@ -298,6 +317,16 @@
                     <a class="text-sm text-blue-400 hover:underline" href="strategies.html">管理所有策略</a>
                 </div>
                 <div class="overflow-x-auto">
+                    <!--
+                      收益率列口径（2026-09-23 定）：取该策略**最新一条**执行记录，
+                      值 = (current_profit + 持仓未实现盈亏) / initial_amount × 100，
+                      与策略监控页卡片「浮动盈亏」同一套算法（core/holdings.py）。
+                      列名 = 「收益率」（2026-09-23 用户定），**不带周期后缀**：
+                      该列是最新收益率，不是窗口收益。原稿此处的「收益率 (30d)」
+                      已被需求方否掉，勿按原型回改实现（曲线上的 7天/30天/1年
+                      是曲线的窗口，与本列无关）。
+                      算不出（无记录 / 缺 current_profit / 持仓缺实时价）显示 "-"。
+                    -->
                     <table class="w-full text-left">
                         <thead class="bg-[#111827] border-b border-[#334155]">
                             <tr>
@@ -305,7 +334,7 @@
                                 <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">类型</th>
                                 <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">创建日期</th>
                                 <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">状态</th>
-                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">收益率 (30d)</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase">收益率</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-[#2d3748]">

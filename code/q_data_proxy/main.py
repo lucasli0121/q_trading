@@ -13,12 +13,12 @@ import shutil
 import sys
 import signal
 import threading
-from configparser import ConfigParser
 import logging
 import logging.config
 from typing import Optional
 import yaml
 from app_context import AppContext
+from utils.config import load_stock_cfg, stock_cfg_path, stock_instance_name
 
 
 def _get_app_root() -> str:
@@ -59,11 +59,22 @@ def _init_frozen_env() -> None:
     log_dir = os.path.join(app_root, "log")
     os.makedirs(log_dir, exist_ok=True)
 
-def initLogger(configPath):
+def initLogger(configPath, instance_name: str = ""):
+    """初始化日志。
+
+    log.yaml 的 handler.filename 支持 `{instance}` 占位符，会替换为当前实例名
+    （`[data_proxy] name`）。多实例共用同一个 log 目录时，把 filename 写成
+    `log/info_{instance}.log` 即可让各实例写各自的文件；不含占位符则保持原行为。
+    """
     if os.path.exists(configPath):
         with open(configPath, "r", encoding="utf-8") as f:
             config = yaml.load(f, yaml.FullLoader)
-            logging.config.dictConfig(config)
+        if instance_name:
+            for handler in (config.get("handlers") or {}).values():
+                filename = handler.get("filename") if isinstance(handler, dict) else None
+                if isinstance(filename, str) and "{instance}" in filename:
+                    handler["filename"] = filename.replace("{instance}", instance_name)
+        logging.config.dictConfig(config)
     else:
         logging.basicConfig(
             level=logging.INFO,
@@ -78,6 +89,18 @@ return {*}
 """
 def start_app():
     logger = logging.getLogger(__name__)
+
+    # 打印实例身份：多实例部署时用于确认各进程读到了各自的配置
+    logger.info(
+        "实例启动: name=%s, cfg=%s, pid=%s",
+        stock_instance_name(), stock_cfg_path(), os.getpid(),
+    )
+
+    # 建立高频查询表的复合索引（幂等，失败不阻塞启动）
+    try:
+        AppContext().mongo_exec.ensure_indexes()
+    except Exception as err:
+        logger.error("MongoDB 索引初始化失败: %s", err)
 
     # 初始化 MQTT 连接
     mqtt_client = AppContext().mqtt
@@ -121,11 +144,10 @@ if __name__ in {"__main__", "__mp_main__"}:
     # PyInstaller 冻结环境初始化：切换工作目录、拷贝默认配置、创建日志目录
     _init_frozen_env()
 
-    cp = ConfigParser()
-    cp.read("cfg/stock.cfg")
+    cp = load_stock_cfg()
     cfgname = cp.get("log", "config")
     # 初始化日志
-    initLogger(cfgname)
+    initLogger(cfgname, stock_instance_name(cp))
     start_app()
 
     # 阻塞主线程，等待退出信号后优雅关闭

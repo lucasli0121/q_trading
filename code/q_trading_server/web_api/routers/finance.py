@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/finance", tags=["财务管理"])
 
 
 @router.get("/stock_info", response_model=ApiResponse[list])
-async def get_stock_info(code: str = Query(..., description="股票代码")):
+def get_stock_info(code: str = Query(..., description="股票代码")):
     """查询公司基本信息"""
     impl = MongoStockInfoImpl()
     res, records = impl.query_stock_info(code)
@@ -31,7 +31,7 @@ async def get_stock_info(code: str = Query(..., description="股票代码")):
 
 
 @router.get("/stock_list", response_model=ApiResponse[list])
-async def get_stock_list(
+def get_stock_list(
     skip: int = Query(default=0),
     limit: int = Query(default=100),
 ):
@@ -48,7 +48,7 @@ async def get_stock_list(
 
 
 @router.get("/valuation", response_model=ApiResponse[list])
-async def get_valuation(
+def get_valuation(
     code: str = Query(default="", description="单只股票代码"),
     codes: str = Query(default="", description="多只股票代码，逗号分隔，如 000001,600519"),
 ):
@@ -71,7 +71,7 @@ async def get_valuation(
 
 
 @router.get("/profit", response_model=ApiResponse[list])
-async def get_profit(
+def get_profit(
     code: str = Query(default="", description="单只股票代码"),
     codes: str = Query(default="", description="多只股票代码，逗号分隔，如 000001,600519"),
     report_date: str = Query(default="", description="报告期 YYYY-MM-DD"),

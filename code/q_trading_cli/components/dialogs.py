@@ -16,13 +16,13 @@ from nicegui import ui
 #
 def make_sure_dialog(message: str, on_ok: Callable) -> ui.dialog:
     with ui.dialog().props('persistent') as dialog, ui.card() \
-        .style('background-color: #FFFFFF !important; border-radius: 10px;'):
-        ui.label(message).classes('w-full text-[16px] text-[#333333] font-normal')
+        .style('background-color: var(--qs-surface) !important; border-radius: 10px;'):
+        ui.label(message).classes('w-full text-[16px] text-[var(--qs-heading)] font-normal')
         with ui.row().classes('w-full place-content-end'):
             ui.button('取消', color=None, on_click=dialog.close) \
                 .props('flat') \
-                .classes('w-[120px] text-[16px] text-[#888888] font-[400]') \
-                .style('background-color: #FFFFFF !important;border-radius: 10px;border: 1px solid #888888;')
+                .classes('w-[120px] text-[16px] text-[var(--qs-muted)] font-[400]') \
+                .style('background-color: var(--qs-surface) !important;border-radius: 10px;border: 1px solid var(--qs-border);')
             def make_ok():
                 try:
                     on_ok()
@@ -32,6 +32,6 @@ def make_sure_dialog(message: str, on_ok: Callable) -> ui.dialog:
             ui.button('确定', color=None, on_click=make_ok) \
                 .props('flat') \
                 .classes('w-[120px] text-[16px] text-white font-[400]') \
-                .style('background-color: #65B6FF !important; border-radius: 10px')
+                .style('background-color: var(--qs-primary) !important; border-radius: 10px')
     dialog.open()
     return dialog

@@ -12,8 +12,10 @@ Description: 项目main， 读取配置文件，启动scheduler，并启动flask
 import logging
 import logging.config
 import os
+import secrets
 import sys
 from configparser import ConfigParser
+from functools import partial
 
 import yaml
 from fastapi import FastAPI, Request
@@ -84,6 +86,33 @@ def init_app():
     app.add_middleware(ClientDisconnectMiddleware)
     app.add_middleware(AuthMiddleware)
 
+    # 隐藏 NiceGUI 内置的「连接丢失 / 正在尝试重新连接…」浮层。
+    #
+    # 该浮层来自 NiceGUI 模板 templates/index.html 中固定存在的
+    # <div id="popup" class="nicegui-error-popup">，前端在 socket 断开后由
+    # nicegui.js 把 aria-hidden 置为 false 显示出来；nicegui.css 中
+    # `#popup[aria-hidden="false"] { transition-delay: 2000ms; }`
+    # 意味着只有断开持续 2 秒以上才会真正可见（短暂闪断不会弹）。
+    #
+    # 放在这里的理由：ui.add_css() 在页面函数之外调用时必须显式传 shared=True。
+    # NiceGUI 源码 nicegui/functions/style.py::_add_javascript 中，shared=False
+    # 走的是 context.client 分支（无页面上下文时会**自动创建一个客户端**），
+    # 样式只会加到那个临时客户端上，页面拿不到；shared=True 才写入
+    # Client.shared_head_html，对所有页面生效（该分支还刻意不自动建客户端）。
+    #
+    # 注意：只隐藏 #popup（断线提示），不触碰同属 nicegui-error-popup 类的
+    # #too_long_message_popup（消息过大告警，属于有价值的诊断信息）。
+    #
+    # 影响面：隐藏的只是提示浮层，不影响重连逻辑——socket.io 照旧自动重连，
+    # 服务器主动要求重连的 try_reconnect 分支照旧整页 reload。
+    # 若发现频繁弹出，说明 WebSocket 真的在反复断开（反向代理空闲超时、
+    # Upgrade 头未透传等），应去排查代理配置而不是依赖这个提示。
+    ui.add_css("""
+        #popup.nicegui-error-popup {
+            display: none !important;
+        }
+    """, shared=True)
+
     # 全局异常处理器：兜底捕获未处理的 401 错误，防止 NiceGUI 显示错误页面
     @app.exception_handler(UnauthorizedError)
     async def handle_unauthorized_error(request: Request, _exc: Exception):
@@ -146,6 +175,33 @@ def init_app():
         from pages.strategy_select import show_strategy_select_page as _show
         main_page.main_page_with_content(_show, page_key="strategy_select")
 
+    @ui.page('/strategy-backtest')
+    def strategy_backtest_page_view(strategy_id: str = '', source: str = ''):
+        """策略回测记录独立页面。
+
+        策略模板 ID 与来源标识通过**查询参数**传入
+        （``/strategy-backtest?strategy_id=xxx&source=strategies``）：
+        NiceGUI 会把页面函数签名里的简单类型参数（这里是没有默认路径段的
+        ``strategy_id`` / ``source``）交给 FastAPI 当成可选 query 参数注入，
+        函数体拿到的就是解析后的值。不用 ``{strategy_id}`` 动态路径，是因为
+        安全中间件对应用路由做精确匹配，动态路径会落进限流窗口
+        （详见 core/routes.backtest_route）。
+
+        未带参数进入（如登录回跳丢了查询串）时由页面自己渲染空态，不报错。
+
+        ``source`` 是入口页面标识（策略监控 / 策略列表）：页面的「返回」按钮
+        与侧边栏高亮都跟随它 —— 从策略列表点进来，就该高亮并返回策略列表。
+        这里先用 backtest_source() 归一化（白名单校验），非法值回退策略监控。
+        """
+        from core.routes import backtest_source
+        from pages.strategy_backtest import show_strategy_backtest_page as _show
+        # 内容函数签名带参数，这里用 partial 固化；main_page_with_content 只负责
+        # 布局与鉴权，仍以无参方式调用 content_fn。
+        back_key: str = backtest_source(source)
+        main_page.main_page_with_content(
+            partial(_show, strategy_id, source=back_key), page_key=back_key
+        )
+
 '''
 function app_startup
 description: 应用启动时执行的函数，启动管理器
@@ -192,6 +248,22 @@ if __name__ in {"__main__", "__mp_main__"}:
     logger = logging.getLogger(__name__)
     listen_host = cp.get("web", "listen_host", fallback="0.0.0.0")
     listen_port = cp.get("web", "listen_port", fallback="8085")
+
+    # storage_secret 不再硬编码在源码中。
+    # 优先级：环境变量 Q_TRADING_STORAGE_SECRET > cfg/stock.cfg [web] storage_secret。
+    # 两者都未配置时生成随机值（安全性最好，但重启后会话失效、用户需重新登录）。
+    # 注意：更换该值会让所有已签发的会话 Cookie 失效。
+    storage_secret: str = (
+        os.environ.get("Q_TRADING_STORAGE_SECRET", "").strip()
+        or cp.get("web", "storage_secret", fallback="").strip()
+    )
+    if not storage_secret:
+        storage_secret = secrets.token_hex(32)
+        logger.warning(
+            "未配置 storage_secret（环境变量 Q_TRADING_STORAGE_SECRET 或 "
+            "cfg/stock.cfg 的 [web] storage_secret），已生成随机值；"
+            "进程重启后所有会话将失效，生产环境请显式配置。"
+        )
     init_app()
     # 添加异常处理器以静默处理 ClientDisconnect 异常
     async def client_disconnect_exception_handler(request: Request, exc: Exception):
@@ -211,7 +283,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         port=int(listen_port),
         language='zh-CN',
         reconnect_timeout=120,
-        storage_secret='753dcd75-e6a3-40c8-b5be-53a680472ba2',
+        storage_secret=storage_secret,
         reload=not _is_frozen,
         uvicorn_reload_excludes=",".join((  # noqa: FLY002
             "*.py[cod]",

@@ -3,12 +3,22 @@
 Author: liguoqiang
 Date: 2025-06-01 12:06:35
 LastEditors: liguoqiang
-LastEditTime: 2026-07-12
-Description: 登录/注册页面，严格按 doc/prototypes/login.html 原型实现。
+LastEditTime: 2026-09-16
+Description: 登录/注册页面。卡片沿用 doc/prototypes/login.html 原型；
+页面背景为量化终端风格（蓝图网格 / 品牌辉光 / 品牌水印 / K 线粒子动画），
+见 components/login_background.py，设计稿 doc/prototypes/login-bg.html。
 
 提供两种使用方式：
-  - login(): 独立登录页面路由 (/login)
-  - render_login_dialog(): 在其他页面中弹出登录对话框
+  - login(): 独立登录页面路由 (/login)，带动态背景
+  - render_login_dialog(): 在当前页面弹出登录对话框（**不装背景**——
+    它是 fixed 浮层，会盖住已经渲染好的应用界面）
+
+页面跟随会话主题（系统默认浅色）：背景与卡片一律走设计令牌，
+深浅两套随 body 的 class 自动切换。
+
+卡片位置：中心落在**窗口横向黄金分割点（61.8%）**，见 .login-viewport
+（padding-left = calc(23.6% + 1rem)、padding-right = 1rem）。窄屏（≤767px）
+回退为水平居中。
 """
 from __future__ import annotations
 
@@ -19,23 +29,35 @@ from nicegui import app, ui
 
 from api.client import ApiError, UnauthorizedError
 from app_context import AppContext
+from colors.theme import theme_manager
+from components.login_background import install_login_background
+from core.routes import sanitize_referrer
 
-# ---- 原型配色常量（与 login.html 严格一致） ----
-_BODY_BG: str = "#0f0f1a"
-_CARD_BG: str = "#1e293b"
-_CARD_BORDER: str = "#334155"
-_TAB_BG: str = "#111827"
-_TAB_ACTIVE_TEXT: str = "#60a5fa"
-_TAB_INACTIVE_TEXT: str = "#9ca3af"
-_INPUT_BG: str = "#111827"
-_INPUT_BORDER: str = "#334155"
-_INPUT_FOCUS: str = "#3b82f6"
-_FONT: str = "#e5e7eb"
-_LABEL_COLOR: str = "#d1d5db"
-_MUTED: str = "#9ca3af"
-_BRAND_BG: str = "#3b82f6"
-_BTN_PRIMARY: str = "#3b82f6"
-_BTN_HOVER: str = "#2563eb"
+# ---- 原型配色：全部取自 colors/theme.py 的令牌 ----
+# 页面跟随会话主题（系统默认浅色），令牌取值随主题自动切换。
+_BODY_BG: str = theme_manager.var("page")
+_CARD_BG: str = theme_manager.var("surface")
+# 卡片做成半透明 + 背景模糊：背后的 K 线粒子与辉光能透出来，
+# 否则不透明卡片会把整块背景挡住（见 components/login_background.py）
+_CARD_BG_FROSTED: str = theme_manager.var_rgba("surface", 0.82)
+_CARD_BORDER: str = theme_manager.var("border")
+_TAB_BG: str = theme_manager.var("surface-alt")
+_TAB_ACTIVE_TEXT: str = theme_manager.var("link")
+_TAB_INACTIVE_TEXT: str = theme_manager.var("muted")
+_INPUT_BG: str = theme_manager.var("surface-alt")
+_INPUT_BORDER: str = theme_manager.var("border")
+_INPUT_FOCUS: str = theme_manager.var("primary")
+_FONT: str = theme_manager.var("text")
+_LABEL_COLOR: str = theme_manager.var("label")
+_MUTED: str = theme_manager.var("muted")
+_BRAND_BG: str = theme_manager.var("primary")
+_BTN_PRIMARY: str = theme_manager.var("primary")
+_BTN_HOVER: str = theme_manager.var("primary-hover")
+_BRAND_TEXT: str = theme_manager.var("heading")
+_ON_ACCENT: str = theme_manager.var("on-accent")
+_SHADOW: str = theme_manager.var("shadow")
+_SHADOW_SOFT: str = theme_manager.var_rgba("shadow", 0.2)
+_FOCUS_RING: str = theme_manager.var_rgba("primary", 0.3)
 
 
 # ============================================================
@@ -48,33 +70,73 @@ def login() -> RedirectResponse | None:
     if app.storage.user.get("authenticated", False):
         return RedirectResponse("/")
 
-    AppContext().theme_manager.set_theme("dark")
+    AppContext().theme_manager.apply_session_theme()
 
-    # 重置 NiceGUI 整个页面容器链，确保内容铺满视口
+    # 量化终端风格的动态背景（网格 / 辉光 / 水印 / K 线粒子）。
+    # 必须在 apply_session_theme() 之后：脚本的兜底色值按当前会话主题取。
+    install_login_background()
+
+    # 重置 NiceGUI 整个页面容器链，确保内容铺满视口。
+    # 背景色只给 html/body：Quasar 的容器若带不透明底色会把 fixed 的背景层盖住。
     ui.add_css(f"""
         html, body, #nicegui, .q-layout, .q-page-container, .q-page {{
             height: 100% !important;
             min-height: 100vh !important;
             margin: 0 !important;
             padding: 0 !important;
+        }}
+        html, body {{
             background-color: {_BODY_BG} !important;
+        }}
+        #nicegui, .q-layout, .q-page-container, .q-page {{
+            background-color: transparent !important;
         }}
         .nicegui-content {{
             height: 100% !important;
             min-height: 100vh !important;
             padding: 0 !important;
         }}
+
+        /* ===== 登录视口容器：卡片中心落在窗口横向黄金分割点 =====
+           容器铺满视口、水平居中卡片，因此卡片中心
+           = (padding-left + 视口宽 − padding-right) / 2。
+           取 padding-right = 1rem、padding-left = calc(23.6% + 1rem)
+           ⇒ 卡片中心 = (23.6% + 100%) / 2 = 61.8%（黄金分割点 0.618）。
+           注：这里的百分比按包含块（视口）宽度解析，与 width:100% 同源。
+
+           box-sizing 必须显式写死：Quasar 的全局 border-box 是「继承式」的
+           （通配选择器把 box-sizing 设为 inherit，只有 html/body 声明 border-box），
+           祖先链上任何一层改成 content-box 都会传播下来；那样 padding 会额外撑宽
+           容器，卡片右移过头并横向溢出。
+           注意：本段是 f-string，注释里不要出现裸花括号，否则会被当表达式求值。 */
+        .login-viewport {{
+            box-sizing: border-box;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: transparent;
+            padding: 1rem 1rem 1rem calc(23.6% + 1rem);
+            z-index: 10;
+        }}
+        /* 窄屏：61.8% 会把卡片压窄到 254px（375px 视口），回退为水平居中 */
+        @media (max-width: 767px) {{
+            .login-viewport {{ padding: 1rem; }}
+        }}
     """)
 
-    # 全屏居中容器 — fixed 定位不依赖父级高度
-    with ui.element("div").style(
-        f"position: fixed; top: 0; left: 0; width: 100%; height: 100%; "
-        f"display: flex; align-items: center; justify-content: center; "
-        f"background-color: {_BODY_BG}; padding: 1rem; z-index: 10;"
-    ):
+    # 全屏视口容器 — fixed 定位不依赖父级高度；背景透明以露出后面的背景层。
+    # 位置（含黄金分割点偏移）见上方 .login-viewport
+    with ui.element("div").classes("login-viewport"):
         _render_login_card(
             on_success=lambda: ui.navigate.to(
-                app.storage.user.get("referrer_path", "/")
+                # 只回跳已登记的合法路由：referrer 可能来自旧版前端写错的
+                # "/monitor" 或已废弃的书签，直接跳会落到 404 页面
+                sanitize_referrer(app.storage.user.get("referrer_path", "/"))
             )
         )
 
@@ -86,10 +148,13 @@ def render_login_dialog(on_success: Callable[[], None] | None = None) -> None:
 
     :param on_success: 登录成功后的回调，默认跳转首页并刷新
     """
-    AppContext().theme_manager.set_theme("dark")
+    AppContext().theme_manager.apply_session_theme()
 
     def _default_success() -> None:
-        ui.navigate.to(app.storage.user.get("referrer_path", "/"))
+        # 同 show_login_page：回跳前先校验 referrer 是否为已登记路由
+        ui.navigate.to(
+            sanitize_referrer(app.storage.user.get("referrer_path", "/"))
+        )
 
     callback: Callable[[], None] = on_success or _default_success
 
@@ -109,13 +174,15 @@ def _inject_prototype_css() -> None:
     ui.add_css(f"""
         /* ===== 卡片 ===== */
         .login-card {{
-            background-color: {_CARD_BG};
+            background-color: {_CARD_BG_FROSTED};
             border: 1px solid {_CARD_BORDER};
             border-radius: 1.25rem;
             padding: 2.5rem 2.5rem 2rem;
             width: 100%;
             max-width: 440px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+            box-shadow: 0 20px 40px {_SHADOW};
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
             margin: 0 auto;
         }}
         @media (max-width: 480px) {{
@@ -135,11 +202,11 @@ def _inject_prototype_css() -> None:
             background: {_BRAND_BG};
             border-radius: 0.75rem;
             display: flex; align-items: center; justify-content: center;
-            color: white; font-size: 1.5rem;
+            color: {_ON_ACCENT}; font-size: 1.5rem;
         }}
         .login-brand-text {{
             font-size: 1.75rem; font-weight: 700;
-            color: #f3f4f6; letter-spacing: -0.02em;
+            color: {_BRAND_TEXT}; letter-spacing: -0.02em;
         }}
 
         /* ===== Tab 切换栏 ===== */
@@ -170,7 +237,7 @@ def _inject_prototype_css() -> None:
         .login-tabs .tab-btn.active {{
             background: {_CARD_BG};
             color: {_TAB_ACTIVE_TEXT};
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 2px 8px {_SHADOW_SOFT};
         }}
         .login-tabs .tab-btn:hover:not(.active) {{
             color: {_FONT};
@@ -222,7 +289,7 @@ def _inject_prototype_css() -> None:
         }}
         .login-card .q-field--focused .q-field__native {{
             border-color: {_INPUT_FOCUS} !important;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3) !important;
+            box-shadow: 0 0 0 3px {_FOCUS_RING} !important;
         }}
         .login-card .q-field__bottom {{
             display: none !important;
@@ -275,7 +342,7 @@ def _inject_prototype_css() -> None:
             background: {_BTN_PRIMARY} !important;
             border: none !important;
             border-radius: 0.75rem !important;
-            color: white !important;
+            color: {_ON_ACCENT} !important;
             font-weight: 600 !important;
             font-size: 1rem !important;
             cursor: pointer !important;
@@ -351,7 +418,7 @@ def _render_login_card(on_success: Callable[[], None]) -> None:
         with ui.element("div").classes("login-brand"):
             with ui.element("div").classes("login-brand-icon"):
                 ui.icon("trending_up")
-            ui.label("QuantSys").classes("login-brand-text")
+            ui.label("QTrade").classes("login-brand-text")
 
         # ---- Tabs — 纯 div，不用 ui.button 避免 Quasar 样式冲突 ----
         with ui.element("div").classes("login-tabs"):
@@ -415,10 +482,9 @@ def _render_login_panel(
                 "phone": result.get("phone", ""),
                 "user_id": result.get("user_id", result.get("id", "")),
             })
-            # 后台线程（run_in_executor / MQTT 回调）无法访问 app.storage.user，
-            # 设置 fallback token 供后台 API 调用携带认证
-            if token:
-                AppContext().api_client.set_fallback_token(token)
+            # token 存于 app.storage.user，按会话隔离；后台线程通过
+            # core.concurrency.run_blocking() 继承请求上下文后同样可读取，
+            # 无需（也不应）使用进程级共享 token。
             ui.notify("登录成功", type="positive")
             on_success()
         except ApiError as e:
@@ -519,7 +585,9 @@ def _render_register_panel(
                     "user_id": login_result.get("user_id", login_result.get("id", "")),
                 })
                 if reg_token:
-                    AppContext().api_client.set_fallback_token(reg_token)
+                    # token 仅存本会话：后台线程的鉴权由 core.concurrency.run_blocking
+                    # 沿用请求上下文（contextvars）解析，不再需要进程级 fallback。
+                    app.storage.user["token"] = reg_token
                 ui.notify("登录成功", type="positive")
                 on_success()
             except Exception:  # noqa: BLE001

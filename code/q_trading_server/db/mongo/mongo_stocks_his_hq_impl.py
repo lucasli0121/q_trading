@@ -13,6 +13,7 @@ from typing import Any, Hashable
 from utils import tools
 from pymongo import UpdateOne
 from app_context import AppContext
+from db.mongo.mongo_exec import UNLIMITED_QUERY_LIMIT
 
 
 # def _his_code_regex(code: str) -> dict[str, Any]:
@@ -49,7 +50,7 @@ class MongoStockHisHqImpl:
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
-        limit: int = 0,
+        limit: int = UNLIMITED_QUERY_LIMIT,
     ) -> tuple[bool, Any | None]:
         """查询日线行情数据
 
@@ -57,7 +58,9 @@ class MongoStockHisHqImpl:
         :param start_time: 开始时间
         :param end_time: 结束时间
         :param skip: 跳过的记录数
-        :param limit: 返回的记录数上限
+        :param limit: 返回的记录数上限。默认 UNLIMITED_QUERY_LIMIT：
+            调用方（get_stock_day_his_hq）需要完整结果集来判断哪些股票在库中缺失，
+            截断会导致缺失判断出错，进而重复发起外部抓取。
         :return: 成功返回 True 和记录列表，否则返回 False 和 None
         """
         return self._query_hq(self.day_hq_table, codes, start_time, end_time, skip, limit)
@@ -82,7 +85,7 @@ class MongoStockHisHqImpl:
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
-        limit: int = 0,
+        limit: int = UNLIMITED_QUERY_LIMIT,
     ) -> tuple[bool, Any | None]:
         """查询周线行情数据"""
         return self._query_hq(self.week_hq_table, codes, start_time, end_time, skip, limit)
@@ -103,7 +106,7 @@ class MongoStockHisHqImpl:
         start_time: str = "",
         end_time: str = "",
         skip: int = 0,
-        limit: int = 0,
+        limit: int = UNLIMITED_QUERY_LIMIT,
     ) -> tuple[bool, Any | None]:
         """查询月线行情数据"""
         return self._query_hq(self.month_hq_table, codes, start_time, end_time, skip, limit)

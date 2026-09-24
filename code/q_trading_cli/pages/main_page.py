@@ -9,23 +9,197 @@ Description: 主页面 — 严格按 home.html 原型实现仪表盘布局
     - 顶部标题栏
     - 统计卡片（策略总数、运行中策略、股票池数量、今日信号数）
       今日信号数：打开页面时先查询数据库初始化，之后接收 MQ 消息实时累加
-    - 系统累计收益概览图表（list_executions 执行结果集构建）+ 近期运行状态
+    - 系统累计收益概览图表（系统总收益曲线按 daily_average_rates 取日均值，
+      数据点走 executions/range 按窗口查询；右上角下拉框可叠加一条单策略对比曲线）
+      + 近期运行状态
     - 近期更新策略表格
+
+策略名称口径（两处展示共用）：一律显示**用户策略名称** ``user_strategy.name``，
+    回退链为 用户策略名 → 策略模板名 → 策略 ID。信号里的 ``strategy_id`` 是
+    **策略模板 ID**，同一模板建多个用户策略时会显示成同一个名字，必须按
+    ``user_strategy_id`` 归并（2026-09-23 用户定）。
+
+收益率口径（两处展示共用 core.holdings，改动前先读该模块头部）：
+    执行记录里的 current_return_rate 只含**已实现**盈利（后端 manager.py:
+    current_profit / initial_amount），直接展示会漏掉持仓浮盈。所以：
+      · 收益曲线：每个点取当天全部执行记录 current_return_rate 的算术平均
+        （只含已实现）；只有代表「当前」的末点覆盖成各策略「含浮盈」收益率的平均
+        —— 历史持仓的实时价无法回溯；
+      · 近期更新策略表：每个策略取最新一条执行记录，同样叠加未实现。
+    未实现盈亏一律由实时价与成本价现算，不取持仓里的 profit_rate / profit_amount
+    （成交时点快照）。算不出（缺实时价 / 缺字段）就显示 "-"，不退回已实现口径凑数。
 """
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
 from nicegui import app, ui
 
 from app_context import AppContext
+from colors.theme import resolve_mode_from_prefs
 from components import custom_tabs
+from core.concurrency import PollingTask, run_blocking
+from core.holdings import (
+    average_current_rate_pct,
+    collect_position_codes,
+    current_rate_pct_with_fallback,
+    current_return_rate_pct,
+    daily_average_rates,
+    execution_day,
+    fetch_price_map,
+    last_execution_day,
+    latest_execution_map,
+    unrealized_profit,
+)
+from core.routes import route_for_page_key
 from core.user_strategy_manager import UserStrategyManager
 from menu.top_menu import _do_logout, _show_profile_dialog
 
 logger = logging.getLogger(__name__)
+
+# "近期运行状态"卡片展示的条数（全局最近 N 条）
+ACTIVITY_COUNT: int = 4
+
+# 概要页实时价缓存：累计收益图的末点与近期更新策略表共用一份，
+# 避免 60 秒轮询与切换周期各打一次行情接口。口径见 core.holdings。
+_PRICE_TTL_SECONDS: float = 30.0
+_price_state: dict[str, Any] = {"key": "", "at": 0.0, "map": {}}
+
+# 概要页全量执行记录缓存：曲线窗口基准 / 曲线末点 / 近期更新策略表共用。
+_EXEC_TTL_SECONDS: float = 30.0
+_exec_state: dict[str, Any] = {"at": 0.0, "data": []}
+
+# 时间范围查询的分页上限。后端上限 10000、默认只有 500 —— 画一年曲线时
+# 多策略每天多条记录很容易超过 500，超了会被静默截断（曲线少了后半段却不报错）。
+_RANGE_LIMIT: int = 10000
+
+
+def _cached_price_map(codes: set[str]) -> dict[str, float]:
+    """带 TTL 的批量实时价查询（概要页共用）。
+
+    命中条件：代码集合与上次请求一致且未超过 TTL。代码集合变化（持仓变动）
+    时立即重查；查询失败返回空映射，且**照常推进时间戳**，避免轮询下反复重试。
+
+    :param codes: 需要查询的股票代码集合
+    :return: {股票代码: 实时价}；无代码或查询失败时为空映射
+    """
+    if not codes:
+        return {}
+    key: str = ",".join(sorted(codes))
+    now: float = time.monotonic()
+    if _price_state["key"] == key and now - float(_price_state["at"]) < _PRICE_TTL_SECONDS:
+        return dict(_price_state["map"])
+    price_map: dict[str, float] = fetch_price_map(codes)
+    _price_state["key"] = key
+    _price_state["at"] = now
+    _price_state["map"] = price_map
+    return dict(price_map)
+
+
+def _cached_all_executions() -> list[dict[str, Any]]:
+    """带 TTL 的**全量**执行记录（概要页共用）。
+
+    用于三处：① 近期更新策略表取「每策略最新一条」；② 收益曲线确定窗口基准
+    （最后一个数据点）；③ 曲线末点算各策略含浮盈收益率的平均。
+    曲线的**数据点**另走 ``executions/range`` 按窗口查询，不走这里。
+
+    ⚠ 末点必须基于全量：按时间范围查会漏掉窗口外长期未更新的策略，让平均值的
+    分母随窗口大小变化，曲线末点会莫名跳变。
+
+    失败时沿用上一批数据并**照常推进时间戳**，避免轮询下反复重试打爆后端。
+
+    :return: 全部执行记录（浅拷贝的列表）
+    """
+    now: float = time.monotonic()
+    if _exec_state["data"] and now - float(_exec_state["at"]) < _EXEC_TTL_SECONDS:
+        return list(_exec_state["data"])
+    try:
+        data: list[dict[str, Any]] = AppContext().user_strategy_api.list_executions()
+    except Exception:
+        logger.warning("查询策略执行结果失败", exc_info=True)
+        _exec_state["at"] = now
+        return list(_exec_state["data"])
+    _exec_state["at"] = now
+    _exec_state["data"] = data
+    return list(data)
+
+
+def _window_bounds(last_day: str, days_limit: int) -> tuple[str, str]:
+    """以**最后一个数据点**为基准算出查询窗口（闭区间的起止时间戳）。
+
+    窗口 = ``[last_day − days_limit 天, last_day]``，与旧的本地日期过滤边界一致，
+    所以「7天」实际覆盖 8 个日历日。基准取最后数据点而不是今天：数据不一定每天都有
+    （策略没交易就没新记录），以今天为基准时久未交易的策略会画出空图。
+
+    :param last_day: 最后一个数据点的日期 YYYY-MM-DD
+    :param days_limit: 周期天数
+    :return: (start_time, end_time)，格式 ``YYYY-MM-DD HH:MM:SS``；
+             last_day 无法解析时返回两个空串（查询表示不限时间范围）
+    """
+    if not last_day:
+        return "", ""
+    try:
+        end: datetime = datetime.strptime(last_day, "%Y-%m-%d")  # noqa: DTZ007
+    except ValueError:
+        return "", ""
+    start: datetime = end - timedelta(days=days_limit)
+    return (
+        start.strftime("%Y-%m-%d 00:00:00"),
+        end.strftime("%Y-%m-%d 23:59:59"),
+    )
+
+
+def _query_window_executions(
+    start_time: str,
+    end_time: str,
+    all_executions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """按时间范围查询窗口内的执行记录（服务端过滤）。
+
+    失败时**回退到本地过滤**全量结果：全量已经在手上，回退结果与服务端过滤等价，
+    曲线不会因为新接口故障而空白。
+
+    :param start_time: 起始时间戳，空串表示不限
+    :param end_time: 结束时间戳，空串表示不限
+    :param all_executions: 已拉取的全量记录（回退用）
+    :return: 窗口内的执行记录
+    """
+    try:
+        return AppContext().user_strategy_api.list_executions_by_range(
+            start_time=start_time, end_time=end_time, limit=_RANGE_LIMIT,
+        )
+    except Exception:
+        logger.warning("按时间范围查询执行结果失败，回退本地过滤", exc_info=True)
+    start_day: str = start_time[:10]
+    end_day: str = end_time[:10]
+    return [
+        ex for ex in all_executions
+        if (not start_day or execution_day(ex) >= start_day)
+        and (not end_day or execution_day(ex) <= end_day)
+    ]
+
+
+def _strategy_current_rate_pct(
+    executions: list[dict[str, Any]],
+    us_id: str,
+    price_map: dict[str, float],
+) -> float | None:
+    """所选策略最新记录的「含浮动盈亏」当前收益率（百分数），用于对比曲线末点。
+
+    :param executions: 全部执行记录（用全量：该策略可能在本周期内没有新记录）
+    :param us_id: 用户策略 ID；空表示未选策略
+    :param price_map: {股票代码: 实时价}
+    :return: 收益率百分数；未选策略或无记录时返回 None
+    """
+    if not us_id:
+        return None
+    record: dict[str, Any] | None = latest_execution_map(executions).get(us_id)
+    if record is None:
+        return None
+    return current_rate_pct_with_fallback(record, price_map)
 
 # 导航分组定义 — icon 使用 Material Design 名称
 _NAV_GROUPS: list[dict[str, Any]] = [
@@ -74,20 +248,47 @@ def _check_auth_heartbeat() -> None:
         logger.debug("心跳检测登录状态失败", exc_info=True)
 
 
-def _ensure_fallback_token() -> None:
-    """为后台线程补设 fallback token。
+def _ensure_user_strategies() -> None:
+    """确保会话内的用户策略缓存可用（按会话节流，默认 60 秒）。
 
-    app.storage.user 依赖 request_contextvar，仅在 UI 上下文可用；后台线程
-    （run_in_executor / MQTT 回调）访问会抛 RuntimeError，导致 ApiClient 取不到
-    token、后台 API 请求不带认证头而被后端 401。登录时已 set_fallback_token，
-    但服务器重启后内存中的 fallback 丢失而会话仍在，需在此补设。
+    由所有页面入口调用：既解决"子页面首次访问缓存键不存在导致 KeyError"，
+    又能在节流窗口后感知后端的策略状态变更（如策略被外部停止）。
+    token 无需在此补设：后台线程通过 core.concurrency.run_blocking()
+    继承请求上下文后，可直接从会话解析出本会话的 token。
     """
     try:
-        token: str = str(app.storage.user.get("token", "") or "")
-        if token:
-            AppContext().api_client.set_fallback_token(token)
+        UserStrategyManager().ensure_loaded()
     except Exception:
-        logger.debug("补设 fallback token 失败", exc_info=True)
+        logger.warning("加载用户策略缓存失败", exc_info=True)
+
+
+def _apply_theme_for_session() -> None:
+    """应用本会话的主题（深色 / 浅色）。
+
+    主题归属存在会话（``app.storage.user["theme_mode"]``）而不是进程级变量，
+    否则多用户会互相串号。会话里还没有记录时，从后端用户偏好补齐一次
+    （只补一次，失败也打标记，避免每次翻页都发请求）。
+
+    注意：后端在"用户从未保存过偏好"时会返回默认的 theme_mode="light"，
+    那不是用户的选择，不能直接采信——由 resolve_mode_from_prefs 判定。
+
+    注意：页面渲染期间会先应用主题再取色，因此下面这个顺序不能调换。
+    """
+    theme_manager = AppContext().theme_manager
+    try:
+        bootstrapped: bool = bool(app.storage.user.get("theme_bootstrapped", False))
+        if theme_manager.session_mode() is None and not bootstrapped:
+            mode: str | None = None
+            try:
+                mode = resolve_mode_from_prefs(AppContext().preference_api.get())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("读取用户主题偏好失败: %s", e)
+            app.storage.user["theme_bootstrapped"] = True
+            if mode is not None:
+                theme_manager.remember_mode(mode)
+    except Exception:  # noqa: BLE001 - 会话存储不可用时退回默认主题
+        logger.debug("读取会话主题失败", exc_info=True)
+    theme_manager.apply_session_theme()
 
 
 def main_page() -> None:
@@ -98,22 +299,21 @@ def main_page() -> None:
         return
 
     # 心跳：会话被后台 401 清除后立即跳转登录页（覆盖后台线程触发的登出）
-    ui.timer(1.0, _check_auth_heartbeat)
+    ui.timer(1.0, _check_auth_heartbeat, immediate=False)
 
-    # 确保后台线程（run_in_executor / MQTT）的 fallback token 已设置：
-    # 服务器重启后 app.storage.user 会话仍在，但内存中的 fallback 会丢失，需在此补设
-    _ensure_fallback_token()
+    # 确保会话内的用户策略缓存可用（按会话节流，默认 60 秒）
+    _ensure_user_strategies()
 
-    AppContext().theme_manager.set_theme("dark")
+    _apply_theme_for_session()
     custom_tabs.load_left_drawer_tab_css()
 
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = current_theme.get("main_border_color", "#334155")
-    accent_color: str = current_theme.get("accent", "#fbbf24")
-    sidebar_bg: str = "#111827"
-    card_bg: str = "#1e293b"
+    theme = AppContext().theme_manager
+    bg_color: str = theme.var("page")
+    font_color: str = theme.var("text")
+    border_color: str = theme.var("border")
+    accent_color: str = theme.var("accent")
+    sidebar_bg: str = theme.var("surface-alt")
+    card_bg: str = theme.var("surface")
 
     ui.add_css(f"""
         .q-page {{
@@ -136,9 +336,7 @@ def main_page() -> None:
         }}
     """)
 
-    # --- 初始化加载用户策略数据到app.storage --- #
-    UserStrategyManager().load_user_strategies()
-    # ---- 加载历史信号到内存（必须在 UI 上下文中调用） ----
+    # ---- 加载历史信号到内存（必须在 UI 上下文中调用；用户策略缓存已在函数入口加载） ----
     AppContext().signal_manager.load_history(limit=10)
     # ---- 左侧抽屉导航 ----
     with ui.left_drawer(top_corner=True, bordered=True).props("width=256") \
@@ -176,23 +374,23 @@ def _build_sidebar(
     # Logo — 点击回首页
     with ui.row().classes("w-full items-center gap-3").style("padding: 24px;"):
         with ui.element("div").classes("w-8 h-8 rounded flex items-center justify-center").style(
-            "background-color: #3b82f6; color: #ffffff;"
+            "background-color: var(--qs-primary); color: var(--qs-on-accent);"
         ):
             ui.icon("trending_up").style("font-size: 16px;")
-        ui.label("QuantSys").classes("text-xl font-bold").style("color: #f3f4f6;")
+        ui.label("QTrade").classes("text-xl font-bold").style("color: var(--qs-heading);")
 
     # 导航链接
     with ui.column().classes("w-full flex-1 gap-0 px-4 py-4 overflow-y-auto"):
         for group in _NAV_GROUPS:
             if group["label"]:
                 ui.label(group["label"]).classes("text-xs font-semibold uppercase tracking-wider").style(
-                    "color: #6b7280; padding: 16px 16px 8px 16px;"
+                    "color: var(--qs-faint); padding: 16px 16px 8px 16px;"
                 )
             for item_label, item_icon, item_key in group["items"]:
                 is_active: bool = (item_key == current_page)
-                link_bg: str = "#1e293b" if is_active else "transparent"
-                link_color: str = "#60a5fa" if is_active else "#9ca3af"
-                link_border: str = "3px solid #3b82f6" if is_active else "3px solid transparent"
+                link_bg: str = "var(--qs-surface)" if is_active else "transparent"
+                link_color: str = "var(--qs-link)" if is_active else "var(--qs-muted)"
+                link_border: str = "3px solid var(--qs-primary)" if is_active else "3px solid transparent"
 
                 with ui.row().classes("w-full items-center gap-3 cursor-pointer rounded-lg").style(
                     f"padding: 12px 16px; background-color: {link_bg}; color: {link_color}; "
@@ -228,18 +426,18 @@ def _build_sidebar(
         f"border-top: 1px solid {border_color}; margin-top: auto;"
     ):
         with ui.element("div").classes("w-8 h-8 rounded-full flex items-center justify-center").style(
-            "background-color: #1e3a5f; color: #93c5fd;"
+            "background-color: var(--qs-avatar-bg); color: var(--qs-info);"
         ):
             ui.icon("person").style("font-size: 16px;")
         with ui.column().classes("gap-0 overflow-hidden flex-1"):
-            ui.label(display_name).classes("text-sm font-medium truncate").style("color: #e5e7eb;")
-            ui.label(display_sub).classes("text-xs truncate").style("color: #6b7280;")
+            ui.label(display_name).classes("text-sm font-medium truncate").style("color: var(--qs-text);")
+            ui.label(display_sub).classes("text-xs truncate").style("color: var(--qs-faint);")
         # 菜单触发按钮
-        with ui.button(icon="more_vert").props("flat round dense").style("color: #6b7280;"), ui.menu().style(
+        with ui.button(icon="more_vert").props("flat round dense").style("color: var(--qs-faint);"), ui.menu().style(
             f"width: 150px; min-width: 150px; "
             f"background-color: {sidebar_bg}; "
             f"border: 1px solid {border_color}; "
-            f"color: #e5e7eb; font-size: 14px;"
+            f"color: var(--qs-text); font-size: 14px;"
         ):
             if authenticated:
                 ui.menu_item("个人资料", on_click=_show_profile_dialog)
@@ -252,20 +450,9 @@ def _build_sidebar(
 def _navigate_to_page(key: str) -> None:
     """处理侧边栏页面导航。
 
-    :param key: 页面标识符
+    :param key: 页面标识符（如 "monitor"，不是 URL 路径）
     """
-    route_map: dict[str, str] = {
-        "home": "/",
-        "strategies": "/strategies",
-        "monitor": "/strategy-monitor",
-        "strategy_select": "/strategy-select",
-        "pools": "/stock-pools",
-        "quotes": "/stock-quotes",
-        "preferences": "/settings-preferences",
-        "blacklist": "/settings-blacklist",
-    }
-    path: str = route_map.get(key, "/")
-    ui.navigate.to(path)
+    ui.navigate.to(route_for_page_key(key))
 
 
 def main_page_with_content(content_fn: Any, page_key: str = "home") -> None:
@@ -275,25 +462,36 @@ def main_page_with_content(content_fn: Any, page_key: str = "home") -> None:
     :param page_key: 当前页面 key（用于侧边栏高亮）
     """
     if not app.storage.user.get("authenticated", False):
-        app.storage.user["referrer_path"] = f"/{page_key}" if page_key != "home" else "/"
+        # 必须走 page_key → 路由的映射，不能拼 f"/{page_key}"：
+        # page_key 是页面标识（如 "monitor"），真实路由是 "/strategy-monitor"，
+        # 直接拼接会得到不存在的 "/monitor"，登录回跳后落到 404 页面。
+        app.storage.user["referrer_path"] = route_for_page_key(page_key)
         ui.navigate.to("/login")
         return
 
     # 心跳：会话被后台 401 清除后立即跳转登录页（覆盖后台线程触发的登出）
-    ui.timer(1.0, _check_auth_heartbeat)
+    ui.timer(1.0, _check_auth_heartbeat, immediate=False)
 
-    # 确保后台线程（run_in_executor / MQTT）的 fallback token 已设置
-    _ensure_fallback_token()
+    # 所有页面入口统一保证用户策略缓存可用（按会话节流，默认 60 秒）：
+    # 子页面不再是"首次访问时缓存键不存在 → KeyError"，也能感知后端状态变更。
+    _ensure_user_strategies()
 
-    AppContext().theme_manager.set_theme("dark")
+    # 所有页面入口统一把「最近的历史信号」补进内存（本进程本会话只做一次）。
+    # SignalManager 的信号容器是**进程级**的，应用热重载 / 重启后即为空；在下一条
+    # MQ 信号到达前不补历史信号，所有展示信号的地方（监控页信号表与策略卡片、
+    # 策略列表的"最近信号"列、首页近期运行状态）都会是空的，且刷新页面也无法恢复。
+    # ⚠ 原先只有 main_page()（首页 /）做了这一步，子页面直接访问或刷新时取不到信号。
+    AppContext().signal_manager.load_history(limit=10)
+
+    _apply_theme_for_session()
     custom_tabs.load_left_drawer_tab_css()
 
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = current_theme.get("main_border_color", "#334155")
-    accent_color: str = current_theme.get("accent", "#fbbf24")
-    sidebar_bg: str = "#111827"
+    theme = AppContext().theme_manager
+    bg_color: str = theme.var("page")
+    font_color: str = theme.var("text")
+    border_color: str = theme.var("border")
+    accent_color: str = theme.var("accent")
+    sidebar_bg: str = theme.var("surface-alt")
 
     ui.add_css(f"""
         .q-page {{
@@ -331,9 +529,9 @@ def main_page_with_content(content_fn: Any, page_key: str = "home") -> None:
         except Exception as e:  # noqa: BLE001
             logger.error(f"页面渲染失败: {e}")
             with ui.column().classes("w-full items-center justify-center").style("padding: 60px;"):
-                ui.icon("error").style("color: #f87171; font-size: 48px;")
-                ui.label("页面加载失败").style("color: #f87171;")
-                ui.label(str(e)).style("color: #9ca3af;")
+                ui.icon("error").style("color: var(--qs-positive); font-size: 48px;")
+                ui.label("页面加载失败").style("color: var(--qs-positive);")
+                ui.label(str(e)).style("color: var(--qs-muted);")
 
 
 def _build_topbar(
@@ -355,11 +553,11 @@ def _build_topbar(
         f"height: 64px; padding: 0 32px; background-color: {card_bg}; "
         f"border-bottom: 1px solid {border_color}; position: sticky; top: 0; z-index: 10;"
     ):
-        ui.label(title).classes("text-xl font-bold").style("color: #f3f4f6;")
+        ui.label(title).classes("text-xl font-bold").style("color: var(--qs-heading);")
         with ui.row().classes("items-center gap-4"):
             with ui.row().classes("items-center gap-2"):
-                ui.element("span").classes("w-2 h-2 rounded-full inline-block").style("background-color: #34d399;")
-                ui.label("交易系统运行中").classes("text-sm").style("color: #9ca3af;")
+                ui.element("span").classes("w-2 h-2 rounded-full inline-block").style("background-color: var(--qs-negative);")
+                ui.label("交易系统运行中").classes("text-sm").style("color: var(--qs-muted);")
 
             # ---- 通知铃铛：红点提示新系统消息，点击弹出消息列表 ----
             # 已读消息 ID 集合，用于判断是否有新消息
@@ -387,24 +585,24 @@ def _build_topbar(
                 :param msgs: 系统消息列表
                 """
                 with ui.dialog() as dialog, ui.card().style(
-                    "background-color: #1e293b; border: 1px solid #334155; "
+                    "background-color: var(--qs-surface); border: 1px solid var(--qs-border); "
                     "border-radius: 12px; padding: 0; width: 520px; max-width: 90vw;"
                 ):
                     # 标题栏
                     with ui.row().classes("w-full items-center justify-between").style(
-                        "padding: 16px 24px; border-bottom: 1px solid #334155;"
+                        "padding: 16px 24px; border-bottom: 1px solid var(--qs-border);"
                     ):
-                        ui.label("系统消息").classes("text-lg font-bold").style("color: #f3f4f6;")
+                        ui.label("系统消息").classes("text-lg font-bold").style("color: var(--qs-heading);")
                         ui.button(icon="close", on_click=dialog.close).props("flat round dense").style(
-                            "color: #9ca3af;"
+                            "color: var(--qs-muted);"
                         )
                     # 消息列表
                     with ui.column().classes("w-full gap-0").style("max-height: 60vh; overflow-y: auto;"):
                         if not msgs:
                             with ui.row().classes("w-full items-center justify-center").style("padding: 48px 0;"):
-                                ui.icon("notifications_none").style("color: #4b5563; font-size: 48px;")
+                                ui.icon("notifications_none").style("color: var(--qs-icon-muted); font-size: 48px;")
                             with ui.row().classes("w-full items-center justify-center").style("padding-bottom: 24px;"):
-                                ui.label("暂无系统消息").classes("text-sm").style("color: #6b7280;")
+                                ui.label("暂无系统消息").classes("text-sm").style("color: var(--qs-faint);")
                         else:
                             for idx, msg in enumerate(msgs):
                                 title: str = str(msg.get("title", ""))
@@ -412,41 +610,48 @@ def _build_topbar(
                                 create_time: str = str(msg.get("create_time", ""))[:16]
                                 # 分隔线（非首条）
                                 if idx > 0:
-                                    ui.separator().style("background-color: #334155;")
+                                    ui.separator().style("background-color: var(--qs-border);")
                                 with ui.column().classes("w-full gap-1").style("padding: 16px 24px;"):
                                     with ui.row().classes("w-full items-center justify-between"):
                                         ui.label(title).classes("text-sm font-semibold").style(
-                                            "color: #e5e7eb;"
+                                            "color: var(--qs-text);"
                                         )
-                                        ui.label(create_time).classes("text-xs").style("color: #6b7280;")
+                                        ui.label(create_time).classes("text-xs").style("color: var(--qs-faint);")
                                     ui.label(content).classes("text-sm").style(
-                                        "color: #9ca3af; white-space: pre-wrap; word-break: break-all;"
+                                        "color: var(--qs-muted); white-space: pre-wrap; word-break: break-all;"
                                     )
                 dialog.open()
 
             notif_btn = ui.button(icon="notifications", on_click=_on_notif_click).props(
                 "flat round dense"
-            ).style("color: #9ca3af;")
+            ).style("color: var(--qs-muted);")
             notif_badge = ui.badge("0", color="red").props("floating")
             notif_badge.set_visibility(False)
             with notif_btn:
                 notif_badge  # noqa: B018
 
             # 定时轮询系统消息，有新消息则显示红点
-            def _update_notif_badge() -> None:
-                """定时检查系统消息，新消息到达时显示红点。"""
-                try:
-                    msgs = AppContext().system_message_api.user_messages()
-                    for m in msgs:
-                        mid = str(m.get("id", ""))
-                        if mid and mid not in seen_msg_ids:
-                            notif_badge.set_text("1")
-                            notif_badge.set_visibility(True)
-                            return
-                except Exception:  # noqa: BLE001, S110
-                    pass
+            def _fetch_notif_messages() -> list[dict[str, Any]]:
+                """查询系统消息（在线程池中执行）。
 
-            ui.timer(10.0, _update_notif_badge)
+                :return: 消息列表；查询失败返回空列表
+                """
+                try:
+                    return list(AppContext().system_message_api.user_messages() or [])
+                except Exception:
+                    logger.debug("查询系统消息失败", exc_info=True)
+                    return []
+
+            async def _update_notif_badge() -> None:
+                """定时检查系统消息，新消息到达时显示红点。"""
+                for m in await run_blocking(_fetch_notif_messages):
+                    mid = str(m.get("id", ""))
+                    if mid and mid not in seen_msg_ids:
+                        notif_badge.set_text("1")
+                        notif_badge.set_visibility(True)
+                        return
+
+            PollingTask(10.0, _update_notif_badge, name="顶栏未读消息角标").start()
 
 
 # ============================================================
@@ -460,12 +665,15 @@ _PERIOD_DAYS: dict[str, int] = {
     "1年": 365,
 }
 
+# 收益图主曲线名（图例与 tooltip 里显示）
+_TOTAL_SERIES_NAME: str = "系统总收益"
+
 # 用户策略状态 → (显示文本, 文字颜色, 背景颜色)
 _STATUS_STYLES: dict[str, tuple[str, str, str]] = {
-    "running": ("运行中", "#34d399", "rgba(52,211,153,0.3)"),
-    "stopped": ("已停止", "#d1d5db", "rgba(55,65,81,0.8)"),
-    "paused": ("已暂停", "#fbbf24", "rgba(251,191,36,0.25)"),
-    "error": ("异常", "#f87171", "rgba(248,113,113,0.25)"),
+    "running": ("运行中", "var(--qs-negative)", "rgba(var(--qs-negative-rgb), 0.3)"),
+    "stopped": ("已停止", "var(--qs-label)", "var(--qs-chip-neutral)"),
+    "paused": ("已暂停", "var(--qs-accent)", "rgba(var(--qs-accent-rgb), 0.25)"),
+    "error": ("异常", "var(--qs-positive)", "rgba(var(--qs-positive-rgb), 0.25)"),
 }
 
 
@@ -484,8 +692,8 @@ def _render_home_dashboard(
     :param card_bg: 卡片背景色
     :param bg_color: 页面背景色
     """
-    positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
-    negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
+    positive_color: str = AppContext().theme_manager.var("positive")
+    negative_color: str = AppContext().theme_manager.var("negative")
 
     # 统计卡片行（策略总数 / 运行中策略 / 股票池数量 / 今日信号数）
     _build_stats_cards(card_bg, border_color, font_color, positive_color, negative_color)
@@ -544,24 +752,24 @@ def _build_stats_cards(
 
     cards_data: list[dict[str, Any]] = [
         {"key": "total", "icon": "description",
-         "icon_bg": "rgba(59,130,246,0.4)", "icon_color": "#60a5fa",
+         "icon_bg": "rgba(var(--qs-primary-rgb), 0.4)", "icon_color": "var(--qs-link)",
          "label": "策略总数", "value": str(strategy_total),
-         "badge": f"+{month_new} 本月", "badge_color": "#34d399",
-         "badge_bg": "rgba(52,211,153,0.3)"},
+         "badge": f"+{month_new} 本月", "badge_color": "var(--qs-negative)",
+         "badge_bg": "rgba(var(--qs-negative-rgb), 0.3)"},
         {"key": "running", "icon": "play_circle",
-         "icon_bg": "rgba(52,211,153,0.4)", "icon_color": "#34d399",
+         "icon_bg": "rgba(var(--qs-negative-rgb), 0.4)", "icon_color": "var(--qs-negative)",
          "label": "运行中策略", "value": str(running_count),
-         "badge": "运行平稳", "badge_color": "#9ca3af",
-         "badge_bg": "rgba(55,65,81,0.8)"},
+         "badge": "运行平稳", "badge_color": "var(--qs-muted)",
+         "badge_bg": "var(--qs-chip-neutral)"},
         {"key": "pools", "icon": "database",
-         "icon_bg": "rgba(168,85,247,0.4)", "icon_color": "#c084fc",
+         "icon_bg": "rgba(var(--qs-purple-rgb), 0.4)", "icon_color": "var(--qs-purple)",
          "label": "股票池数量", "value": str(pool_count),
          "badge": "", "badge_color": "", "badge_bg": ""},
         {"key": "signals", "icon": "bolt",
-         "icon_bg": "rgba(251,146,60,0.4)", "icon_color": "#fb923c",
+         "icon_bg": "rgba(var(--qs-orange-rgb), 0.4)", "icon_color": "var(--qs-orange)",
          "label": "今日信号数", "value": str(today_signal_count),
          "badge": "今日活跃" if today_signal_count > 0 else "暂无",
-         "badge_color": "#f87171", "badge_bg": "rgba(248,113,113,0.3)"},
+         "badge_color": "var(--qs-positive)", "badge_bg": "rgba(var(--qs-positive-rgb), 0.3)"},
     ]
 
     # key → {value: 数值label, badge: 角标label}，供定时刷新使用
@@ -581,18 +789,18 @@ def _build_stats_cards(
                     badge_label: ui.label = ui.label(card["badge"]).classes(
                         "text-xs font-medium rounded px-2 py-1"
                     ).style(
-                        f"color: {card['badge_color'] or '#9ca3af'}; "
+                        f"color: {card['badge_color'] or 'var(--qs-muted)'}; "
                         f"background-color: {card['badge_bg'] or 'transparent'};"
                     )
-                ui.label(card["label"]).classes("text-sm").style("color: #9ca3af;")
+                ui.label(card["label"]).classes("text-sm").style("color: var(--qs-muted);")
                 value_label: ui.label = ui.label(card["value"]).classes("text-2xl font-bold").style(
-                    "color: #f3f4f6; margin-top: 4px;"
+                    "color: var(--qs-heading); margin-top: 4px;"
                 )
                 card_refs[card["key"]] = {"value": value_label, "badge": badge_label}
 
     # ---- 定时刷新今日信号数（MQ 新信号由 SignalManager 实时接收） ----
     def _refresh_today_signals() -> None:
-        """定时刷新今日信号卡片数值与角标。"""
+        """定时刷新今日信号卡片数值与角标（纯内存读取，无需切线程）。"""
         try:
             today_signal_count: int = AppContext().signal_manager.get_today_count()
             refs: dict[str, Any] | None = card_refs.get("signals")
@@ -603,14 +811,14 @@ def _build_stats_cards(
             value_lbl.set_text(str(today_signal_count))
             if today_signal_count > 0:
                 badge_lbl.set_text("今日活跃")
-                badge_lbl.style("color: #f87171; background-color: rgba(248,113,113,0.3);")
+                badge_lbl.style("color: var(--qs-positive); background-color: rgba(var(--qs-positive-rgb), 0.3);")
             else:
                 badge_lbl.set_text("暂无")
-                badge_lbl.style("color: #9ca3af; background-color: transparent;")
-        except Exception:  # noqa: BLE001, S110
-            pass
+                badge_lbl.style("color: var(--qs-muted); background-color: transparent;")
+        except Exception:
+            logger.debug("刷新今日信号数失败", exc_info=True)
 
-    ui.timer(3.0, _refresh_today_signals)
+    PollingTask(3.0, _refresh_today_signals, in_thread=False, name="首页今日信号数").start()
 
 
 def _build_profit_chart(
@@ -619,12 +827,24 @@ def _build_profit_chart(
     font_color: str,
     accent_color: str,
 ) -> None:
-    """构建系统累计收益概览卡片 — ECharts 折线图。
+    """构建系统累计收益概览卡片 — ECharts 折线图（可叠加一条单策略对比线）。
 
-    数据来源：user_strategy_api.list_executions() 获取登录用户
-    所有策略执行结果集，取每条记录的收益率（current_return_rate）
-    与时间（update_time），按日期汇总后绘制累计收益曲线。
+    两条曲线（口径见 core/holdings.py 头部）：
+    - **系统总收益**：按 update_time 落到日期，每天取当天**全部**执行记录
+      current_return_rate 的算术平均（只含已实现，×100 后为百分数）。代表「当前」
+      的末点由 average_current_rate_pct 覆盖成各策略「含持仓浮盈」收益率的平均
+      —— 历史点的实时价无法回溯，浮盈只能在末点体现。
+    - **单策略对比**：右上角下拉框选中某个用户策略后追加，数据是同一批记录按
+      user_strategy_id 过滤后的当日平均，琥珀色、不带面积，避免与主曲线互相遮盖。
+
+    取数分两步：先用 list_executions() 全量确定窗口基准（最后一个数据点）与末点，
+    再调 executions/range 按窗口做服务端过滤取数据点。两者都带 30 秒 TTL ——
+    切换周期只重查窗口；切换策略连窗口都复用；页面加载后首次绘制与表格共用行情缓存。
+
     支持 7天 / 30天 / 1年 周期切换。
+
+    ⚠ **没有定时刷新**：_load_data() 只在卡片构建、切换周期、切换策略时调用，
+    不像「近期更新策略表」那样挂 60 秒 PollingTask。
 
     :param card_bg: 卡片背景
     :param border_color: 边框颜色
@@ -632,7 +852,18 @@ def _build_profit_chart(
     :param accent_color: 强调色
     """
     period_state: dict[str, str] = {"period": "30天"}
+    select_state: dict[str, str] = {"us_id": "", "name": ""}
+    # 当前周期查回的窗口数据：切换策略时复用，不重复打时间范围接口
+    window_state: dict[str, Any] = {"period": "", "data": []}
     button_refs: dict[str, ui.label] = {}
+
+    # 下拉框选项：value = user_strategy_id，label = 用户策略名称
+    # （名称缺失时退回 ID，避免出现一行空白选项）
+    us_options: dict[str, str] = {}
+    for us in UserStrategyManager().list_user_strategies():
+        us_id: str = str(us.get("_id", "") or us.get("id", "") or "")
+        if us_id:
+            us_options[us_id] = str(us.get("name", "") or "") or us_id
 
     def _button_style(is_active: bool) -> str:
         """周期按钮样式。
@@ -642,13 +873,13 @@ def _build_profit_chart(
         """
         if is_active:
             return (
-                "border: 1px solid #3b82f6; background-color: rgba(59,130,246,0.3); "
-                "color: #60a5fa; padding: 4px 12px; border-radius: 6px; "
+                "border: 1px solid var(--qs-primary); background-color: rgba(var(--qs-primary-rgb), 0.3); "
+                "color: var(--qs-link); padding: 4px 12px; border-radius: 6px; "
                 "font-size: 12px; font-weight: 500; cursor: pointer;"
             )
         return (
             f"border: 1px solid {border_color}; background-color: transparent; "
-            f"color: #9ca3af; padding: 4px 12px; border-radius: 6px; "
+            f"color: var(--qs-muted); padding: 4px 12px; border-radius: 6px; "
             f"font-size: 12px; font-weight: 500; cursor: pointer;"
         )
 
@@ -656,10 +887,18 @@ def _build_profit_chart(
         f"background-color: {card_bg}; border: 1px solid {border_color}; "
         f"border-radius: 12px; padding: 24px; min-height: 416px; height: 450px"
     ):
-        # ---- 标题 + 周期切换按钮 ----
+        # ---- 标题 + 对比策略下拉 + 周期切换按钮 ----
         with ui.row().classes("w-full items-center justify-between").style("margin-bottom: 24px;"):
-            ui.label("系统累计收益概览").classes("text-lg font-bold").style("color: #f3f4f6;")
-            with ui.row().classes("gap-2"):
+            ui.label("系统累计收益概览").classes("text-lg font-bold").style("color: var(--qs-heading);")
+            with ui.row().classes("gap-3 items-center"):
+                # 默认不选策略：只画系统总收益曲线，选中后才追加对比线
+                strategy_select: ui.select = ui.select(
+                    options=us_options,
+                    value=None,
+                    label="对比策略",
+                    with_input=True,
+                    clearable=True,
+                ).props("dense outlined options-dense").style("min-width: 150px;")
                 for period in _PERIOD_DAYS:
                     btn: ui.label = ui.label(period).classes("rounded").style(
                         _button_style(period == period_state["period"])
@@ -670,6 +909,21 @@ def _build_profit_chart(
                     button_refs[period] = btn
 
         chart = ui.echart(_profit_chart_option([], [])).classes("w-full").style("height: 350px;")
+        # 所选策略在当前窗口内没有记录时的提示位
+        hint: ui.label = ui.label("").classes("text-xs").style(
+            "color: var(--qs-muted); margin-top: 4px;"
+        )
+        hint.set_visibility(False)
+
+        def _on_select(event: Any) -> None:
+            """下拉框选择变化 → 重画（选中时额外画一条该策略的对比曲线）。
+
+            :param event: ValueChangeEventArguments，value 为 user_strategy_id
+            """
+            us_id: str = str(getattr(event, "value", None) or "")
+            select_state["us_id"] = us_id
+            select_state["name"] = us_options.get(us_id, "")
+            _load_data()
 
         def _set_period(period: str) -> None:
             """切换统计周期并刷新按钮样式与图表数据。
@@ -682,60 +936,106 @@ def _build_profit_chart(
             _load_data()
 
         def _load_data() -> None:
-            """拉取执行结果集并更新累计收益图表。"""
-            executions: list[dict[str, Any]] = []
-            try:
-                executions = AppContext().user_strategy_api.list_executions()
-            except Exception:
-                logger.warning("查询策略执行结果失败", exc_info=True)
+            """按当前周期与所选策略刷新图表。"""
+            all_execs: list[dict[str, Any]] = _cached_all_executions()
             days_limit: int = _PERIOD_DAYS.get(period_state["period"], 30)
+
+            # 窗口数据按周期缓存：只在周期变化时重查时间范围接口
+            period: str = period_state["period"]
+            if window_state["period"] != period or not window_state["data"]:
+                start_time, end_time = _window_bounds(
+                    last_execution_day(all_execs), days_limit,
+                )
+                window_state["period"] = period
+                window_state["data"] = _query_window_executions(
+                    start_time, end_time, all_execs,
+                )
+            window_execs: list[dict[str, Any]] = window_state["data"]
+
+            # 实时价按「全部策略最新记录」的持仓代码一次取回，与近期更新策略表共用缓存
+            price_map: dict[str, float] = _cached_price_map(collect_position_codes(
+                [list(rec.get("positions", []) or [])
+                 for rec in latest_execution_map(all_execs).values()]
+            ))
+
+            us_id: str = select_state["us_id"]
             labels: list[str]
-            values: list[float]
-            labels, values = _build_cumulative_series(executions, days_limit)
+            total_rates: list[float | None]
+            single_rates: list[float | None]
+            labels, total_rates, single_rates = _build_cumulative_series(
+                window_execs,
+                days_limit,
+                average_current_rate_pct(all_execs, price_map),
+                us_id,
+                _strategy_current_rate_pct(all_execs, us_id, price_map),
+            )
+
+            series: list[dict[str, Any]] = [
+                {"name": _TOTAL_SERIES_NAME, "data": total_rates},
+            ]
+            # 窗口内没有该策略的记录时不追加空曲线：ECharts 会把全 None 的 series
+            # 画成一条不存在的线，图例里却留着名字，读起来像"数据丢了"
+            has_single: bool = bool(us_id) and any(v is not None for v in single_rates)
+            if has_single:
+                series.append({
+                    "name": select_state["name"] or us_id,
+                    "data": single_rates,
+                })
+
             # EChart.options 为只读属性，需原地修改字典后调用 update() 推送变更
             chart.options.clear()
-            chart.options.update(_profit_chart_option(labels, values))
+            chart.options.update(_profit_chart_option(labels, series))
             chart.update()
 
+            # 所选策略在本窗口内没有记录时给一句提示，免得被读成「曲线丢了」
+            hint.set_text(
+                f"「{select_state['name']}」在该时间范围内没有执行记录"
+                if us_id and not has_single else ""
+            )
+            hint.set_visibility(bool(us_id) and not has_single)
+
+        strategy_select.on_value_change(_on_select)
         _load_data()
 
 
 def _build_cumulative_series(
     executions: list[dict[str, Any]],
     days_limit: int,
-) -> tuple[list[str], list[float]]:
-    """将执行结果集转换为按日汇总的累计收益序列。
+    last_rate_pct: float | None = None,
+    select_us_id: str = "",
+    select_last_rate_pct: float | None = None,
+) -> tuple[list[str], list[float | None], list[float | None]]:
+    """把执行记录转成曲线序列（系统总收益 + 可选的单策略对比曲线）。
 
-    :param executions: list_executions 返回的执行结果列表，
-                       每条包含 current_return_rate（0.15 表示 15%）与 update_time
+    - 总收益曲线：每天取当天**全部**执行记录 current_return_rate 的算术平均
+      （不按策略去重，见 core.holdings.daily_average_rates）；
+    - 单策略曲线：先按 user_strategy_id 过滤，再按同一规则取当日平均；
+    - 两条曲线的日期取**并集**，各自缺失的日期补 ``None``（ECharts 断线）。
+      不能补 0：补 0 会在图上画出一条跌到 0 的假线。
+
+    :param executions: 窗口内的执行记录
     :param days_limit: 保留最近 N 天的数据，<=0 表示不限制
-    :return: (日期标签列表 MM-DD, 收益率百分数列表)
+    :param last_rate_pct: 总收益曲线末点要覆盖成的百分数（含持仓浮盈），
+                          由 core.holdings.average_current_rate_pct 算好传进来；
+                          None 表示不覆盖
+    :param select_us_id: 要叠加对比曲线的用户策略 ID，空表示不叠加
+    :param select_last_rate_pct: 对比曲线末点要覆盖成的百分数，None 表示不覆盖
+    :return: (日期标签列表 MM-DD, 总收益曲线数据, 单策略曲线数据；
+              未选策略时第三个为空列表)
     """
-    points: list[tuple[str, float]] = []
-    for ex in executions:
-        raw_time: str = str(
-            ex.get("update_time") or ex.get("create_time") or ""
-        ).strip()
-        if len(raw_time) < 10:
-            continue
-        try:
-            rate_pct: float = round(float(ex.get("current_return_rate", 0) or 0) * 100.0, 2)
-        except (TypeError, ValueError):
-            continue
-        points.append((raw_time[:10], rate_pct))
-    if not points:
-        return [], []
+    total_daily: dict[str, float] = daily_average_rates(executions)
+    single_daily: dict[str, float] = {}
+    if select_us_id:
+        single_daily = daily_average_rates(
+            ex for ex in executions
+            if str(ex.get("user_strategy_id", "") or "") == select_us_id
+        )
 
-    # 按时间升序排列；同一天多条记录保留最后一条（最新状态）
-    points.sort(key=lambda p: p[0])
-    daily: dict[str, float] = {}
-    for day, rate in points:
-        daily[day] = rate
+    days: list[str] = sorted(set(total_daily) | set(single_daily))
+    if not days:
+        return [], [], []
 
-    days: list[str] = list(daily.keys())
-    rates: list[float] = list(daily.values())
-
-    # 按周期截取最近 N 天
+    # 按周期截取最近 N 天（基准是**最后一个数据点**，不是今天）
     if days_limit > 0 and len(days) > 1:
         try:
             last_day: datetime = datetime.strptime(days[-1], "%Y-%m-%d")  # noqa: DTZ007
@@ -743,59 +1043,115 @@ def _build_cumulative_series(
             filtered_days: list[str] = [d for d in days if d >= cutoff]
             if filtered_days:
                 days = filtered_days
-                rates = [daily[d] for d in filtered_days]
         except ValueError:
             pass
 
+    total_rates: list[float | None] = [total_daily.get(d) for d in days]
+    single_rates: list[float | None] = (
+        [single_daily.get(d) for d in days] if select_us_id else []
+    )
+
+    # 末点代表「当前」：叠加持仓未实现盈亏（历史点无实时价可回溯，保持已实现口径）
+    if last_rate_pct is not None and total_rates:
+        total_rates[-1] = round(float(last_rate_pct), 2)
+    # 对比曲线只在窗口内确实有数据时覆盖末点：否则会凭空多出一个孤立的点
+    if (select_last_rate_pct is not None and single_rates
+            and any(v is not None for v in single_rates)):
+        single_rates[-1] = round(float(select_last_rate_pct), 2)
+
     labels: list[str] = [d[5:] for d in days]  # YYYY-MM-DD → MM-DD
-    return labels, rates
+    return labels, total_rates, single_rates
 
 
-def _profit_chart_option(labels: list[str], values: list[float]) -> dict[str, Any]:
-    """构建累计收益 ECharts 配置（深色主题，蓝色渐变面积折线）。
+def _profit_chart_option(
+    labels: list[str], series: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """构建累计收益 ECharts 配置（主曲线带渐变面积，对比曲线只描线）。
 
-    :param labels: X 轴日期标签
-    :param values: 累计收益率（百分数）
+    ECharts 用 canvas 绘制，**不解析 CSS 变量**，所以配色必须取真实色值
+    （``theme_manager.get_chart_colors()``），不能传 ``var(--qs-*)``。
+
+    tooltip 模板按曲线数量动态拼：字符串模板里引用不存在的 series 索引
+    （例如只有一条线却写 ``{c1}``）会渲染出空段。
+
+    :param labels: X 轴日期标签（两条曲线的日期并集）
+    :param series: 曲线定义，每项 {name, data}；第一条为主曲线
     :return: ECharts option 字典
     """
+    chart_colors: dict[str, str] = AppContext().theme_manager.get_chart_colors()
+    tooltip_formatter: str = "<br/>".join(
+        ["{b}"] + [f"{{a{i}}}: {{c{i}}}%" for i in range(len(series))]
+    )
+
     option: dict[str, Any] = {
         "backgroundColor": "transparent",
-        "grid": {"top": 20, "right": 20, "bottom": 40, "left": 50},
-        "tooltip": {
-            "trigger": "axis",
-            "formatter": "{b}<br/>{a}: {c}%",
-        },
+        # 两条曲线时顶部留出图例的位置，否则图例会压在折线上
+        "grid": {"top": 36 if len(series) > 1 else 20, "right": 20, "bottom": 40, "left": 50},
+        "tooltip": {"trigger": "axis", "formatter": tooltip_formatter},
         "xAxis": {
             "type": "category",
             "data": labels,
-            "axisLine": {"lineStyle": {"color": "#334155"}},
-            "axisLabel": {"color": "#9ca3af"},
+            "axisLine": {"lineStyle": {"color": chart_colors["axis_line"]}},
+            "axisLabel": {"color": chart_colors["axis"]},
         },
         "yAxis": {
             "type": "value",
             "axisLine": {"show": False},
-            "splitLine": {"lineStyle": {"color": "#2d3748", "type": "dashed"}},
-            "axisLabel": {"color": "#9ca3af", "formatter": "{value}%"},
+            "splitLine": {"lineStyle": {"color": chart_colors["grid"], "type": "dashed"}},
+            "axisLabel": {"color": chart_colors["axis"], "formatter": "{value}%"},
         },
-        "series": [{
-            "name": "收益率",
-            "data": values,
-            "type": "line",
-            "smooth": True,
-            "symbol": "none",
-            "lineStyle": {"color": "#3b82f6", "width": 3},
-            "areaStyle": {
-                "color": {
-                    "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
-                    "colorStops": [
-                        {"offset": 0, "color": "rgba(59,130,246,0.3)"},
-                        {"offset": 1, "color": "rgba(59,130,246,0)"},
-                    ],
-                },
-            },
-        }],
+        "series": [
+            _echart_line(item, chart_colors, index)
+            for index, item in enumerate(series)
+        ],
     }
+    if len(series) > 1:
+        option["legend"] = {
+            "top": 0, "right": 0, "itemWidth": 14, "itemHeight": 8,
+            "textStyle": {"color": chart_colors["axis"], "fontSize": 11},
+        }
     return option
+
+
+def _echart_line(
+    item: dict[str, Any], chart_colors: dict[str, str], index: int,
+) -> dict[str, Any]:
+    """把一条曲线定义转成 ECharts series。
+
+    第一条（index 0，系统总收益）用主色 + 渐变面积、线宽 3；其余（单策略对比）
+    用副色、线宽 2、**不铺面积**——两条曲线都铺面积会互相遮盖，看不出一条压着
+    另一条的部分。
+
+    :param item: {name, data}
+    :param chart_colors: 真实色值集合
+    :param index: 曲线序号
+    :return: ECharts series 字典
+    """
+    is_primary: bool = index == 0
+    color: str = chart_colors["line"] if is_primary else chart_colors["line2"]
+    line: dict[str, Any] = {
+        "name": item.get("name", ""),
+        "data": item.get("data", []),
+        "type": "line",
+        "smooth": True,
+        "symbol": "none",
+        # 缺失日期补的是 None，会让线断开。绝不能连起来：那会把缺口画成直线，
+        # 看起来像"这段时间一直平稳"，实际只是没有数据。
+        "connectNulls": False,
+        "lineStyle": {"color": color, "width": 3 if is_primary else 2},
+        "itemStyle": {"color": color},
+    }
+    if is_primary:
+        line["areaStyle"] = {
+            "color": {
+                "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
+                "colorStops": [
+                    {"offset": 0, "color": chart_colors["line_area_top"]},
+                    {"offset": 1, "color": chart_colors["line_area_bottom"]},
+                ],
+            },
+        }
+    return line
 
 
 def _build_recent_activity(
@@ -806,6 +1162,18 @@ def _build_recent_activity(
     negative_color: str,
 ) -> None:
     """构建近期运行状态列表 — 从 SignalManager 获取最近交易信号。
+
+    本次改造（对应 CR-02 / CR-03 / CR-04 / CR-18）：
+    - 改用 signal_manager.get_signals(limit=ACTIVITY_COUNT)：**全局**按时间倒序
+      取最近 N 条。原实现用 get_signals_by_user_strategy(limit=4)，其 limit 是
+      "每策略"上限（会渲染 4×策略数 行），且该函数原先完全不排序，
+      展示的既不是"最近"也不是"4 条"。
+    - 拉取放到线程池（run_blocking），策略名称走会话缓存里的用户策略名
+      （``user_strategy.name``），模板名只兜底，不再对每条信号各发一次
+      strategy_api.get_by_id()。
+    - 数据签名未变化时跳过 clear()+重建，避免每秒重建 DOM 造成闪屏、
+      丢失滚动位置。
+    - 轮询改用 PollingTask（重入保护 + 最小间隔），避免 sleep(负数) 退化。
 
     :param card_bg: 卡片背景
     :param border_color: 边框颜色
@@ -818,46 +1186,100 @@ def _build_recent_activity(
         f"border-radius: 12px; padding: 24px; min-height: 416px; height: 450px"
     ):
         ui.label("近期运行状态").classes("text-lg font-bold").style(
-            "color: #f3f4f6; margin-bottom: 24px;"
+            "color: var(--qs-heading); margin-bottom: 24px;"
         )
 
         activity_container = ui.column().classes("w-full gap-6")
-        user_strategy_ids: list[str] = UserStrategyManager().get_user_strategy_ids()
-        def _render() -> None:
+        # 渲染状态：signature 用于判断数据是否变化，避免无谓重建
+        render_state: dict[str, Any] = {"signature": None}
+
+        def _fetch_activities() -> list[dict[str, Any]]:
+            """拉取最近活动（在线程池中执行）。
+
+            策略名称取**用户策略名称**（``user_strategy.name``）。信号里的
+            ``strategy_id`` 是**策略模板 ID**，同一模板下建了多个用户策略时
+            会显示成同一个名字、分不清是哪条策略的信号，因此必须按
+            ``user_strategy_id`` 归并。名称回退链：用户策略名 → 模板名 → ``--``。
+
+            :return: [{name, action, code, time}]，按时间倒序
+            """
+            signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals(
+                limit=ACTIVITY_COUNT, only_running=True,
+            )
+
+            # 用户策略 ID → 名称（取自会话缓存，不发请求）
+            us_names: dict[str, str] = {}
+            for us in UserStrategyManager().list_user_strategies():
+                us_id: str = str(us.get("_id", "") or us.get("id", ""))
+                if us_id:
+                    us_names[us_id] = str(us.get("name", "") or "")
+
+            # 模板名只作兜底：会话缓存里没有该策略时（如缓存未刷新）还能显示名字
+            strategy_ids: list[str] = list({
+                str(s.get("strategy_id", "") or "") for s in signals if s.get("strategy_id")
+            })
+            templates: dict[str, dict[str, Any]] = AppContext().strategy_cache.get_many(strategy_ids)
+            tpl_names: dict[str, str] = {
+                sid: str(tpl.get("name", "") or "") for sid, tpl in templates.items()
+            }
+            return [
+                {
+                    "name": (
+                        us_names.get(str(s.get("user_strategy_id", "") or ""), "")
+                        or tpl_names.get(str(s.get("strategy_id", "")), "")
+                        or "--"
+                    ),
+                    "action": str(s.get("action", "") or ""),
+                    "code": str(s.get("stock_code", "") or ""),
+                    "time": str(s.get("create_time", ""))[:16],
+                }
+                for s in signals
+            ]
+
+        def _render(activities: list[dict[str, Any]]) -> None:
+            """渲染活动列表（在 UI 线程执行；数据未变化时直接跳过）。
+
+            :param activities: 活动条目列表
+            """
+            signature: tuple = tuple(
+                (it["time"], it["name"], it["action"], it["code"]) for it in activities
+            )
+            if signature == render_state["signature"]:
+                return
+            render_state["signature"] = signature
+
             activity_container.clear()
             with activity_container:
-                signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals_by_user_strategy(user_strategy_ids=list(user_strategy_ids), limit=4)
-                if not signals:
-                    ui.label("暂无信号活动").classes("text-sm").style("color: #6b7280;")
-                for sig in signals:
-                    action: str = sig.get("action", "")
-                    code: str = sig.get("stock_code", "")
-                    sid: str = sig.get("strategy_id", "")
-                    strategy_dao = AppContext().strategy_api.get_by_id(sid)
-                    strategy_name: str = ""
-                    if strategy_dao:
-                        strategy_name = strategy_dao.get("name", "")
-                    time_str: str = str(sig.get("create_time", ""))[:16]
-                    color: str = "#34d399" if action == "卖出" else "#f87171"
+                if not activities:
+                    ui.label("暂无信号活动").classes("text-sm").style("color: var(--qs-faint);")
+                    return
+                for it in activities:
+                    action: str = it["action"]
+                    color: str = negative_color if action == "卖出" else positive_color
                     with ui.row().classes("w-full items-start gap-4"):
                         with ui.element("div").classes("w-2 h-2 mt-2 rounded-full").style(
                             f"background-color: {color}; min-width: 8px;"
                         ):
                             pass
                         with ui.column().classes("gap-1").style("flex: 1;"):
-                            ui.label(strategy_name).classes("text-sm font-semibold").style("color: #e5e7eb;")
-                            ui.label(f"触发{action}信号: {code}").classes("text-xs").style(f"color: {color};")
-                            ui.label(time_str).classes("text-xs").style("color: #6b7280;")
+                            ui.label(it["name"]).classes("text-sm font-semibold").style("color: var(--qs-text);")
+                            ui.label(f"触发{action}信号: {it['code']}").classes("text-xs").style(f"color: {color};")
+                            ui.label(it["time"]).classes("text-xs").style("color: var(--qs-faint);")
 
-        _render()
+        async def _poll() -> None:
+            """轮询任务：线程池拉取，UI 线程渲染。"""
+            _render(await run_blocking(_fetch_activities))
 
-        # 定时刷新
-        ui.timer(1.0, _render)
+        # 首屏渲染
+        _render(_fetch_activities())
+
+        # 定时刷新（PollingTask）
+        PollingTask(1.0, _poll, name="首页近期运行状态").start()
 
         ui.button("查看全部活动", on_click=lambda: ui.navigate.to("/strategy-monitor")).props(
             "flat"
         ).classes("w-full mt-1").style(
-            "color: #60a5fa; font-size: 14px; font-weight: 500;"
+            "color: var(--qs-link); font-size: 14px; font-weight: 500;"
         )
 
 
@@ -870,9 +1292,10 @@ def _build_recent_strategies_table(
 ) -> None:
     """构建近期更新策略表格（策略名称 / 类型 / 创建日期 / 状态 / 收益率）。
 
-    数据来源：user_strategy_api.list() 用户策略关联 + list_executions()
-    执行结果集（取每个用户策略最新一条记录的收益率），
-    策略名称与类型通过 strategy_api.get_by_id() 补充。
+    数据来源：UserStrategyManager 会话缓存（用户策略关联）+ list_executions()
+    执行结果集（取每个用户策略最新一条记录的收益率）；
+    策略名称优先 user_strategy.name（用户自定义名称），类型通过策略模板补充，
+    模板走 AppContext().strategy_cache 进程级缓存。
 
     :param card_bg: 卡片背景
     :param border_color: 边框颜色
@@ -888,15 +1311,12 @@ def _build_recent_strategies_table(
         with ui.row().classes("w-full items-center justify-between").style(
             f"padding: 16px 24px; border-bottom: 1px solid {border_color};"
         ):
-            ui.label("近期更新策略").classes("text-lg font-bold").style("color: #f3f4f6;")
+            ui.label("近期更新策略").classes("text-lg font-bold").style("color: var(--qs-heading);")
             ui.button("管理所有策略", on_click=lambda: ui.navigate.to("/strategy-monitor")).props(
                 "flat dense"
-            ).style("color: #60a5fa; font-size: 14px;")
+            ).style("color: var(--qs-link); font-size: 14px;")
 
         table_container: ui.column = ui.column().classes("w-full gap-0")
-
-        # 用户策略ID → 最新执行时间（用于判断哪条执行记录最新）
-        latest_time: dict[str, str] = {}
 
         def _fetch_table_data() -> tuple[
             list[dict[str, Any]], dict[str, float], dict[str, dict[str, Any]],
@@ -904,53 +1324,59 @@ def _build_recent_strategies_table(
             """拉取表格数据。
 
             :return: (用户策略列表按创建时间倒序,
-                      用户策略ID → 最新收益率百分数,
+                      用户策略ID → 最新执行记录的当前收益率百分数,
                       策略模板ID → 策略模板信息)
             """
             user_strategies: list[dict[str, Any]] = UserStrategyManager().list_user_strategies()
 
-            # 用户策略ID → 最新收益率（%），来自执行结果集中时间最新的一条
-            latest_rate: dict[str, float] = {}
-            latest_time.clear()
-            executions: list[dict[str, Any]] = []
-            try:
-                executions = AppContext().user_strategy_api.list_executions()
-            except Exception:
-                logger.warning("查询策略执行结果失败", exc_info=True)
-            for ex in executions:
-                us_id: str = str(ex.get("user_strategy_id", ""))
-                if not us_id:
-                    continue
-                ex_time: str = str(ex.get("update_time") or ex.get("create_time") or "")
-                try:
-                    rate_pct: float = float(ex.get("current_return_rate", 0) or 0) * 100.0
-                except (TypeError, ValueError):
-                    continue
-                if us_id not in latest_rate or ex_time >= latest_time.get(us_id, ""):
-                    latest_rate[us_id] = rate_pct
-                    latest_time[us_id] = ex_time
+            # 全量执行记录走概要页共用缓存（与收益曲线的窗口基准、末点共用一次请求）。
+            # 必须用全量：取「每个策略最新一条」时，按时间范围查会漏掉窗口外的策略。
+            executions: list[dict[str, Any]] = _cached_all_executions()
 
-            # 策略模板信息缓存
-            templates: dict[str, dict[str, Any]] = {}
-            for us in user_strategies[:5]:
-                sid: str = str(us.get("strategy_id", ""))
-                if sid and sid not in templates:
-                    try:
-                        templates[sid] = AppContext().strategy_api.get_by_id(sid)
-                    except Exception:  # noqa: BLE001
-                        templates[sid] = {}
+            # 每个用户策略只取最新一条执行记录：历史记录对应的是当时的持仓，
+            # 实时价无法回溯，只有最新那条的浮动盈亏才是「当前」的。
+            latest_map: dict[str, dict[str, Any]] = latest_execution_map(executions)
+            price_map: dict[str, float] = _cached_price_map(
+                collect_position_codes(
+                    [list(rec.get("positions", []) or []) for rec in latest_map.values()]
+                )
+            )
+            # 当前收益率 = (已实现 current_profit + 持仓未实现) / initial_amount；
+            # 缺实时价或字段缺失 ⇒ 不在映射里 ⇒ 渲染成 "-"（不退回已实现口径凑数）
+            latest_rate: dict[str, float] = {}
+            for us_id, rec in latest_map.items():
+                positions: list[dict[str, Any]] = list(rec.get("positions", []) or [])
+                rate_pct: float | None = current_return_rate_pct(
+                    rec, unrealized_profit(positions, price_map),
+                )
+                if rate_pct is not None:
+                    latest_rate[us_id] = rate_pct
+
+            # 策略模板信息（走进程级缓存 strategy_cache，避免每次渲染重复请求）
+            template_ids: list[str] = [
+                str(us.get("strategy_id", "") or "") for us in user_strategies[:5]
+            ]
+            templates: dict[str, dict[str, Any]] = AppContext().strategy_cache.get_many(template_ids)
             return user_strategies, latest_rate, templates
 
-        def _render() -> None:
-            """渲染表格内容。"""
+        def _render(
+            user_strategies: list[dict[str, Any]],
+            latest_rate: dict[str, float],
+            templates: dict[str, dict[str, Any]],
+        ) -> None:
+            """渲染表格内容（在 UI 线程执行，仅做绘制）。
+
+            :param user_strategies: 用户策略列表
+            :param latest_rate: 用户策略ID → 最新收益率百分数
+            :param templates: 策略模板ID → 策略模板信息
+            """
             table_container.clear()
             with table_container:
-                user_strategies, latest_rate, templates = _fetch_table_data()
                 if not user_strategies:
                     with ui.column().classes("w-full items-center justify-center").style("padding: 40px;"):
-                        ui.icon("inbox").style("color: #6b7280; font-size: 36px;")
+                        ui.icon("inbox").style("color: var(--qs-faint); font-size: 36px;")
                         ui.label("暂无策略数据").classes("text-sm").style(
-                            "color: #9ca3af; margin-top: 8px;"
+                            "color: var(--qs-muted); margin-top: 8px;"
                         )
                     return
 
@@ -958,22 +1384,26 @@ def _build_recent_strategies_table(
 
                 # 表头
                 with ui.row().classes("w-full items-center").style(
-                    f"background-color: #111827; border-bottom: 1px solid {border_color}; "
+                    f"background-color: var(--qs-surface-alt); border-bottom: 1px solid {border_color}; "
                     f"padding: 12px 24px;"
                 ):
                     for hdr, flex in [
                         ("策略名称", 2), ("类型", 1), ("创建日期", 1),
-                        ("状态", 1), ("收益率 (30d)", 1),
+                        ("状态", 1), ("收益率", 1),
                     ]:
                         ui.label(hdr).classes(
                             "text-xs font-semibold uppercase tracking-wider"
-                        ).style(f"color: #9ca3af; flex: {flex};")
+                        ).style(f"color: var(--qs-muted); flex: {flex};")
 
                 for idx, us in enumerate(rows):
                     us_id: str = str(us.get("_id", "") or us.get("id", ""))
                     sid: str = str(us.get("strategy_id", ""))
                     tpl: dict[str, Any] = templates.get(sid, {})
-                    name: str = str(tpl.get("name", "") or sid or "未命名策略")
+                    # 优先用户自定义名称（user_strategy.name），与策略列表页保持一致；
+                    # 历史数据无自定义名称时回退策略模板名，最后回退策略 ID
+                    name: str = str(
+                        us.get("name", "") or tpl.get("name", "") or sid or "未命名策略"
+                    )
                     stype: str = str(tpl.get("strategy_type", "") or "-")
                     create_date: str = str(us.get("create_time", ""))[:10] or "-"
                     status: str = str(us.get("status", "stopped"))
@@ -981,20 +1411,20 @@ def _build_recent_strategies_table(
                     status_color: str
                     status_bg: str
                     status_text, status_color, status_bg = _STATUS_STYLES.get(
-                        status, ("未知", "#d1d5db", "rgba(55,65,81,0.8)"),
+                        status, ("未知", "var(--qs-label)", "var(--qs-chip-neutral)"),
                     )
                     rate_pct: float | None = latest_rate.get(us_id)
-                    row_bg: str = "#1e293b" if idx % 2 == 0 else "#19222f"
+                    row_bg: str = "var(--qs-surface)" if idx % 2 == 0 else "var(--qs-row-alt)"
 
                     with ui.row().classes("w-full items-center").style(
                         f"padding: 16px 24px; background-color: {row_bg}; "
-                        f"border-bottom: 1px solid rgba(45,55,72,0.6);"
+                        f"border-bottom: 1px solid var(--qs-divider-strong);"
                     ):
                         ui.label(name).classes("text-sm font-medium").style(
-                            "color: #e5e7eb; flex: 2;"
+                            "color: var(--qs-text); flex: 2;"
                         )
-                        ui.label(stype).classes("text-sm").style("color: #9ca3af; flex: 1;")
-                        ui.label(create_date).classes("text-sm").style("color: #6b7280; flex: 1;")
+                        ui.label(stype).classes("text-sm").style("color: var(--qs-muted); flex: 1;")
+                        ui.label(create_date).classes("text-sm").style("color: var(--qs-faint); flex: 1;")
                         with ui.row().classes("items-center").style("flex: 1;"):
                             ui.label(status_text).classes(
                                 "text-xs font-medium rounded-full px-2.5 py-0.5"
@@ -1003,7 +1433,7 @@ def _build_recent_strategies_table(
                             )
                         if rate_pct is None:
                             ui.label("-").classes("text-sm font-semibold").style(
-                                "color: #6b7280; flex: 1;"
+                                "color: var(--qs-faint); flex: 1;"
                             )
                         else:
                             # 中国股市习惯：涨红跌绿
@@ -1015,7 +1445,12 @@ def _build_recent_strategies_table(
                                 f"color: {rate_color}; flex: 1;"
                             )
 
-        _render()
+        # 首屏渲染（页面构建阶段本就在线程池中，不必再切线程）
+        _render(*_fetch_table_data())
 
-        # 定时刷新（状态/收益变化）
-        ui.timer(60.0, _render)
+        async def _poll() -> None:
+            """轮询任务：线程池拉取执行结果，UI 线程重建表格。"""
+            _render(*(await run_blocking(_fetch_table_data)))
+
+        # 定时刷新（状态/收益变化）——PollingTask 保证不阻塞事件循环且有最小间隔
+        PollingTask(60.0, _poll, name="首页近期更新策略表").start()

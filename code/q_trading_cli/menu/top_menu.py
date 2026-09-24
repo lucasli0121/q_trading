@@ -17,16 +17,16 @@ def _do_logout() -> None:
         AppContext().user_api.logout()
     except Exception:  # noqa: BLE001, S110
         pass
-    # 清除后台线程使用的 fallback token
+    # 仅清除实例 token（token 本体存于 app.storage.user，按会话隔离）
     try:
-        AppContext().api_client.clear_fallback_token()
         AppContext().api_client.clear_token()
     except Exception:  # noqa: BLE001, S110
         pass
     try:
+        # 注意：只清当前会话。app.storage.general 是**进程级共享**存储，
+        # 一个用户退出登录不应清空其他用户的数据，故不再 clear。
         app.storage.user.clear()
         app.storage.browser.clear()
-        app.storage.general.clear()
         app.storage.client.clear()
         app.storage.user["authenticated"] = False
         app.storage.user["token"] = ""
@@ -37,12 +37,13 @@ def _do_logout() -> None:
 
 def _show_profile_dialog() -> None:
     """显示个人资料对话框。"""
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    font_color: str = current_theme.get("font_color", "#c9d1d9")
-    accent_color: str = current_theme.get("accent", "#d7ba7d")
-    border_color: str = current_theme.get("widget_border_color", "#80808033")
-    bg_color: str = current_theme.get("background", "#1e1e1e")
-    negative_color: str = current_theme.get("negative", "#f44747")
+    theme = AppContext().theme_manager
+    font_color: str = theme.var("text")
+    font_soft: str = theme.var("text-secondary")
+    accent_color: str = theme.var("accent")
+    border_color: str = theme.var("border")
+    bg_color: str = theme.var("page")
+    negative_color: str = theme.var("negative")
 
     username: str = app.storage.user.get("username", "")
     user_email: str = app.storage.user.get("email", "")
@@ -78,7 +79,7 @@ def _show_profile_dialog() -> None:
                         f"color: {font_color};"
                     )
                     ui.label("已登录").classes("text-xs").style(
-                        f"color: {font_color}88;"
+                        f"color: {font_soft};"
                     )
 
             # 分隔线
@@ -86,8 +87,8 @@ def _show_profile_dialog() -> None:
 
             # 账号
             with ui.row().classes("w-full items-center gap-2"):
-                ui.icon("person").style(f"color: {font_color}88; font-size: 18px;")
-                ui.label("账号").classes("text-xs").style(f"color: {font_color}88;")
+                ui.icon("person").style(f"color: {font_soft}; font-size: 18px;")
+                ui.label("账号").classes("text-xs").style(f"color: {font_soft};")
                 ui.space()
                 ui.label(username or "未设置").classes("text-sm").style(f"color: {font_color};")
 
@@ -102,15 +103,15 @@ def _show_profile_dialog() -> None:
             else:
                 phone_display = "未设置"
             with ui.row().classes("w-full items-center gap-2"):
-                ui.icon("phone").style(f"color: {font_color}88; font-size: 18px;")
-                ui.label("手机号码").classes("text-xs").style(f"color: {font_color}88;")
+                ui.icon("phone").style(f"color: {font_soft}; font-size: 18px;")
+                ui.label("手机号码").classes("text-xs").style(f"color: {font_soft};")
                 ui.space()
                 ui.label(phone_display).classes("text-sm").style(f"color: {font_color};")
 
             # 邮箱
             with ui.row().classes("w-full items-center gap-2"):
-                ui.icon("email").style(f"color: {font_color}88; font-size: 18px;")
-                ui.label("邮箱").classes("text-xs").style(f"color: {font_color}88;")
+                ui.icon("email").style(f"color: {font_soft}; font-size: 18px;")
+                ui.label("邮箱").classes("text-xs").style(f"color: {font_soft};")
                 ui.space()
                 ui.label(user_email or "未设置").classes("text-sm").style(f"color: {font_color};")
 
@@ -121,7 +122,7 @@ def _show_profile_dialog() -> None:
             ui.button("关闭", on_click=dialog.close) \
                 .props("flat") \
                 .style(
-                    f"color: {font_color}88; background-color: transparent; "
+                    f"color: {font_soft}; background-color: transparent; "
                     f"border: 1px solid {border_color}; border-radius: 8px; "
                     f"padding: 6px 20px;"
                 )
@@ -133,7 +134,7 @@ def _show_profile_dialog() -> None:
             ui.button("退出登录", on_click=handle_logout) \
                 .props("flat") \
                 .style(
-                    f"color: #ffffff; background-color: {negative_color}; "
+                    f"color: var(--qs-on-accent); background-color: {negative_color}; "
                     f"border-radius: 8px; padding: 6px 20px;"
                 )
 
@@ -147,10 +148,10 @@ def top_menu() -> None:
     - 未登录：登录/注册
     - 已登录：个人资料、退出登录
     """
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#1e1e1e")
-    border_color: str = current_theme.get("main_border_color", "#2c2c32")
-    font_color: str = current_theme.get("font_color", "#c9d1d9")
+    theme = AppContext().theme_manager
+    bg_color: str = theme.var("page")
+    border_color: str = theme.var("border")
+    font_color: str = theme.var("text")
 
     authenticated: bool = app.storage.user.get("authenticated", False)
 

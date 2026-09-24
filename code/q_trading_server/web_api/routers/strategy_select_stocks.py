@@ -42,30 +42,44 @@ def _resolve_user_strategy_ids_from_user(user_id: str, role: int) -> list[str] |
     res, records = impl.query_user_strategies_by_user(user_id)
     if not res or not records:
         return []
-    return [str(r["_id"]) for r in records]
+    return [str(r.get("_id", r.get("id", ""))) for r in records]
+
+
+def _assert_user_strategy_access(user_id: str, role: int, user_strategy_id: str) -> None:
+    """校验 user_strategy_id 是否属于当前用户，管理员跳过
+
+    归属校验必须在「按 ID 直接查询/删除」的分支里显式执行，
+    否则任何登录用户只要拿到别人的 id 就能读取或删除其选股记录。
+
+    :raises HTTPException: 403 不属于当前用户
+    """
+    owned = _resolve_user_strategy_ids_from_user(user_id, role)
+    if owned is None:
+        return
+    if user_strategy_id not in owned:
+        raise HTTPException(status_code=403, detail="无权操作此用户策略")
 
 
 @router.post("/add", response_model=ApiResponse[list[StrategySelectStockItem]])
-async def add_select_stock(
+def add_select_stock(
     req: StrategySelectStockCreateRequest,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
 ):
     """批量添加策略选股记录"""
     user_id, role = user_info
-    # 非管理员需验证该 user_strategy_id 属于当前用户
-    if role != 0:
-        user_strategy_ids = _resolve_user_strategy_ids_from_user(user_id, role)
-        if not user_strategy_ids or req.user_strategy_id not in user_strategy_ids:
-            raise HTTPException(status_code=403, detail="无权操作此用户策略")
+    _assert_user_strategy_access(user_id, role, req.user_strategy_id)
+    if not req.stocks:
+        raise HTTPException(status_code=400, detail="stocks 不能为空")
     impl = MongoStrategySelectStocksImpl()
     now = datetime.now().strftime("%Y-%m-%d")
     records = [
         {
             "user_strategy_id": req.user_strategy_id,
-            "code": code,
+            "code": stock.code,
+            "score": stock.score,
             "create_time": now,
         }
-        for code in req.codes
+        for stock in req.stocks
     ]
     ok, record_ids = impl.bulk_add_select_stocks(records)
     if not ok:
@@ -74,21 +88,30 @@ async def add_select_stock(
         StrategySelectStockItem(
             id=record_ids[i] if i < len(record_ids) else "",
             user_strategy_id=req.user_strategy_id,
-            code=code,
+            code=stock.code,
+            score=stock.score,
             create_time=now,
         )
-        for i, code in enumerate(req.codes)
+        for i, stock in enumerate(req.stocks)
     ]
     return ApiResponse(data=rlist, message="添加成功")
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_select_stock(
+def delete_select_stock(
     id: str,
     user_info: tuple[str, int] = Depends(get_current_user_with_role),
 ):
     """删除策略选股记录"""
+    user_id, role = user_info
     impl = MongoStrategySelectStocksImpl()
+    # 先取记录做归属校验：原实现取了 user_info 却完全没用，任意登录用户可删他人记录
+    res, records = impl.query_select_stock_by_id(id)
+    if not res:
+        raise HTTPException(status_code=500, detail="查询选股记录失败")
+    if not records:
+        raise HTTPException(status_code=404, detail="选股记录不存在")
+    _assert_user_strategy_access(user_id, role, records[0].get("user_strategy_id", ""))
     deleted = impl.delete_select_stock(id)
     if not deleted:
         raise HTTPException(status_code=500, detail="删除选股记录失败")
@@ -96,7 +119,7 @@ async def delete_select_stock(
 
 
 @router.get("/list", response_model=ApiResponse[list[StrategySelectStockWithRtItem]])
-async def list_select_stocks(
+def list_select_stocks(
     user_strategy_id: str = Query(default="", description="用户策略 ID（可选）"),
     start_time: str = Query(default="", description="创建开始时间 YYYY-MM-DD HH:MM:SS（可选）"),
     end_time: str = Query(default="", description="创建结束时间 YYYY-MM-DD HH:MM:SS（可选）"),
@@ -111,7 +134,8 @@ async def list_select_stocks(
     user_id, role = user_info
     impl = MongoStrategySelectStocksImpl()
     if user_strategy_id:
-        # 指定了用户策略 ID，直接按条件查询
+        # 指定了用户策略 ID：先校验归属，否则可越权读取他人选股记录
+        _assert_user_strategy_access(user_id, role, user_strategy_id)
         res, records = impl.query_select_stocks(
             user_strategy_id=user_strategy_id,
             start_time=start_time,
@@ -169,6 +193,7 @@ async def list_select_stocks(
                 id=str(r.get("_id", "")),
                 user_strategy_id=r.get("user_strategy_id", ""),
                 code=code,
+                score=float(r.get("score", 0.0) or 0.0),
                 create_time=r.get("create_time", ""),
                 name=str(rt_data.get("name", "")),
                 price=float(rt_data.get("price", 0.0)),
@@ -190,7 +215,7 @@ async def list_select_stocks(
 
 
 @router.get("/by_user", response_model=ApiResponse[list[StrategySelectStockWithRtItem]])
-async def get_select_stocks_by_user(
+def get_select_stocks_by_user(
     start_time: str = Query(default="", description="创建开始时间 YYYY-MM-DD HH:MM:SS（可选）"),
     end_time: str = Query(default="", description="创建结束时间 YYYY-MM-DD HH:MM:SS（可选）"),
     skip: int = Query(default=0, description="分页跳过条数"),
@@ -253,6 +278,7 @@ async def get_select_stocks_by_user(
                 id=str(r.get("_id", "")),
                 user_strategy_id=r.get("user_strategy_id", ""),
                 code=code,
+                score=float(r.get("score", 0.0) or 0.0),
                 create_time=r.get("create_time", ""),
                 name=str(rt_data.get("name", "")),
                 price=float(rt_data.get("price", 0.0)),

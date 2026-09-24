@@ -15,6 +15,8 @@ import httpx
 
 from api.config import ApiConfig
 
+_logger = logging.getLogger(__name__)
+
 
 class ApiError(Exception):
     """API 业务错误 — 当后端返回 code != 0 时抛出。
@@ -99,36 +101,34 @@ class ApiClient:
     def _resolve_token() -> str | None:
         """从当前用户会话中解析 token，会话不可用时返回 None。
 
-        Web 场景下 token 按用户会话隔离存储，避免不同浏览器登录
-        共用同一个 ApiClient 实例导致的 token 覆盖问题。
+        Web 场景下 token 按用户会话隔离存储在 app.storage.user 中，
+        避免不同浏览器登录共用同一个 ApiClient 实例导致的 token 覆盖问题。
+
+        关于后台线程（重要）：
+            app.storage.user 依赖 NiceGUI 的 request_contextvar（模块级
+            ContextVar），而 asyncio 的 run_in_executor 不会把 ContextVar
+            复制到工作线程，因此在线程池里直接访问会抛 RuntimeError。
+
+            解决办法**不是**使用进程级共享 token——那样多用户会互相覆盖
+            （A 用户的后台请求会带上 B 用户的 token，任一用户 401 还会让
+            所有后台认证一起失效）。正确做法是让调用方通过
+            core.concurrency.run_blocking() 提交阻塞任务：它用
+            contextvars.copy_context() 把请求上下文一并带进工作线程，
+            于是本方法在线程池内依然能解析出**当前会话**的 token。
         """
         try:
             from nicegui import app
             token: str | None = app.storage.user.get("token", "")
             return token if token else None
         except Exception:  # noqa: BLE001
+            # 无请求上下文（例如 MQTT 网络线程）时按未认证处理。
+            # 若确需在该类线程调用后端，请改用 run_blocking 提交或显式 set_token()。
+            _logger.debug("无法从会话解析 token（当前无线程上下文）")
             return None
 
-    def set_fallback_token(self, token: str) -> None:
-        """设置后台线程的 fallback token。
-
-        当 _resolve_token() 从 Web 会话中获取不到 token 时（如 MQTT 回调线程），
-        使用此 token 作为后备，确保后台任务也能携带认证信息。
-
-        :param token: JWT token 字符串
-        """
-        self._fallback_token: str = token
-
-    def clear_fallback_token(self) -> None:
-        """清除 fallback token。"""
-        self._fallback_token = ""
-
     def _get_effective_token(self) -> str | None:
-        """获取有效 token：优先 Web 会话，其次 fallback，最后实例 token。"""
+        """获取有效 token：优先按会话隔离的 Web 会话 token，其次实例 token。"""
         token: str | None = self._resolve_token()
-        if token:
-            return token
-        token = getattr(self, "_fallback_token", "")
         if token:
             return token
         return self._token
@@ -136,7 +136,7 @@ class ApiClient:
     # ---- HTTP 方法 ----
 
     def _build_headers(self) -> dict[str, str]:
-        """构建请求头，优先从用户会话读取 token，其次 fallback，最后实例 token。
+        """构建请求头，从当前用户会话读取 token。
 
         每次调用创建新的 headers dict，确保多用户并发请求
         各自携带正确的 Authorization header，无竞态条件。
@@ -195,9 +195,12 @@ class ApiClient:
         return self._parse_response(resp.json())
 
     def _on_401(self) -> None:
-        """401 响应时的处理：清除认证状态，提示用户并引导至登录页。"""
+        """401 响应时的处理：清除认证状态，提示用户并引导至登录页。
+
+        注意：仅清除**当前会话**的认证信息。这里不存在进程级共享 token，
+        因此任一用户 401 不会影响其他用户的后台请求认证。
+        """
         self.clear_token()
-        self.clear_fallback_token()
         from nicegui import app
 
         # 清除用户会话中的认证信息

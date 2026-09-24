@@ -5,11 +5,11 @@ from app_context import AppContext
 
 
 def load_left_drawer_tab_css():
-    current_theme = AppContext().theme_manager.get_current_theme()
+    theme = AppContext().theme_manager
 
-    tab_selected_bg = current_theme.get('tab_active_color', '#21262d')
-    font_color = current_theme.get('font_color', '#c9d1d9')
-    bg_color = current_theme.get('background')
+    tab_selected_bg = theme.var("primary")
+    font_color = theme.var("text")
+    bg_color = theme.var("page")
 
     ui.add_css(f"""
         .left-drawer-tabs .q-tab__indicator {{
@@ -46,9 +46,9 @@ def load_left_drawer_tab_css():
 
 
 def load_page_tab_css():
-    current_theme = AppContext().theme_manager.get_current_theme()
+    theme = AppContext().theme_manager
 
-    bg_color = current_theme.get('background')
+    bg_color = theme.var("page")
 
     ui.add_css(f"""
         .page-tabs .q-tab {{

@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/strategy", tags=["全局策略管理"])
 
 
 @router.post("/create", response_model=ApiResponse[dict])
-async def create_strategy(req: StrategyCreateRequest, user_id: str = Depends(require_admin)):
+def create_strategy(req: StrategyCreateRequest, user_id: str = Depends(require_admin)):
     """创建全局策略（仅管理员，同名策略返回错误）"""
     impl = MongoStrategyImpl()
     ok, _, error = impl.insert_or_update_strategy({
@@ -43,7 +43,7 @@ async def create_strategy(req: StrategyCreateRequest, user_id: str = Depends(req
 
 
 @router.delete("/{name}", response_model=ApiResponse[str])
-async def delete_strategy(name: str, user_id: str = Depends(require_admin)):
+def delete_strategy(name: str, user_id: str = Depends(require_admin)):
     """删除全局策略（仅管理员）"""
     impl = MongoStrategyImpl()
     # 验证策略存在
@@ -57,7 +57,7 @@ async def delete_strategy(name: str, user_id: str = Depends(require_admin)):
 
 
 @router.patch("/{id}", response_model=ApiResponse[str])
-async def update_strategy(
+def update_strategy(
     id: str, req: StrategyUpdateRequest, user_id: str = Depends(require_admin)
 ):
     """更新全局策略（仅管理员，仅更新传入的字段）"""
@@ -90,7 +90,7 @@ async def update_strategy(
 
 
 @router.get("/list", response_model=ApiResponse[list])
-async def list_strategies():
+def list_strategies():
     """查询所有全局策略（公开接口，无需登录）"""
     impl = MongoStrategyImpl()
     res, strategies = impl.query_all_strategies()
@@ -104,7 +104,7 @@ async def list_strategies():
 
 
 @router.get("/id/{id}", response_model=ApiResponse[dict])
-async def get_strategy_by_id(id: str, user_id: str = Depends(get_current_user)):
+def get_strategy_by_id(id: str, user_id: str = Depends(get_current_user)):
     """按记录 ID 查询单个全局策略详情"""
     impl = MongoStrategyImpl()
     res, strategies = impl.query_strategy_by_id(id)
@@ -116,7 +116,7 @@ async def get_strategy_by_id(id: str, user_id: str = Depends(get_current_user)):
 
 
 @router.get("/{name}", response_model=ApiResponse[dict])
-async def get_strategy(name: str, user_id: str = Depends(get_current_user)):
+def get_strategy(name: str, user_id: str = Depends(get_current_user)):
     """查询单个全局策略详情"""
     impl = MongoStrategyImpl()
     res, strategies = impl.query_strategy_by_name(name)
@@ -131,7 +131,7 @@ async def get_strategy(name: str, user_id: str = Depends(get_current_user)):
 
 
 @router.post("/{strategy_id}/backtest", response_model=ApiResponse[str])
-async def save_backtest(
+def save_backtest(
     strategy_id: str,
     req: BacktestSaveRequest,
     user_id: str = Depends(get_current_user),
@@ -156,7 +156,7 @@ async def save_backtest(
 
 
 @router.get("/{strategy_id}/backtest", response_model=ApiResponse[list])
-async def get_backtest(
+def get_backtest(
     strategy_id: str,
     user_id: str = Depends(get_current_user),
 ):

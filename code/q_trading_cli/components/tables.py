@@ -12,10 +12,10 @@ from app_context import AppContext
 
 
 def show_stocks_table(datas, show_edit) -> ui.table:
-    current_theme = AppContext().theme_manager.get_current_theme()
-    bg_color = current_theme.get('background')
-    font_color = current_theme.get('font_color', '#c9d1d9')
-    widget_border_color = current_theme.get('widget_border_color', '#80808033')
+    theme = AppContext().theme_manager
+    bg_color = theme.var("page")
+    font_color = theme.var("text")
+    widget_border_color = theme.var("border")
     table_columns = [
         {'name': 'id', 'label': 'id', 'field': 'id', 'width': '0%', 'align': 'center'},
         {'name': 'sn', 'label': '序号', 'field': 'sn', 'width': '2%', 'align': 'center'},
@@ -60,10 +60,10 @@ def show_stocks_table(datas, show_edit) -> ui.table:
 # @param {function} show_edit, show_delete 删除操作的回调函数
 #
 def show_invoice_title_table(datas, show_edit, show_delete) -> ui.table:
-    current_theme = AppContext().theme_manager.get_current_theme()
-    bg_color = current_theme.get('background')
-    font_color = current_theme.get('font_color', '#c9d1d9')
-    widget_border_color = current_theme.get('widget_border_color', '#80808033')
+    theme = AppContext().theme_manager
+    bg_color = theme.var("page")
+    font_color = theme.var("text")
+    widget_border_color = theme.var("border")
     table_columns = [
         {'name': 'id', 'label': 'id', 'field': 'id', 'width': '0%', 'align': 'center'},
         {'name': 'sn', 'label': '序号', 'field': 'sn', 'width': '5%', 'align': 'center'},
@@ -140,9 +140,9 @@ def show_open_invoice_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 10, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF; position: sticky; top: 0px; background: #65B6FF; z-index: 3"  flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg); position: sticky; top: 0px; background: var(--qs-table-header-bg); z-index: 3"  flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px; max-width: 100%; height: calc(100vh - 80px - 80px - 40px)') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px; max-width: 100%; height: calc(100vh - 80px - 80px - 40px)') as table:
         
         table.props('v-model:selected="selected" ')
         table.props('visible-columns="[ \
@@ -262,9 +262,9 @@ def show_tax_approval_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 0, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF;" flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg);" flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px;') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px;') as table:
         
         table.props('v-model:selected="selected"')
         table.props('visible-columns="[ \
@@ -322,9 +322,9 @@ def show_company_bank_account_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 10, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF;"') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg);"') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px;') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px;') as table:
         table.props('v-model:selected="selected"')
         table.props('visible-columns="[\'sn\', \
                     \'company_name\', \
@@ -391,9 +391,9 @@ def show_payment_record_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 10, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF;" flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg);" flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px;') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px;') as table:
         
         table.props('v-model:selected="selected"')
         table.props('visible-columns="[ \
@@ -469,9 +469,9 @@ def show_service_record_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 10, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF;" flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg);" flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px;') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px;') as table:
         
         table.props('v-model:selected="selected"')
         table.props('visible-columns="[ \
@@ -559,9 +559,9 @@ def show_period_data_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 10, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF;" flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg);" flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px;') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px;') as table:
         
         table.props('v-model:selected="selected"')
         table.props('visible-columns="[ \
@@ -617,9 +617,9 @@ def show_value_added_table(datas, show_edit, show_delete) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 0, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF; position: sticky; top: 0px; background: #65B6FF; z-index: 3" flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg); position: sticky; top: 0px; background: var(--qs-table-header-bg); z-index: 3" flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px; max-width: 100%; height: calc(100vh - 80px - 80px - 40px)') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px; max-width: 100%; height: calc(100vh - 80px - 80px - 40px)') as table:
         
         table.props('v-model:selected="selected"')
         table.props('visible-columns="[ \
@@ -673,9 +673,9 @@ def show_open_invoice_alarm_table(datas) -> ui.table:
         selection='multiple',
         row_key='id',
         pagination={'rowsPerPage': 10, 'sortBy': 'sn', 'page': 1}) \
-            .props('table-header-style="color: white; font-size: 16px; background-color: #65B6FF; position: sticky; top: 0px; background: #65B6FF; z-index: 3"  flat no-shadow') \
+            .props('table-header-style="color: var(--qs-on-accent); font-size: 16px; background-color: var(--qs-table-header-bg); position: sticky; top: 0px; background: var(--qs-table-header-bg); z-index: 3"  flat no-shadow') \
             .classes('w-full mt-2 gap-0') \
-            .style('border: 1px solid #ECECEC; border-radius: 10px 10px 0px 0px; max-width: 100%; height: calc(100vh - 80px - 80px - 40px)') as table:
+            .style('border: 1px solid var(--qs-border); border-radius: 10px 10px 0px 0px; max-width: 100%; height: calc(100vh - 80px - 80px - 40px)') as table:
         
         table.props('v-model:selected="selected" ')
         table.props('visible-columns="[ \

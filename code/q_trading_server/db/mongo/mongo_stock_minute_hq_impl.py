@@ -16,6 +16,7 @@ from typing import Any, Hashable
 from utils import tools
 from pymongo import UpdateOne
 from app_context import AppContext
+from db.mongo.mongo_exec import UNLIMITED_QUERY_LIMIT
 
 
 # def _minute_code_regex(code: str) -> dict[str, Any]:
@@ -109,18 +110,30 @@ class MongoStockMinuteHqImpl:
             self.logger.error(f"查询分频行情数据失败: {e}")
             return False, None
 
-    def query_latest_minute_hq_today(self) -> tuple[bool, Any | None]:
-        """查询当天每只股票最新一条分频行情记录
+    def query_latest_minute_hq_today(
+        self, day: str = ""
+    ) -> tuple[bool, Any | None]:
+        """查询指定日期每只股票最新一条分频行情记录
 
         使用 MongoDB 聚合管道按 code 分组，直接返回每只股票当天最新一条记录。
         避免在 Python 层遍历全量数据做去重。
 
+        注意：本函数在当前仓库中**没有调用方**（本仓库不负责分时行情读取）。
+        保留并优化，是为了避免将来启用时直接踩到全表阻塞排序。
+
+        性能提示：$sort 走不了索引（排序键顺序与 {code:1, minute_time:1} 索引不匹配，
+        且 $match 是 minute_time 的范围条件），因此加 allowDiskUse=True 兜底，
+        避免 100MB 内存排序上限直接抛错。若此表数据量继续增长，
+        建议改写成按 (code, minute_time) 排序取 $last，或引入「当日分钟表」收窄扫描范围。
+
+        :param day: 日期 YYYY-MM-DD，默认取当天
         :return: 成功返回 True 和记录列表（每只股票一条最新记录），否则返回 False 和 None
         """
         try:
-            today_start = datetime.now().strftime("%Y-%m-%d 00:00:00")
+            target_day = day or datetime.now().strftime("%Y-%m-%d")
             pipeline = [
-                {"$match": {"minute_time": {"$gte": today_start}}},
+                {"$match": {"minute_time": {"$gte": f"{target_day} 00:00:00",
+                                           "$lte": f"{target_day} 23:59:59"}}},
                 {"$sort": {"minute_time": -1}},
                 {"$group": {
                     "_id": "$code",
@@ -128,7 +141,7 @@ class MongoStockMinuteHqImpl:
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},
             ]
-            results = list(self.minute_hq_table.aggregate(pipeline))
+            results = list(self.minute_hq_table.aggregate(pipeline, allowDiskUse=True))
             return (True, results) if results else (True, None)
         except Exception as e:
             self.logger.error(f"查询当天分频行情失败: {e}")
@@ -141,6 +154,9 @@ class MongoStockMinuteHqImpl:
 
         用于获取前一分钟所有股票的收盘价，作为当前分钟 preclose 的计算依据。
 
+        单分钟返回的是全市场记录（5000+ 条），属于需要完整结果集的读取，
+        显式传 UNLIMITED_QUERY_LIMIT，避免被 query_by_condition 的兜底上限截断。
+
         :param minute_time: 分钟时间字符串，格式 "YYYY-MM-DD HH:MM:00"
         :return: 成功返回 True 和记录列表，否则返回 False 和 None
         """
@@ -151,7 +167,7 @@ class MongoStockMinuteHqImpl:
                 condition=query,
                 sort={"code": 1},
                 skip=None,
-                limit=None,
+                limit=UNLIMITED_QUERY_LIMIT,
             )
         except Exception as e:
             self.logger.error(f"按分钟时间查询分频行情失败: {e}")

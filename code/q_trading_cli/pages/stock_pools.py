@@ -30,12 +30,12 @@ logger = logging.getLogger(__name__)
 def show_stock_pools_page() -> None:
     """股票池列表页面入口。"""
     custom_tabs.load_page_tab_css()
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = current_theme.get("widget_border_color", "#334155")
-    card_bg: str = "#1e293b"
-    input_bg: str = "#111827"
+    theme_manager = AppContext().theme_manager
+    bg_color: str = theme_manager.var("page")
+    font_color: str = theme_manager.var("text")
+    border_color: str = theme_manager.var("border")
+    card_bg: str = "var(--qs-surface)"
+    input_bg: str = "var(--qs-surface-alt)"
 
     # 加载股票池
     pools: list[dict[str, Any]] = []
@@ -68,9 +68,9 @@ def show_stock_pools_page() -> None:
         f"height: 64px; padding: 0 32px; background-color: {card_bg}; "
         f"border-bottom: 1px solid {border_color};"
     ):
-        ui.label("股票池列表").classes("text-xl font-bold").style("color: #f3f4f6;")
+        ui.label("股票池列表").classes("text-xl font-bold").style("color: var(--qs-heading);")
         ui.button(icon="add", text="创建股票池", on_click=_open_create_pool_modal).props("flat").style(
-            "background-color: #3b82f6; color: #ffffff !important; padding: 8px 16px; "
+            "background-color: var(--qs-primary); color: var(--qs-on-accent) !important; padding: 8px 16px; "
             "border-radius: 8px; font-size: 14px; font-weight: 500;"
         )
 
@@ -89,13 +89,13 @@ def show_stock_pools_page() -> None:
             with ui.row().classes("w-full items-center justify-between"):
                 with ui.row().classes("items-center gap-4"):
                     ui.label(f"总数: {len(pools)}").classes("text-sm font-bold rounded-lg px-4 py-2").style(
-                        "color: #60a5fa; background-color: rgba(59,130,246,0.15);"
+                        "color: var(--qs-link); background-color: rgba(var(--qs-primary-rgb), 0.15);"
                     )
                     ui.label(f"自动更新: {auto_count}").classes("text-sm font-bold rounded-lg px-4 py-2").style(
-                        "color: #34d399; background-color: rgba(52,211,153,0.15);"
+                        "color: var(--qs-negative); background-color: rgba(var(--qs-negative-rgb), 0.15);"
                     )
                     ui.label(f"静态池: {static_count}").classes("text-sm font-bold rounded-lg px-4 py-2").style(
-                        "color: #9ca3af; background-color: #2d3748;"
+                        "color: var(--qs-muted); background-color: var(--qs-border-soft);"
                     )
                 # 搜索
                 search_input: ui.input = (
@@ -136,10 +136,10 @@ def _render_pool_cards(
         f"justify-content: center; padding: 32px; min-height: 280px; cursor: pointer;"
     ).on("click", _open_create_pool_modal):
         with ui.element("div").classes("w-12 h-12 rounded-full flex items-center justify-center").style(
-            f"background-color: {card_bg}; color: #6b7280; margin-bottom: 16px;"
+            f"background-color: {card_bg}; color: var(--qs-faint); margin-bottom: 16px;"
         ):
             ui.icon("add").style("font-size: 24px;")
-        ui.label("创建新股票池").classes("font-bold").style("color: #9ca3af;")
+        ui.label("创建新股票池").classes("font-bold").style("color: var(--qs-muted);")
 
 
 def _build_pool_card(
@@ -171,10 +171,10 @@ def _build_pool_card(
 
     # 图标/颜色根据类型
     type_config: dict[str, dict[str, str]] = {
-        "自动同步": {"icon": "layers", "icon_bg": "rgba(59,130,246,0.4)", "icon_color": "#60a5fa", "badge": "自动同步", "badge_bg": "rgba(52,211,153,0.2)", "badge_color": "#34d399"},
-        "条件筛选": {"icon": "bolt", "icon_bg": "rgba(168,85,247,0.4)", "icon_color": "#c084fc", "badge": "条件筛选", "badge_bg": "rgba(52,211,153,0.2)", "badge_color": "#34d399"},
-        "系统自动": {"icon": "warning", "icon_bg": "rgba(248,113,113,0.4)", "icon_color": "#f87171", "badge": "系统自动", "badge_bg": "rgba(52,211,153,0.2)", "badge_color": "#34d399"},
-        "手动维护": {"icon": "person", "icon_bg": "rgba(251,146,60,0.4)", "icon_color": "#fb923c", "badge": "手动维护", "badge_bg": "#2d3748", "badge_color": "#9ca3af"},
+        "自动同步": {"icon": "layers", "icon_bg": "rgba(var(--qs-primary-rgb), 0.4)", "icon_color": "var(--qs-link)", "badge": "自动同步", "badge_bg": "rgba(var(--qs-negative-rgb), 0.2)", "badge_color": "var(--qs-negative)"},
+        "条件筛选": {"icon": "bolt", "icon_bg": "rgba(var(--qs-purple-rgb), 0.4)", "icon_color": "var(--qs-purple)", "badge": "条件筛选", "badge_bg": "rgba(var(--qs-negative-rgb), 0.2)", "badge_color": "var(--qs-negative)"},
+        "系统自动": {"icon": "warning", "icon_bg": "rgba(var(--qs-positive-rgb), 0.4)", "icon_color": "var(--qs-positive)", "badge": "系统自动", "badge_bg": "rgba(var(--qs-negative-rgb), 0.2)", "badge_color": "var(--qs-negative)"},
+        "手动维护": {"icon": "person", "icon_bg": "rgba(var(--qs-orange-rgb), 0.4)", "icon_color": "var(--qs-orange)", "badge": "手动维护", "badge_bg": "var(--qs-border-soft)", "badge_color": "var(--qs-muted)"},
     }
     cfg: dict[str, str] = type_config.get(pool_type, type_config["手动维护"])
 
@@ -196,26 +196,26 @@ def _build_pool_card(
             )
 
         # 名称 + 描述
-        ui.label(name).classes("text-lg font-bold").style("color: #f3f4f6; margin-bottom: 4px;")
+        ui.label(name).classes("text-lg font-bold").style("color: var(--qs-heading); margin-bottom: 4px;")
         ui.label(desc or "无描述").classes("text-sm line-clamp-2").style(
-            "color: #9ca3af; margin-bottom: 24px;"
+            "color: var(--qs-muted); margin-bottom: 24px;"
         )
 
         # 统计
         with ui.row().classes("w-full items-center justify-between").style(
             f"border-top: 1px solid {border_color}; padding-top: 16px; margin-bottom: 24px;"
         ):
-            ui.label(f"{stock_count} 只股票").classes("text-xs").style("color: #6b7280;")
-            ui.label(update_text).classes("text-xs").style("color: #6b7280;")
+            ui.label(f"{stock_count} 只股票").classes("text-xs").style("color: var(--qs-faint);")
+            ui.label(update_text).classes("text-xs").style("color: var(--qs-faint);")
 
         # 按钮
         with ui.row().classes("w-full gap-2"):
             ui.button("查看股票", on_click=lambda n=name: _view_pool_stocks(n)).props("flat").classes("flex-1").style(
-                f"color: #d1d5db; background-color: {input_bg}; border-radius: 8px; "
+                f"color: var(--qs-label); background-color: {input_bg}; border-radius: 8px; "
                 f"font-size: 14px; font-weight: 500; padding: 8px;"
             )
             ui.button(icon="edit", on_click=lambda p=pool: _open_edit_pool_modal(p)).props("flat").style(
-                f"color: #6b7280; border: 1px solid {border_color}; border-radius: 8px; padding: 8px;"
+                f"color: var(--qs-faint); border: 1px solid {border_color}; border-radius: 8px; padding: 8px;"
             )
 
 
@@ -240,11 +240,11 @@ def _view_pool_stocks(name: str) -> None:
 
 def _open_create_pool_modal() -> None:
     """打开创建股票池模态框（含筛选条件 + 预览面板）。"""
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = current_theme.get("widget_border_color", "#334155")
-    card_bg: str = "#1e293b"
-    input_bg: str = "#111827"
+    theme_manager = AppContext().theme_manager
+    font_color: str = theme_manager.var("text")
+    border_color: str = theme_manager.var("border")
+    card_bg: str = "var(--qs-surface)"
+    input_bg: str = "var(--qs-surface-alt)"
 
     with ui.dialog(value=True).props("persistent") as dialog, \
         ui.card().classes("gap-0").style(
@@ -256,22 +256,22 @@ def _open_create_pool_modal() -> None:
         with ui.row().classes("w-full items-center justify-between").style(
             f"padding: 16px 24px; border-bottom: 1px solid {border_color};"
         ):
-            ui.label("创建新股票池").classes("text-2xl font-bold").style("color: #f3f4f6;")
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense").style("color: #9ca3af;")
+            ui.label("创建新股票池").classes("text-2xl font-bold").style("color: var(--qs-heading);")
+            ui.button(icon="close", on_click=dialog.close).props("flat round dense").style("color: var(--qs-muted);")
 
         with ui.row().classes("w-full h-full gap-6 items-stretch").style("padding: 24px;"):
             # 左侧表单 — 内容超出时竖向滚动，与右侧面板底部对齐
             with ui.column().classes("h-full gap-6").style("flex: 3; overflow-y: auto; min-height: 0;"):
                 # 基本信息
                 with ui.column().classes("w-full gap-4"):
-                    ui.label("基本信息").classes("text-lg font-bold").style("color: #f3f4f6;")
-                    ui.label("股票池名称").style("font-size: 0.875rem; font-weight: 500; color: #d1d5db;")
+                    ui.label("基本信息").classes("text-lg font-bold").style("color: var(--qs-heading);")
+                    ui.label("股票池名称").style("font-size: 0.875rem; font-weight: 500; color: var(--qs-label);")
                     pool_name = (
                         ui.input(placeholder="例如: 科技龙头精选")
                         .props("outlined dense").classes("w-full")
                         .style(f"color: {font_color}; background-color: {input_bg};")
                     )
-                    ui.label("描述").style("font-size: 0.875rem; font-weight: 500; color: #d1d5db;")
+                    ui.label("描述").style("font-size: 0.875rem; font-weight: 500; color: var(--qs-label);")
                     pool_desc = (
                         ui.textarea(placeholder="说明该股票池的用途...")
                         .props("outlined dense input-style='min-height:40px; height:50px'").classes("w-full")
@@ -281,7 +281,7 @@ def _open_create_pool_modal() -> None:
                 
 
                     # 行业选择
-                    ui.label("所属行业 (可多选)").classes("text-sm").style("color: #d1d5db;")
+                    ui.label("所属行业 (可多选)").classes("text-sm").style("color: var(--qs-label);")
                     selected_industries: set[str] = set()
 
                     # 从 API 加载热门行业
@@ -302,14 +302,14 @@ def _open_create_pool_modal() -> None:
                         if ind_name in selected_industries:
                             selected_industries.discard(ind_name)
                             lbl.style(
-                                "color: #60a5fa; background-color: rgba(59,130,246,0.15); "
-                                "border: 1px solid #3b82f6; cursor: pointer;"
+                                "color: var(--qs-link); background-color: rgba(var(--qs-primary-rgb), 0.15); "
+                                "border: 1px solid var(--qs-primary); cursor: pointer;"
                             )
                         else:
                             selected_industries.add(ind_name)
                             lbl.style(
-                                "color: #ffffff; background-color: #3b82f6; "
-                                "border: 1px solid #3b82f6; cursor: pointer;"
+                                "color: var(--qs-on-accent); background-color: var(--qs-primary); "
+                                "border: 1px solid var(--qs-primary); cursor: pointer;"
                             )
 
                     with ui.row().classes("w-full gap-2 flex-wrap"):
@@ -320,37 +320,37 @@ def _open_create_pool_modal() -> None:
                                     "text-xs font-medium rounded-lg px-3 py-1.5"
                                 )
                                 lbl.style(
-                                    "color: #60a5fa; background-color: rgba(59,130,246,0.15); "
-                                    "border: 1px solid #3b82f6; cursor: pointer;"
+                                    "color: var(--qs-link); background-color: rgba(var(--qs-primary-rgb), 0.15); "
+                                    "border: 1px solid var(--qs-primary); cursor: pointer;"
                                 )
                                 lbl.on("click", lambda _n=ind_name, _l=lbl: _toggle_industry(_n, _l))
                         else:
-                            ui.label("暂无热门行业数据").classes("text-xs").style("color: #6b7280;")
+                            ui.label("暂无热门行业数据").classes("text-xs").style("color: var(--qs-faint);")
                     # 自动筛选条件
                     with ui.column().classes("w-full gap-4"):
                         with ui.row().classes("w-full items-center justify-between"):
-                            ui.label("自动筛选条件").classes("text-lg font-bold").style("color: #f3f4f6;")
+                            ui.label("自动筛选条件").classes("text-lg font-bold").style("color: var(--qs-heading);")
                         with ui.row().classes("w-full gap-4"):
                             with ui.column().classes("flex-1 gap-2"):
-                                ui.label("市值范围 (亿元)").classes("text-sm").style("color: #d1d5db;")
+                                ui.label("市值范围 (亿元)").classes("text-sm").style("color: var(--qs-label);")
                                 with ui.row().classes("items-center gap-2"):
                                     cap_min_input: ui.number = (
                                         ui.number(value=0, min=0).props("outlined dense").classes("flex-1")
                                         .style(f"color: {font_color}; background-color: {input_bg};")
                                     )
-                                    ui.label("~").style("color: #6b7280;")
+                                    ui.label("~").style("color: var(--qs-faint);")
                                     cap_max_input: ui.number = (
                                         ui.number(value=0, min=0).props("outlined dense").classes("flex-1")
                                         .style(f"color: {font_color}; background-color: {input_bg};")
                                     )
                             with ui.column().classes("flex-1 gap-2"):
-                                ui.label("PE (市盈率) 范围").classes("text-sm").style("color: #d1d5db;")
+                                ui.label("PE (市盈率) 范围").classes("text-sm").style("color: var(--qs-label);")
                                 with ui.row().classes("items-center gap-2"):
                                     pe_min_input: ui.number = (
                                         ui.number(value=0, min=0).props("outlined dense").classes("flex-1")
                                         .style(f"color: {font_color}; background-color: {input_bg};")
                                     )
-                                    ui.label("~").style("color: #6b7280;")
+                                    ui.label("~").style("color: var(--qs-faint);")
                                     pe_max_input: ui.number = (
                                         ui.number(value=0, min=0).props("outlined dense").classes("flex-1")
                                         .style(f"color: {font_color}; background-color: {input_bg};")
@@ -358,11 +358,11 @@ def _open_create_pool_modal() -> None:
 
                 # 手动追加
                 with ui.column().classes("w-full gap-2"):
-                    ui.label("追加股票(必选)").classes("text-lg font-bold").style("color: #f3f4f6;")
+                    ui.label("追加股票(必选)").classes("text-lg font-bold").style("color: var(--qs-heading);")
                     pool_stocks_input = ui.textarea(placeholder="输入股票代码，以逗号,分号或者换行分隔。例如: 600519, 000001") \
                         .props("outlined dense input-style='min-height:80px; height:80px'").classes("w-full") \
                         .style(f"color: {font_color}; background-color: {input_bg}; ")
-                    ui.label("手动追加的股票将无视筛选条件强行入池。").classes("text-xs").style("color: #6b7280;")
+                    ui.label("手动追加的股票将无视筛选条件强行入池。").classes("text-xs").style("color: var(--qs-faint);")
 
             # 右侧预览面板 — 与左侧表单底部对齐，内部竖向滚动
             with ui.card().classes("h-full gap-6 no-padding").style(  # noqa: SIM117
@@ -376,9 +376,9 @@ def _open_create_pool_modal() -> None:
                         f"padding: 16px; border-bottom: 1px solid {border_color};"
                     ):
                         with ui.row().classes("items-center gap-2"):
-                            ui.label("实时预览结果").classes("font-bold").style("color: #f3f4f6;")
+                            ui.label("实时预览结果").classes("font-bold").style("color: var(--qs-heading);")
                         preview_count_label: ui.label = (
-                            ui.label("已加入0个股票").classes("text-xs font-bold").style("color: #60a5fa;")
+                            ui.label("已加入0个股票").classes("text-xs font-bold").style("color: var(--qs-link);")
                         )
 
                         def _update_stock_count() -> None:
@@ -424,13 +424,13 @@ def _open_create_pool_modal() -> None:
                         ui.add_css("""
                             .preview-scroll .q-checkbox__inner,
                             .preview-scroll .q-checkbox__bg {
-                                color: #94a3b8 !important;
-                                border-color: #64748b !important;
+                                color: var(--qs-disabled) !important;
+                                border-color: var(--qs-disabled-border) !important;
                             }
                             .preview-scroll .q-checkbox__inner--truthy,
                             .preview-scroll .q-checkbox__bg--truthy {
-                                color: #60a5fa !important;
-                                border-color: #3b82f6 !important;
+                                color: var(--qs-link) !important;
+                                border-color: var(--qs-primary) !important;
                             }
                         """)
 
@@ -720,15 +720,15 @@ def _open_create_pool_modal() -> None:
                     ):
                         with ui.row().classes("items-center gap-2"):
                             refresh_btn = ui.button("刷新预览", on_click=refresh_preview).props("flat").style(
-                                f"color: #60a5fa; background-color: {card_bg}; border: 1px solid {border_color}; "
+                                f"color: var(--qs-link); background-color: {card_bg}; border: 1px solid {border_color}; "
                                 f"border-radius: 8px; font-size: 12px; font-weight: 700;"
                             )
                             _preview_loading_ref["btn"] = refresh_btn
-                            refresh_spinner = ui.spinner(size="sm").style("color: #60a5fa;")
+                            refresh_spinner = ui.spinner(size="sm").style("color: var(--qs-link);")
                             refresh_spinner.set_visibility(False)
                             _preview_loading_ref["spinner"] = refresh_spinner
                         ui.button("追加选中股票", on_click=_append_selected_stocks).props("flat").style(
-                            "color: #ffffff !important; background-color: #3b82f6; "
+                            "color: var(--qs-on-accent) !important; background-color: var(--qs-primary); "
                             "border-radius: 8px; font-size: 12px; font-weight: 700;"
                         )
 
@@ -737,7 +737,7 @@ def _open_create_pool_modal() -> None:
             f"padding: 16px 24px; border-top: 1px solid {border_color};"
         ):
             ui.button("取消", on_click=dialog.close).props("flat").style(
-                "color: #9ca3af; font-size: 14px; font-weight: 500;"
+                "color: var(--qs-muted); font-size: 14px; font-weight: 500;"
             )
 
             def handle_create() -> None:
@@ -774,7 +774,7 @@ def _open_create_pool_modal() -> None:
                     ui.notify(f"网络错误: {e!s}", color="negative")
 
             ui.button("保存股票池", on_click=handle_create).props("flat").style(
-                "background-color: #3b82f6; color: #ffffff !important; padding: 8px 24px; "
+                "background-color: var(--qs-primary); color: var(--qs-on-accent) !important; padding: 8px 24px; "
                 "border-radius: 8px; font-size: 14px; font-weight: 500;"
             )
 
@@ -788,11 +788,11 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
 
     :param pool: 股票池数据字典
     """
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = current_theme.get("widget_border_color", "#334155")
-    card_bg: str = "#1e293b"
-    input_bg: str = "#111827"
+    theme_manager = AppContext().theme_manager
+    font_color: str = theme_manager.var("text")
+    border_color: str = theme_manager.var("border")
+    card_bg: str = "var(--qs-surface)"
+    input_bg: str = "var(--qs-surface-alt)"
 
     pool_name: str = pool.get("name", "")
     pool_desc: str = pool.get("description", "")
@@ -855,8 +855,8 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
         with ui.row().classes("w-full items-center justify-between").style(
             f"padding: 16px 24px; border-bottom: 1px solid {border_color};"
         ):
-            ui.label(f"编辑股票池 — {pool_name}").classes("text-xl font-bold").style("color: #f3f4f6;")
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense").style("color: #9ca3af;")
+            ui.label(f"编辑股票池 — {pool_name}").classes("text-xl font-bold").style("color: var(--qs-heading);")
+            ui.button(icon="close", on_click=dialog.close).props("flat round dense").style("color: var(--qs-muted);")
 
         # ---- 内容区：左右两栏 ----
         with ui.row().classes("w-full h-full gap-6 items-stretch").style("padding: 24px;"):
@@ -864,19 +864,19 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
             with ui.column().classes("h-full gap-6").style("flex: 2; overflow-y: auto; min-height: 0;"):
                 # 基本信息（只读）
                 with ui.column().classes("w-full gap-2"):
-                    ui.label("基本信息").classes("text-lg font-bold").style("flex: 1; color: #f3f4f6;")
+                    ui.label("基本信息").classes("text-lg font-bold").style("flex: 1; color: var(--qs-heading);")
                     with ui.row().classes("w-full gap-4"):
                         with ui.column().classes("flex-1 gap-1"):
-                            ui.label("股票池名称").classes("text-sm").style("color: #9ca3af;")
+                            ui.label("股票池名称").classes("text-sm").style("color: var(--qs-muted);")
                             ui.label(pool_name).classes("text-base font-medium").style(f"color: {font_color};")
                         with ui.column().classes("flex-1 gap-1"):
-                            ui.label("描述").classes("text-sm").style("color: #9ca3af;")
+                            ui.label("描述").classes("text-sm").style("color: var(--qs-muted);")
                             ui.label(pool_desc or "无描述").classes("text-base").style(f"color: {font_color};")
-                    ui.label("名称和描述不支持修改（服务端限制）").classes("text-xs italic").style("color: #6b7280;")
+                    ui.label("名称和描述不支持修改（服务端限制）").classes("text-xs italic").style("color: var(--qs-faint);")
 
                 # 当前股票表格
                 with ui.column().classes("w-full gap-2").style("flex: 3; min-height: 0;"):
-                    ui.label(f"当前股票 ({len(current_stocks)} 只)").classes("text-lg font-bold").style("color: #f3f4f6;")
+                    ui.label(f"当前股票 ({len(current_stocks)} 只)").classes("text-lg font-bold").style("color: var(--qs-heading);")
 
                     current_columns: list[dict[str, Any]] = [
                         {"name": "code", "label": "代码", "field": "code", "align": "left", "sortable": True},
@@ -940,16 +940,16 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                             # 红涨绿跌配色
                             if price and pct > 0:
                                 pct_str: str = f"+{pct * 100:.2f}%"
-                                pct_color: str = "#ef4444"  # 红色
+                                pct_color: str = "var(--qs-danger)"  # 红色
                             elif price and pct < 0:
                                 pct_str = f"{pct * 100:.2f}%"
-                                pct_color = "#34d399"  # 绿色
+                                pct_color = "var(--qs-negative)"  # 绿色
                             elif price:
                                 pct_str = "0.00%"
-                                pct_color = "#e5e7eb"  # 白色
+                                pct_color = "var(--qs-text)"  # 白色
                             else:
                                 pct_str = "-"
-                                pct_color = "#6b7280"  # 灰色
+                                pct_color = "var(--qs-faint)"  # 灰色
                             rows.append({
                                 "code": code,
                                 "name": name,
@@ -973,7 +973,7 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                         _render_current_table()
 
                     ui.button("移除选中", icon="delete", on_click=_remove_selected).props("flat").style(
-                        "color: #ef4444; border: 1px solid #ef4444; border-radius: 8px; "
+                        "color: var(--qs-danger); border: 1px solid var(--qs-danger); border-radius: 8px; "
                         "font-size: 13px; font-weight: 500; padding: 6px 12px;"
                     )
 
@@ -981,7 +981,7 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                 with ui.column().classes("w-full gap-2").style(
                     f"flex: 1; padding-top: 16px; border-top: 1px solid {border_color};"
                 ):
-                    ui.label("危险区域").classes("text-lg font-bold").style("color: #ef4444;")
+                    ui.label("危险区域").classes("text-lg font-bold").style("color: var(--qs-danger);")
 
                     def _confirm_delete() -> None:
                         """弹出二次确认后删除股票池。"""
@@ -992,13 +992,13 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                                 f"background-color: {card_bg}; border: 1px solid {border_color}; "
                                 f"border-radius: 12px; padding: 24px; max-width: 420px;"
                             ):
-                            ui.label("确认删除").classes("text-xl font-bold").style("color: #f3f4f6;")
+                            ui.label("确认删除").classes("text-xl font-bold").style("color: var(--qs-heading);")
                             ui.label(
                                 f"确定要删除股票池「{pool_name}」吗？此操作不可撤销，池内所有股票关联将被移除。"
-                            ).classes("text-sm").style("color: #9ca3af;")
+                            ).classes("text-sm").style("color: var(--qs-muted);")
                             with ui.row().classes("w-full justify-end gap-3"):
                                 ui.button("取消", on_click=confirm_dialog.close).props("flat").style(
-                                    "color: #9ca3af; font-size: 14px;"
+                                    "color: var(--qs-muted); font-size: 14px;"
                                 )
 
                                 def _do_delete() -> None:
@@ -1016,13 +1016,13 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                                         ui.notify(f"删除失败: {e!s}", color="negative")
 
                                 ui.button("确认删除", on_click=_do_delete).props("flat").style(
-                                    "background-color: #ef4444; color: #ffffff !important; "
+                                    "background-color: var(--qs-danger); color: var(--qs-on-accent) !important; "
                                     "border-radius: 8px; font-size: 14px; font-weight: 500;"
                                 )
                         confirm_dialog.open()
 
                     ui.button("删除股票池", icon="delete", on_click=_confirm_delete).props("flat").style(
-                        "color: #ef4444; border: 1px solid #ef4444; border-radius: 8px; "
+                        "color: var(--qs-danger); border: 1px solid var(--qs-danger); border-radius: 8px; "
                         "font-size: 14px; font-weight: 500; padding: 8px 16px;"
                     )
 
@@ -1038,9 +1038,9 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                         f"padding: 16px; border-bottom: 1px solid {border_color};"
                     ):
                         with ui.row().classes("items-center gap-2"):
-                            ui.label("实时预览结果").classes("font-bold").style("color: #f3f4f6;")
+                            ui.label("实时预览结果").classes("font-bold").style("color: var(--qs-heading);")
                         preview_count_label: ui.label = (
-                            ui.label("已加入0个股票").classes("text-xs font-bold").style("color: #60a5fa;")
+                            ui.label("已加入0个股票").classes("text-xs font-bold").style("color: var(--qs-link);")
                         )
 
                         def _update_pending_count() -> None:
@@ -1080,14 +1080,14 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                                 if ind_name in selected_industries:
                                     selected_industries.discard(ind_name)
                                     lbl.style(
-                                        "color: #60a5fa; background-color: rgba(59,130,246,0.15); "
-                                        "border: 1px solid #3b82f6; cursor: pointer;"
+                                        "color: var(--qs-link); background-color: rgba(var(--qs-primary-rgb), 0.15); "
+                                        "border: 1px solid var(--qs-primary); cursor: pointer;"
                                     )
                                 else:
                                     selected_industries.add(ind_name)
                                     lbl.style(
-                                        "color: #ffffff; background-color: #3b82f6; "
-                                        "border: 1px solid #3b82f6; cursor: pointer;"
+                                        "color: var(--qs-on-accent); background-color: var(--qs-primary); "
+                                        "border: 1px solid var(--qs-primary); cursor: pointer;"
                                     )
 
                             if hot_industries:
@@ -1097,35 +1097,35 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                                         "text-xs font-medium rounded-lg px-2 py-1"
                                     )
                                     lbl.style(
-                                        "color: #60a5fa; background-color: rgba(59,130,246,0.15); "
-                                        "border: 1px solid #3b82f6; cursor: pointer;"
+                                        "color: var(--qs-link); background-color: rgba(var(--qs-primary-rgb), 0.15); "
+                                        "border: 1px solid var(--qs-primary); cursor: pointer;"
                                     )
                                     lbl.on("click", lambda _n=ind_name, _l=lbl: _toggle_industry(_n, _l))
                             else:
-                                ui.label("暂无热门行业").classes("text-xs").style("color: #6b7280;")
+                                ui.label("暂无热门行业").classes("text-xs").style("color: var(--qs-faint);")
 
                         # 筛选数值
                         with ui.row().classes("w-full gap-2"):
                             with ui.column().classes("flex-1 gap-1"):
-                                ui.label("市值(亿) ≥").classes("text-xs").style("color: #9ca3af;")
+                                ui.label("市值(亿) ≥").classes("text-xs").style("color: var(--qs-muted);")
                                 cap_min_input: ui.number = (
                                     ui.number(value=0, min=0).props("outlined dense").classes("w-full")
                                     .style(f"color: {font_color}; background-color: {card_bg};")
                                 )
                             with ui.column().classes("flex-1 gap-1"):
-                                ui.label("市值(亿) ≤").classes("text-xs").style("color: #9ca3af;")
+                                ui.label("市值(亿) ≤").classes("text-xs").style("color: var(--qs-muted);")
                                 cap_max_input: ui.number = (
                                     ui.number(value=0, min=0).props("outlined dense").classes("w-full")
                                     .style(f"color: {font_color}; background-color: {card_bg};")
                                 )
                             with ui.column().classes("flex-1 gap-1"):
-                                ui.label("PE ≥").classes("text-xs").style("color: #9ca3af;")
+                                ui.label("PE ≥").classes("text-xs").style("color: var(--qs-muted);")
                                 pe_min_input: ui.number = (
                                     ui.number(value=0, min=0).props("outlined dense").classes("w-full")
                                     .style(f"color: {font_color}; background-color: {card_bg};")
                                 )
                             with ui.column().classes("flex-1 gap-1"):
-                                ui.label("PE ≤").classes("text-xs").style("color: #9ca3af;")
+                                ui.label("PE ≤").classes("text-xs").style("color: var(--qs-muted);")
                                 pe_max_input: ui.number = (
                                     ui.number(value=0, min=0).props("outlined dense").classes("w-full")
                                     .style(f"color: {font_color}; background-color: {card_bg};")
@@ -1148,13 +1148,13 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                         ui.add_css("""
                             .preview-scroll-edit .q-checkbox__inner,
                             .preview-scroll-edit .q-checkbox__bg {
-                                color: #94a3b8 !important;
-                                border-color: #64748b !important;
+                                color: var(--qs-disabled) !important;
+                                border-color: var(--qs-disabled-border) !important;
                             }
                             .preview-scroll-edit .q-checkbox__inner--truthy,
                             .preview-scroll-edit .q-checkbox__bg--truthy {
-                                color: #60a5fa !important;
-                                border-color: #3b82f6 !important;
+                                color: var(--qs-link) !important;
+                                border-color: var(--qs-primary) !important;
                             }
                         """)
 
@@ -1413,14 +1413,14 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
 
                     # 追加股票输入框（手工输入 + 追加选中股票写入此处）
                     with ui.column().classes("w-full gap-2").style("padding: 0 16px 8px;"):
-                        ui.label("追加股票:").classes("text-xs font-bold").style("color: #9ca3af;")
+                        ui.label("追加股票:").classes("text-xs font-bold").style("color: var(--qs-muted);")
                         pool_stocks_input = (
                             ui.textarea(placeholder="输入股票代码，以逗号、分号或换行分隔。例如: 600519, 000001")
                             .props("outlined dense input-style='min-height:72px; height:72px'")
                             .classes("w-full")
                             .style(f"color: {font_color}; background-color: {input_bg};")
                         )
-                        ui.label("追加的股票将无视筛选条件强行入池。").classes("text-xs").style("color: #6b7280;")
+                        ui.label("追加的股票将无视筛选条件强行入池。").classes("text-xs").style("color: var(--qs-faint);")
                         # 监听 textarea 变更，实时更新计数
                         pool_stocks_input.on("change", lambda e: _update_pending_count())
                         _update_pending_count()
@@ -1431,15 +1431,15 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                     ):
                         with ui.row().classes("items-center gap-2"):
                             refresh_btn = ui.button("刷新预览", on_click=refresh_preview).props("flat").style(
-                                f"color: #60a5fa; background-color: {card_bg}; border: 1px solid {border_color}; "
+                                f"color: var(--qs-link); background-color: {card_bg}; border: 1px solid {border_color}; "
                                 f"border-radius: 8px; font-size: 12px; font-weight: 700;"
                             )
                             _preview_loading_ref["btn"] = refresh_btn
-                            refresh_spinner = ui.spinner(size="sm").style("color: #60a5fa;")
+                            refresh_spinner = ui.spinner(size="sm").style("color: var(--qs-link);")
                             refresh_spinner.set_visibility(False)
                             _preview_loading_ref["spinner"] = refresh_spinner
                         ui.button("追加选中股票", on_click=_append_selected_stocks).props("flat").style(
-                            "color: #ffffff !important; background-color: #3b82f6; "
+                            "color: var(--qs-on-accent) !important; background-color: var(--qs-primary); "
                             "border-radius: 8px; font-size: 12px; font-weight: 700;"
                         )
 
@@ -1448,7 +1448,7 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
             f"padding: 16px 24px; border-top: 1px solid {border_color};"
         ):
             ui.button("取消", on_click=dialog.close).props("flat").style(
-                "color: #9ca3af; font-size: 14px; font-weight: 500;"
+                "color: var(--qs-muted); font-size: 14px; font-weight: 500;"
             )
 
             def handle_save() -> None:
@@ -1495,7 +1495,7 @@ def _open_edit_pool_modal(pool: dict[str, Any]) -> None:
                     ui.navigate.reload()
 
             ui.button("保存修改", on_click=handle_save).props("flat").style(
-                "background-color: #3b82f6; color: #ffffff !important; padding: 8px 24px; "
+                "background-color: var(--qs-primary); color: var(--qs-on-accent) !important; padding: 8px 24px; "
                 "border-radius: 8px; font-size: 14px; font-weight: 500;"
             )
 

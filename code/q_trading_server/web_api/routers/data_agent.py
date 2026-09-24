@@ -43,7 +43,7 @@ class DataAgentItem(BaseModel):
 
 
 @router.post("/create", response_model=ApiResponse[DataAgentItem])
-async def create_data_agent(
+def create_data_agent(
     req: DataAgentCreateRequest,
     user_id: str = Depends(require_admin),
 ):
@@ -66,8 +66,8 @@ async def create_data_agent(
     ok, record_id = impl.add_data_agent(data)
     if not ok:
         raise HTTPException(status_code=500, detail="创建数据代理失败")
-    await AppContext().stock_fetch.distribute_pool_stocks_to_data_agents()
-    await AppContext().stock_fetch.distribute_industry_stocks_to_data_agents()
+    AppContext().stock_fetch.submit_pool_stocks_distribution()
+    AppContext().stock_fetch.submit_industry_stocks_distribution()
     return ApiResponse(
         data=DataAgentItem(
             id=record_id or "",
@@ -81,7 +81,7 @@ async def create_data_agent(
 
 
 @router.put("/{agent_name}", response_model=ApiResponse[DataAgentItem])
-async def update_data_agent(
+def update_data_agent(
     agent_name: str,
     req: DataAgentUpdateRequest,
     user_id: str = Depends(require_admin),
@@ -109,8 +109,8 @@ async def update_data_agent(
     if not ok or not records or len(records) == 0:
         raise HTTPException(status_code=404, detail="数据代理不存在")
     record = records[0]
-    await AppContext().stock_fetch.distribute_pool_stocks_to_data_agents()
-    await AppContext().stock_fetch.distribute_industry_stocks_to_data_agents()
+    AppContext().stock_fetch.submit_pool_stocks_distribution()
+    AppContext().stock_fetch.submit_industry_stocks_distribution()
     return ApiResponse(
         data=DataAgentItem(
             id=str(record.get("_id", "")),
@@ -124,7 +124,7 @@ async def update_data_agent(
 
 
 @router.delete("/{id}", response_model=ApiResponse[str])
-async def delete_data_agent(
+def delete_data_agent(
     id: str,
     user_id: str = Depends(require_admin),
 ):
@@ -134,13 +134,13 @@ async def delete_data_agent(
     if not deleted:
         raise HTTPException(status_code=500, detail="删除数据代理失败")
     
-    await AppContext().stock_fetch.distribute_pool_stocks_to_data_agents()
-    await AppContext().stock_fetch.distribute_industry_stocks_to_data_agents()
+    AppContext().stock_fetch.submit_pool_stocks_distribution()
+    AppContext().stock_fetch.submit_industry_stocks_distribution()
     return ApiResponse(data=id, message="删除成功")
 
 
 @router.get("/list", response_model=ApiResponse[list[DataAgentItem]])
-async def list_data_agents(
+def list_data_agents(
     agent_name: str = Query(default="", description="代理名称（可选）"),
     is_online: int | None = Query(default=None, description="是否在线: 1=在线, 0=离线（可选）"),
     skip: int = Query(default=0, description="分页跳过条数"),

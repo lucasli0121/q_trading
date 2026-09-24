@@ -73,19 +73,19 @@ def show_recommend_page() -> None:
     """显示推荐页面：股票列表 + 分时图 + K 线图"""
     stock_list = _load_stock_list()
 
-    current_theme = AppContext().theme_manager.get_current_theme()
-    bg_color = current_theme.get("background", "#1e1e1e")
-    font_color = current_theme.get("font_color", "#c9d1d9")
+    theme = AppContext().theme_manager
+    bg_color = theme.var("page")
+    font_color = theme.var("text")
 
     with ui.column().classes("w-full h-full gap-0").style(
         f"background-color: {bg_color}; padding: 0; margin: 0;"
     ):
         # 顶部标题栏
         with ui.row().classes("w-full items-center gap-4").style(
-            f"padding: 8px 16px; border-bottom: 1px solid {current_theme.get('widget_border_color', '#80808033')};"
+            f"padding: 8px 16px; border-bottom: 1px solid {theme.var('border')};"
         ):
             ui.label("📈 推荐关注").classes("text-lg font-bold").style(
-                f"color: {current_theme.get('accent', '#d7ba7d')};"
+                f"color: {theme.var('accent')};"
             )
             ui.label(f"共 {len(stock_list)} 只股票").classes("text-sm").style(
                 f"color: {font_color};"

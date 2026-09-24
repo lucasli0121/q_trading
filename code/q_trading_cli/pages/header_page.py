@@ -14,9 +14,9 @@ from menu.top_menu import top_menu
 
 
 def show_header_page():
-    current_theme = AppContext().theme_manager.get_current_theme()
-    bg_color = current_theme.get('background')
-    widget_border_color = current_theme.get('widget_border_color', '#80808033')
+    theme = AppContext().theme_manager
+    bg_color = theme.var("page")
+    widget_border_color = theme.var("border")
     with ui.row().classes('w-full h-full gap-0') \
         .props('flat bordered') \
         .style(f'padding: 5px; border: 1px solid {widget_border_color}; border-radius: 10px; background: {bg_color}'):

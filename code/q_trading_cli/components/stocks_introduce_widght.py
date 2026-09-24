@@ -40,10 +40,17 @@ def _build_intraday_option(
     dates: list[str],
     closes: list[float],
     stock_name: str = "",
-    font_color: str = "#c9d1d9",
-    bg_color: str = "#1e1e1e",
+    colors: dict[str, str] | None = None,
+    bg_color: str = "",
 ) -> dict:
-    """构建分时走势 ECharts 配置"""
+    """构建分时走势 ECharts 配置。
+
+    ECharts 用 canvas 绘制、不解析 CSS 变量，因此配色取自
+    ``ThemeManager.get_chart_colors()``（真实色值），不能传 ``var(--qs-*)``。
+    """
+    colors = colors or AppContext().theme_manager.get_chart_colors()
+    bg_color = bg_color or AppContext().theme_manager.get_color("surface")
+    font_color: str = colors["axis"]
     return {
         "backgroundColor": bg_color,
         "title": {
@@ -64,7 +71,7 @@ def _build_intraday_option(
             "scale": True,
             "axisLine": {"lineStyle": {"color": font_color}},
             "axisLabel": {"color": font_color, "fontSize": 10},
-            "splitLine": {"lineStyle": {"color": "#333"}},
+            "splitLine": {"lineStyle": {"color": colors["grid"]}},
         },
         "series": [
             {
@@ -73,14 +80,14 @@ def _build_intraday_option(
                 "data": closes,
                 "smooth": True,
                 "showSymbol": False,
-                "lineStyle": {"color": "#569cd6", "width": 1.5},
+                "lineStyle": {"color": colors["line"], "width": 1.5},
                 "areaStyle": {
                     "color": {
                         "type": "linear",
                         "x": 0, "y": 0, "x2": 0, "y2": 1,
                         "colorStops": [
-                            {"offset": 0, "color": "rgba(86,156,214,0.35)"},
-                            {"offset": 1, "color": "rgba(86,156,214,0.02)"},
+                            {"offset": 0, "color": colors["line_area_top"]},
+                            {"offset": 1, "color": colors["line_area_bottom"]},
                         ],
                     }
                 },
@@ -93,10 +100,15 @@ def _build_kline_option(
     dates: list[str],
     ohlc: list[list[float]],
     stock_name: str = "",
-    font_color: str = "#c9d1d9",
-    bg_color: str = "#1e1e1e",
+    colors: dict[str, str] | None = None,
+    bg_color: str = "",
 ) -> dict:
-    """构建 K 线图 ECharts 配置"""
+    """构建 K 线图 ECharts 配置（配色同 _build_intraday_option，用真实色值）。"""
+    colors = colors or AppContext().theme_manager.get_chart_colors()
+    bg_color = bg_color or AppContext().theme_manager.get_color("surface")
+    font_color: str = colors["axis"]
+    up: str = colors["up"]
+    down: str = colors["down"]
     return {
         "backgroundColor": bg_color,
         "title": {
@@ -120,7 +132,7 @@ def _build_kline_option(
             "scale": True,
             "axisLine": {"lineStyle": {"color": font_color}},
             "axisLabel": {"color": font_color, "fontSize": 10},
-            "splitLine": {"lineStyle": {"color": "#333"}},
+            "splitLine": {"lineStyle": {"color": colors["grid"]}},
         },
         "series": [
             {
@@ -128,10 +140,10 @@ def _build_kline_option(
                 "type": "candlestick",
                 "data": ohlc,
                 "itemStyle": {
-                    "color": "#b5cea8",
-                    "color0": "#f44747",
-                    "borderColor": "#b5cea8",
-                    "borderColor0": "#f44747",
+                    "color": up,
+                    "color0": down,
+                    "borderColor": up,
+                    "borderColor0": down,
                 },
             }
         ],
@@ -139,9 +151,11 @@ def _build_kline_option(
 
 
 def _empty_chart_option(
-    title: str, font_color: str = "#c9d1d9", bg_color: str = "#1e1e1e"
+    title: str, font_color: str = "", bg_color: str = ""
 ) -> dict:
-    """构建空图表占位配置"""
+    """构建空图表占位配置（canvas 不解析 CSS 变量，回退取真实色值）。"""
+    font_color = font_color or AppContext().theme_manager.get_color("text")
+    bg_color = bg_color or AppContext().theme_manager.get_color("surface")
     return {
         "backgroundColor": bg_color,
         "title": {
@@ -257,10 +271,14 @@ def show_stocks_introduce(stock_list: list[dict]) -> None:
 
     :param stock_list: 股票列表，每项格式 {"code": "000001", "name": "平安银行"}
     """
-    current_theme = AppContext().theme_manager.get_current_theme()
-    bg_color = current_theme.get("background", "#1e1e1e")
-    font_color = current_theme.get("font_color", "#c9d1d9")
-    widget_border_color = current_theme.get("widget_border_color", "#80808033")
+    theme = AppContext().theme_manager
+    bg_color = theme.var("page")
+    font_color = theme.var("text")
+    widget_border_color = theme.var("border")
+    # 图表（canvas）用真实色值，不能用 CSS 变量
+    chart_colors: dict[str, str] = theme.get_chart_colors()
+    chart_bg: str = theme.get_color("surface")
+    chart_text: str = theme.get_color("text")
 
     # 存储 ECharts 引用
     intraday_chart_ref: dict = {}
@@ -366,8 +384,9 @@ def show_stocks_introduce(stock_list: list[dict]) -> None:
                         name,
                         intraday_chart_ref,
                         kline_chart_ref,
-                        bg_color,
-                        font_color,
+                        chart_colors,
+                        chart_bg,
+                        chart_text,
                     )
 
             stock_table.on("rowClick", on_row_click)
@@ -385,7 +404,7 @@ def show_stocks_introduce(stock_list: list[dict]) -> None:
                 f"border-radius: 6px; padding: 4px; background-color: {bg_color};"
             ):
                 intraday_chart = ui.echart(
-                    _empty_chart_option("分时走势", font_color, bg_color)
+                    _empty_chart_option("分时走势", chart_text, chart_bg)
                 ).classes("w-full h-full")
                 intraday_chart_ref["chart"] = intraday_chart
 
@@ -395,7 +414,7 @@ def show_stocks_introduce(stock_list: list[dict]) -> None:
                 f"border-radius: 6px; padding: 4px; background-color: {bg_color};"
             ):
                 kline_chart = ui.echart(
-                    _empty_chart_option("K 线走势", font_color, bg_color)
+                    _empty_chart_option("K 线走势", chart_text, chart_bg)
                 ).classes("w-full h-full")
                 kline_chart_ref["chart"] = kline_chart
 
@@ -409,8 +428,9 @@ def _on_stock_selected(
     name: str,
     intraday_ref: dict,
     kline_ref: dict,
-    bg_color: str,
-    font_color: str,
+    chart_colors: dict[str, str],
+    chart_bg: str,
+    chart_text: str,
 ) -> None:
     """股票选中回调：拉取行情数据并更新两张图表"""
     dates, closes, ohlc = _fetch_chart_data(code)
@@ -422,12 +442,12 @@ def _on_stock_selected(
         if intraday_chart:
             _update_chart_options(
                 intraday_chart,
-                _empty_chart_option("分时走势（无数据）", font_color, bg_color),
+                _empty_chart_option("分时走势（无数据）", chart_text, chart_bg),
             )
         if kline_chart:
             _update_chart_options(
                 kline_chart,
-                _empty_chart_option("K 线走势（无数据）", font_color, bg_color),
+                _empty_chart_option("K 线走势（无数据）", chart_text, chart_bg),
             )
         ui.notify(f"未获取到 {name}({code}) 的行情数据", type="warning")
         return
@@ -440,12 +460,12 @@ def _on_stock_selected(
         _update_chart_options(
             intraday_chart,
             _build_intraday_option(
-                intra_dates, intra_closes, f"{name}({code})", font_color, bg_color
+                intra_dates, intra_closes, f"{name}({code})", chart_colors, chart_bg
             ),
         )
 
     if kline_chart:
         _update_chart_options(
             kline_chart,
-            _build_kline_option(dates, ohlc, f"{name}({code})", font_color, bg_color),
+            _build_kline_option(dates, ohlc, f"{name}({code})", chart_colors, chart_bg),
         )

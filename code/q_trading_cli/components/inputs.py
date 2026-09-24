@@ -13,10 +13,11 @@ from app_context import AppContext
 
 # 登录用户输入框
 def input_user_w60(placeholder, on_enterkey) -> ui.input:
-    current_theme = AppContext().theme_manager.get_current_theme()
-    text_color = current_theme.get("text", "#d4d4d4")
-    placeholder_color = current_theme.get("placeholder", "#808080")
-    primary_color = current_theme.get("primary", "#569cd6")
+    theme = AppContext().theme_manager
+    text_color = theme.var("text")
+    placeholder_color = theme.var("muted")
+    # Quasar 的 color 属性不接受 CSS 变量，必须给真实色值
+    primary_color = AppContext().theme_manager.get_color("primary")
     ui.add_css(f"""
         .login-input-ph input::placeholder {{
             color: {placeholder_color} !important;
@@ -34,10 +35,11 @@ def input_user_w60(placeholder, on_enterkey) -> ui.input:
     return input
 
 def input_password_w60(placeholder, on_enterkey) -> ui.input:
-    current_theme = AppContext().theme_manager.get_current_theme()
-    text_color = current_theme.get("text", "#d4d4d4")
-    placeholder_color = current_theme.get("placeholder", "#808080")
-    primary_color = current_theme.get("primary", "#569cd6")
+    theme = AppContext().theme_manager
+    text_color = theme.var("text")
+    placeholder_color = theme.var("muted")
+    # Quasar 的 color 属性不接受 CSS 变量，必须给真实色值
+    primary_color = AppContext().theme_manager.get_color("primary")
     ui.add_css(f"""
         .login-input-ph input::placeholder {{
             color: {placeholder_color} !important;
@@ -55,11 +57,11 @@ def input_password_w60(placeholder, on_enterkey) -> ui.input:
     return input
 
 def input_search(w: str = "60px", placeholder: str = "", on_enterkey=None) -> ui.input:
-    current_theme = AppContext().theme_manager.get_current_theme()
-    text_color = current_theme.get("text", "#d4d4d4")
-    widget_border_color = current_theme.get("widget_border_color", "#80808033")
-    placeholder_color = current_theme.get("placeholder", "#808080")
-    bg_color = current_theme.get("background", "#1e1e1e")
+    theme = AppContext().theme_manager
+    text_color = theme.var("text")
+    widget_border_color = theme.var("border")
+    placeholder_color = theme.var("muted")
+    bg_color = theme.var("page")
     with ui.input(placeholder=placeholder) \
         .props(f"outlined dense input-style=\"color: {placeholder_color}\"") \
         .classes(f"w-{w} text-[{text_color}] rounded-md self-center") \

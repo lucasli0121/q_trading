@@ -9,6 +9,7 @@ Description: 用户策略关联表 MongoDB 操作实现
 # coding="utf8"
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from bson import ObjectId
@@ -45,6 +46,7 @@ class MongoUserStrategyImpl:
         """新增用户策略关联（允许重复新增，不做重复检测、不更新已有记录）
 
         同一用户下策略名称（name）需保持唯一；name 为空时不做唯一性校验。
+        update_time 表示 status 最近一次变更的时间：未显式传入时取 create_time（即初始状态生效时刻）。
 
         :param data: 用户策略数据字典，需包含 strategy_id、user_id、status、pool_id
         :return: (ok, record_id_or_None, error_or_None)
@@ -65,6 +67,12 @@ class MongoUserStrategyImpl:
             if self._is_name_duplicated(user_id, name):
                 self.logger.warning(f"已存在同名用户策略: user_id={user_id}, name={name}")
                 return False, None, "duplicate_name"
+
+            # 新增即首次写入状态，update_time 与 create_time 对齐（显式传入则尊重传入值）
+            if not data.get("update_time"):
+                data["update_time"] = data.get("create_time") or datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
 
             result = self.user_strategy_table.insert_one(data)
             return True, str(result.inserted_id), None
@@ -159,6 +167,10 @@ class MongoUserStrategyImpl:
         """更新用户策略关联的指定字段
 
         同一用户下策略名称（name）需保持唯一（更新时排除自身）；name 为空时不做唯一性校验。
+        update_time 表示 status 最近一次变更的时间：
+        - 本次更新未包含 status（仅改名称/股票池等）：不改动 update_time；
+        - 本次更新包含 status 且与库中原值相同：视为未发生变化，同样不改动 update_time；
+        - 本次更新包含 status 且与库中原值不同：刷新为当前时间（显式传入非空 update_time 则尊重传入值）。
 
         :param id: 记录 ID（MongoDB _id）
         :param data: 需要更新的字段字典（如 name、status、pool_id）
@@ -166,15 +178,31 @@ class MongoUserStrategyImpl:
                  error 可能的值: None（无错误）、"duplicate_name"（同一用户下名称重复）
         """
         try:
-            name = data.get("name", "")
-            if name:
+            data = data.copy()
+
+            # name 唯一性校验与 status 变化判定都需要原记录
+            record: dict[str, Any] | None = None
+            if data.get("name") or "status" in data:
                 record = self.user_strategy_table.find_one({"_id": ObjectId(id)})
                 if record is None:
                     self.logger.warning(f"未找到用户策略关联: id={id}")
                     return False, None
-                if self._is_name_duplicated(record.get("user_id", ""), name, exclude_id=id):
-                    self.logger.warning(f"已存在同名用户策略: id={id}, name={name}")
-                    return False, "duplicate_name"
+
+            name = data.get("name", "")
+            if name and self._is_name_duplicated(
+                (record or {}).get("user_id", ""), name, exclude_id=id
+            ):
+                self.logger.warning(f"已存在同名用户策略: id={id}, name={name}")
+                return False, "duplicate_name"
+
+            # 仅当 status 真正发生变化时才打时间戳（显式传入非空 update_time 则尊重传入值）
+            if "status" in data:
+                old_status = (record or {}).get("status", "")
+                if data.get("status") != old_status:
+                    if not data.get("update_time"):
+                        data["update_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    data.pop("update_time", None)
 
             result = self.user_strategy_table.update_one(
                 {"_id": ObjectId(id)}, {"$set": data}

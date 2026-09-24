@@ -7,7 +7,14 @@ Description: 策略列表页面 — 严格按 strategies.html 原型实现
     - 策略表格（名称+描述 / 类型 / 创建时间 / 状态 / 最近信号 / 查看详情）
     - 分页页脚
     - 策略详情面板（持仓信息 / 订单明细 / 运行日志）
-    - 创建策略对话框（基本信息与类配置 / 选股配置 / 回测参数）
+    - 操作列「回测记录」入口 → /strategy-backtest?strategy_id=<策略模板ID>&source=strategies
+      （带 source 是为了让回测页的「返回」按钮回到本页，而不是回策略监控）
+    - 创建策略对话框（策略选择卡片横向滑动 + 股票池配置 / 参数）
+      策略模板以卡片呈现（名称 / 类型 / 描述），左上角勾选框选中，选中卡片边框高亮；
+      含「运行状态」→「立即运行」勾选框（**默认勾选**）：勾选即以 running 创建，
+      取消则以 stopped 创建
+    - 编辑策略对话框（自定义名称 / 股票池 / 初始资金 / 最大持仓数 / **运行状态**）
+      运行状态可在此直接切换，等价于监控卡片上的启动/暂停/停止
 
 数据来源：
     - 用户策略关联: user_strategy_api.list()
@@ -29,8 +36,10 @@ import httpx
 from nicegui import ui
 
 from app_context import AppContext
+from core.routes import backtest_route
 from core.user_strategy_manager import UserStrategyManager
 from utils import tools
+from utils.timeutils import cur_date_time_str
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +48,21 @@ PAGE_SIZE: int = 10
 
 # 用户策略状态 → (显示文本, 文字颜色, 背景颜色)
 _STATUS_STYLES: dict[str, tuple[str, str, str]] = {
-    "running": ("运行中", "#34d399", "rgba(52,211,153,0.3)"),
-    "stopped": ("已停止", "#d1d5db", "rgba(55,65,81,0.8)"),
-    "paused": ("已暂停", "#fbbf24", "rgba(251,191,36,0.25)"),
-    "error": ("异常", "#f87171", "rgba(248,113,113,0.3)"),
+    "running": ("运行中", "var(--qs-negative)", "rgba(var(--qs-negative-rgb), 0.3)"),
+    "stopped": ("已停止", "var(--qs-label)", "var(--qs-chip-neutral)"),
+    "paused": ("已暂停", "var(--qs-accent)", "rgba(var(--qs-accent-rgb), 0.25)"),
+    "error": ("异常", "var(--qs-positive)", "rgba(var(--qs-positive-rgb), 0.3)"),
+}
+
+# 编辑对话框可切换的运行状态：文案取自 _STATUS_STYLES（保持单一来源），
+# 但**排除 error** —— 异常是后端检测出的故障态，不作为用户可选项目。
+# 若某条记录当前状态恰为「异常」，该状态会被临时补进下拉选项
+# （见 _open_edit_strategy_dialog），否则下拉框会显示为空白且保存时会把状态悄悄改掉。
+_EDITABLE_STATUS_KEYS: tuple[str, ...] = ("running", "paused", "stopped")
+
+# 运行状态码 → 显示文案（与 api/user_strategy.py 支持的状态值一致）
+_EDITABLE_STATUS_TEXTS: dict[str, str] = {
+    key: _STATUS_STYLES.get(key, (key,))[0] for key in _EDITABLE_STATUS_KEYS
 }
 
 # 创建对话框中的候选策略类型（与 StrategyDao.strategy_type 取值一致）
@@ -158,61 +178,66 @@ def _collect_params(collector: dict[str, dict[str, Any]]) -> dict[str, dict[str,
     return result
 
 
-# 对话框装饰高度（头部 + 标签栏 + 底部按钮 + 对话框边距），用于计算内容区视口上限
-_DIALOG_CHROME_PX: int = 260
-# 对话框卡片最小高度，避免内容较少时对话框过小显得局促
-# （同时受视口高度约束，小屏下不会溢出）
-_DIALOG_MIN_HEIGHT_PX: int = 600
-_DIALOG_VIEWPORT_MARGIN_PX: int = 80
-# 参数面板高度估算常量（需与 _render_params_container 的行高/间距保持一致）
-_PARAM_ROW_HEIGHT_PX: int = 60         # 单个参数行高度（dense 输入框 + 上下 padding + 冗余）
-_PARAM_GROUP_HEADER_PX: int = 44       # 分组标题高度（文字行高 + margin-top + 冗余）
-_PARAM_CONTAINER_PADDING_PX: int = 40  # 参数容器上下内边距合计 + 冗余
+# 对话框高度上限（另受视口约束）
+_DIALOG_MAX_HEIGHT_PX: int = 860
+# 对话框在视口上下留白的合计（计算 100vh 可分配高度时需减掉）
+_DIALOG_VIEWPORT_MARGIN_PX: int = 40
 
 
-def _params_area_max_height(params: dict[str, Any], min_px: int = 200) -> str:
-    """根据参数数量估算参数编辑区的自适应最大高度表达式。
+def _dialog_card_height() -> str:
+    """对话框卡片的高度表达式 —— **定高**，而不是 min/max-height 夹出来的高度。
 
-    高度规则：
-    - 估算内容高度 = 容器内边距 + 分组标题数 × 标题高度 + 参数总行数 × 行高；
-    - 参数较少时：高度取估算内容高度，对话框随之变矮，所有参数直接可见、无需滚动；
-    - 参数较多时：高度上限为「视口高度 - 对话框装饰高度」，参数区尽量占满剩余
-      屏幕、避免对话框超出视口，仅超出部分在滚动区内滚动。
+    为什么必须是定高：Quasar 的 QScrollArea 自带 ``contain: strict``（含 size containment），
+    它自身的**固有高度恒为 0**，只能靠祖先链层层给出确定高度。而"确定高度"要求卡片自身的
+    height 明确；``min-height`` 不构成确定高度（卡片 height 仍由内容决定），于是 flex 子项的
+    主尺寸在规范上是"不确定"的：``height: 100%`` 解析失败、``flex-basis: 0%`` 退化成内容高度
+    （被 size containment 压成 0），滚动区塌成 0 高并被 paint containment 整块裁掉
+    —— 表现就是"对话框内容全部消失，连滚动条都没有"。
+    卡片定高后，各级容器都有确定高度，``flex-basis: 0% + flex-grow: 1`` 的链才传得下去。
 
-    :param params: 策略模板 default_params 字典（结构 {group: {key: {...}}}）
-    :param min_px: 最小高度（像素），无参数时的兜底高度
-    :return: CSS max-height 表达式，如 "min(calc(100vh - 260px), 512px)"
+    :return: CSS height 表达式，如 "min(calc(100vh - 40px), 860px)"
     """
-    row_total: int = 0
-    group_total: int = 0
-    for group_params in (params or {}).values():
-        count: int = len(group_params or {})
-        row_total += count
-        if count > 0:
-            group_total += 1
-    est_px: int = max(
-        _PARAM_CONTAINER_PADDING_PX
-        + group_total * _PARAM_GROUP_HEADER_PX
-        + row_total * _PARAM_ROW_HEIGHT_PX,
-        min_px,
-    )
-    return f"min(calc(100vh - {_DIALOG_CHROME_PX}px), {est_px}px)"
+    return f"min(calc(100vh - {_DIALOG_VIEWPORT_MARGIN_PX}px), {_DIALOG_MAX_HEIGHT_PX}px)"
+# 对话框宽度（创建 / 编辑共用，须与卡片上的 Tailwind 类 "w-[760px] max-w-[95vw]" 一致）
+_DIALOG_WIDTH_PX: int = 760
+# 卡片横向滚动行需要扣掉的横向占用：卡片边框(2) + QScrollArea 内容层内边距(32) + 冗余
+_CARD_ROW_SIDE_PX: int = 40
+
+
+def _card_row_width() -> str:
+    """策略卡片横向滚动行的宽度表达式（显式定宽，不能依赖父容器）。
+
+    为什么必须显式定宽：``ui.scroll_area`` 的内容层被 NiceGUI 设置为
+    ``display:flex; flex-direction:column; align-items:flex-start``（见 nicegui.css），
+    是一个「收缩到内容宽度」的容器。放在它内部的 ``overflow-x:auto`` 拿不到有界宽度，
+    浏览器会把容器撑到卡片总宽，横向滚动条不会出现、右侧卡片被直接裁掉且滑不到。
+    这里按对话框宽度算出确切宽度，横向滚动才能正常生效。
+
+    :return: CSS width 表达式，如 "calc(min(95vw, 760px) - 40px)"
+    """
+    return f"calc(min(95vw, {_DIALOG_WIDTH_PX}px) - {_CARD_ROW_SIDE_PX}px)"
+
+
+# 说明：对话框内容区高度不做 100vh 反推，而是由 flex 链把**卡片定高**一路分配到滚动区
+# （见页面级 CSS 的 .strategy-dialog-panels）。卡片定高后，头部 / 标签栏 / 底部按钮怎么改
+# 都不用重算常量，也不会出现"内容把卡片撑破后被 .q-panel-parent 的 overflow:hidden 裁掉"。
 
 
 def show_strategies_page() -> None:
     """策略列表页面入口。"""
-    current_theme: dict[str, str] = AppContext().theme_manager.get_current_theme()
-    bg_color: str = current_theme.get("background", "#0f0f1a")
-    font_color: str = current_theme.get("font_color", "#e5e7eb")
-    border_color: str = current_theme.get("widget_border_color", "#334155")
-    card_bg: str = current_theme.get("tab_normal_color", "#1e293b")
-    input_bg: str = current_theme.get("background", "#111827")
-    primary_color: str = current_theme.get("primary", "#2563eb")
-    title_color: str = current_theme.get("text", "#f3f4f6")
-    muted_color: str = current_theme.get("placeholder", "#9ca3af")
-    field_label_color: str = current_theme.get("placeholder", "#d1d5db")
-    tab_bg: str = current_theme.get("tab_normal_color", "#1e293b")
-    tab_active: str = current_theme.get("tab_active_color", "#2563eb")
+    theme = AppContext().theme_manager
+    bg_color: str = theme.var("page")
+    font_color: str = theme.var("text")
+    border_color: str = theme.var("border")
+    card_bg: str = theme.var("surface")
+    input_bg: str = theme.var("page")
+    primary_color: str = theme.var("primary")
+    title_color: str = theme.var("text")
+    muted_color: str = theme.var("muted")
+    field_label_color: str = theme.var("muted")
+    tab_bg: str = theme.var("surface")
+    tab_active: str = theme.var("primary")
+    primary_glow: str = theme.var("primary-glow")
 
     # 页面级 CSS：自定义表格行样式（行高、悬浮、选中高亮）
     ui.add_css("""
@@ -220,18 +245,18 @@ def show_strategies_page() -> None:
             display: flex;
             align-items: center;
             padding: 14px 24px;
-            border-bottom: 1px solid rgba(45,55,72,0.6);
+            border-bottom: 1px solid var(--qs-divider-strong);
             cursor: pointer;
             transition: background-color 0.15s;
         }
         .s-table-row:hover {
-            background-color: rgba(37,99,235,0.10) !important;
+            background-color: rgba(var(--qs-primary-strong-rgb), 0.10) !important;
         }
         .s-table-row.my-selected {
-            background-color: rgba(37,99,235,0.22) !important;
+            background-color: rgba(var(--qs-primary-strong-rgb), 0.22) !important;
         }
         .s-table-row.my-selected:hover {
-            background-color: rgba(37,99,235,0.28) !important;
+            background-color: rgba(var(--qs-primary-strong-rgb), 0.28) !important;
         }
         .s-col-name { flex: 32; min-width: 0; }
         .s-col-type { flex: 12; }
@@ -243,8 +268,8 @@ def show_strategies_page() -> None:
             display: flex;
             align-items: center;
             padding: 12px 24px;
-            border-bottom: 1px solid #334155;
-            background-color: #111827;
+            border-bottom: 1px solid var(--qs-border);
+            background-color: var(--qs-surface-alt);
         }
     """)
 
@@ -255,12 +280,13 @@ def show_strategies_page() -> None:
             color: {muted_color} !important;
             border-radius: 3px !important;
             margin: 2px 2px !important;
+            width: 100% !important;
         }}
         .strategy-dialog-tabs .q-tab--active,
         .strategy-dialog-tabs .q-tab.q-tab--active,
         .strategy-dialog-tabs .q-tab[aria-selected="true"] {{
             background-color: {tab_active} !important;
-            color: #ffffff !important;
+            color: var(--qs-on-accent) !important;
         }}
         .strategy-dialog-tabs .q-tab__indicator {{
             display: none !important;
@@ -269,6 +295,44 @@ def show_strategies_page() -> None:
             background-color: {input_bg} !important;
             border-bottom: 1px solid {border_color} !important;
         }}
+    """)
+
+    # 页面级 CSS：对话框内容区高度链（把卡片定高一路分到滚动区）
+    # Quasar 的真实 DOM 是三层，不是两层（漏掉中间那层高度就传不下去）：
+    #   .q-tab-panels.q-panel-parent          ← 卡片 flex 子项（flex-1）+ overflow:hidden
+    #     └ .q-panel.scroll                   ← QTabPanels 动态生成的包裹层（height:100%）
+    #         └ .q-tab-panel.nicegui-tab-panel ← 面板本体（height:100%）
+    #             └ .nicegui-scroll-area        ← 内容滚动区（contain:strict）
+    # 说明：
+    #   - 不写 !important：ui.add_css 注入的样式不在 @layer 内，未分层的作者样式优先级高于
+    #     @layer 内的规则（Tailwind utilities 等），不加 !important 也能生效。
+    #   - 每层都要 min-height: 0：flex item 默认 min-height:auto 会阻止收缩，高度传不下去。
+    #   - 滚动区补一个 min-height 兜底：即便上层高度链再次失效，内容也不会整块消失。
+    #   - .q-panel 是 Quasar 生成的中间层，必须显式设为纵向 flex，其子项才吃得到 flex:1。
+    ui.add_css("""
+        .strategy-dialog-panels {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .strategy-dialog-panels > .q-panel,
+        .strategy-dialog-panels > .q-panel > .q-tab-panel,
+        .strategy-dialog-panels > .q-panel > .q-tab-panel > * {
+            flex: 1 1 0%;
+            min-height: 0;
+        }
+        /* .q-panel 与面板本体都必须是纵向 flex，里面的子项才吃得到 flex:1。
+           Quasar 只给它们设了 height:100%，那属于百分比通道（父高不确定就失效）。 */
+        .strategy-dialog-panels > .q-panel,
+        .strategy-dialog-panels > .q-panel > .q-tab-panel {
+            display: flex;
+            flex-direction: column;
+        }
+        .strategy-dialog-panels .q-scrollarea.nicegui-scroll-area {
+            flex: 1 1 0%;
+            min-height: 8rem;
+            max-height: 100%;
+        }
     """)
 
     # 筛选与分页状态
@@ -285,12 +349,12 @@ def show_strategies_page() -> None:
     ):
         # 标题行：标题 + 创建策略按钮
         with ui.row().classes("w-full items-center justify-between"):
-            ui.label("策略列表").classes("text-xl font-bold").style("color: #f3f4f6;")
+            ui.label("策略列表").classes("text-xl font-bold").style("color: var(--qs-heading);")
             ui.button(
                 "创建策略", icon="add",
                 on_click=lambda: _open_create_strategy_dialog(_refresh),
             ).props("unelevated no-caps").classes("text-sm font-medium").style(
-                "background-color: #2563eb; color: #ffffff; "
+                "background-color: var(--qs-primary-hover); color: var(--qs-on-accent); "
                 "border-radius: 8px; padding: 8px 16px;"
             )
 
@@ -362,7 +426,7 @@ def show_strategies_page() -> None:
             type_select.on_value_change(_on_type_change)
             status_select.on_value_change(_on_status_change)
             ui.button("重置", on_click=_reset_filters).props("flat no-caps") \
-                .classes("text-sm font-medium").style("color: #9ca3af;")
+                .classes("text-sm font-medium").style("color: var(--qs-muted);")
 
         # 策略表格卡片（含分页页脚）
         with ui.card().classes("w-full gap-0 overflow-hidden").style(
@@ -396,23 +460,24 @@ def show_strategies_page() -> None:
         :return: 策略行数据列表（按创建时间倒序）
         """
         user_strategies: list[dict[str, Any]] = UserStrategyManager().list_user_strategies()
-        templates: dict[str, dict[str, Any]] = {}
+        # 策略模板走进程级缓存（strategy_cache，模板是全局公共数据，多用户共享安全）
+        templates: dict[str, dict[str, Any]] = AppContext().strategy_cache.get_many(
+            [str(us.get("strategy_id", "") or "") for us in user_strategies]
+        )
         rows: list[dict[str, Any]] = []
         for us in user_strategies:
             sid: str = str(us.get("strategy_id", ""))
-            if sid and sid not in templates:
-                try:
-                    templates[sid] = AppContext().strategy_api.get_by_id(sid)
-                except Exception:
-                    logger.warning("查询策略模板失败: %s", sid, exc_info=True)
-                    templates[sid] = {}
             tpl: dict[str, Any] = templates.get(sid, {})
-            total_profit = float(us.get("total_profit", 0.0))
-            init_amount = float(us.get("initial_amount", 0.0) or 0.0)
+            # ⚠ 用 tools.to_float 而不是 float()：会话缓存里同一个键可能被写成
+            # 展示格式的字符串（例如 total_profit="0.0%"）。float("0.0%") 会抛
+            # ValueError，导致整个表格渲染中断、页面看着「什么都不显示」；
+            # to_float 能正确解析带 % / 千分位 / 中文单位的写法，失败也给默认值。
+            total_profit: float = tools.to_float(us.get("total_profit", 0.0))
+            init_amount: float = tools.to_float(us.get("initial_amount", 0.0))
             profit = 0.00 if init_amount == 0.0 else total_profit / init_amount * 100
             total_profit_str: str = f"{round(profit, 2)}%"
             # 正收益显示红色，负收益显示绿色（A 股惯例）
-            profit_color: str = "#f87171" if profit > 0 else ("#34d399" if profit < 0 else "#6b7280")
+            profit_color: str = "var(--qs-positive)" if profit > 0 else ("var(--qs-negative)" if profit < 0 else "var(--qs-faint)")
             rows.append({
                 "us_id": str(us.get("_id", "") or us.get("id", "")),
                 "sid": sid,
@@ -428,27 +493,39 @@ def show_strategies_page() -> None:
                 "profit_color": profit_color,
                 "status": str(us.get("status", "stopped")),
                 "pool_id": str(us.get("pool_id", "") or ""),
-                "initial_amount": float(us.get("initial_amount", 0.0) or 0.0),
-                "max_stock_count": int(us.get("max_stock_count", 0) or 0),
+                # 同样走 to_float：缓存里这两个键也可能被写成展示格式（"4" / "10.0万"）
+                "initial_amount": init_amount,
+                "max_stock_count": int(tools.to_float(us.get("max_stock_count", 0))),
                 "strategy_params": us.get("strategy_params", {}) or {},
             })
         return rows
 
-    def _latest_signal_text(us_id: str) -> tuple[str, str]:
-        """获取指定策略最近一次信号文案与颜色。
+    def _latest_signal_map(us_ids: list[str]) -> dict[str, tuple[str, str]]:
+        """批量获取各用户策略的最近信号文案与颜色。
 
-        :param sid: 策略模板 ID
-        :return: (信号文本如 '买入 600519', 颜色)，无信号返回 ('-', 灰色)
+        原实现按行调用（每行一次），而每次内部都会查询用户策略列表并做全量排序，
+        PAGE_SIZE=10 时单次表格渲染就是 10 次重复工作。这里一次性批量取回，
+        且只取每个策略各自的最近一条（不受全局条数窗口限制）。
+
+        :param us_ids: 当前页各行的 user_strategy_id 列表
+        :return: {user_strategy_id: (信号文本如 '买入 600519', 颜色)}
         """
-        positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
-        negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
-        signals: list[dict[str, Any]] = AppContext().signal_manager.get_signals(limit=50)
-        for sig in signals:
-            if str(sig.get("user_strategy_id", "")) == us_id:
-                text: str = f"{sig.get('action', '')} {sig.get('stock_code', '')}".strip()
-                color: str = positive_color if sig.get("action") == "买入" else negative_color
-                return (text or "-", color)
-        return ("-", "#6b7280")
+        positive_color: str = theme.var("positive")
+        negative_color: str = theme.var("negative")
+        result: dict[str, tuple[str, str]] = {}
+        try:
+            latest: dict[str, dict[str, Any]] = AppContext().signal_manager.get_latest_signals(
+                [str(i or "") for i in us_ids if i]
+            )
+        except Exception:
+            logger.warning("查询最近信号失败", exc_info=True)
+            return result
+        for us_id, sig in latest.items():
+            action: str = str(sig.get("action", "") or "")
+            text: str = f"{action} {sig.get('stock_code', '')}".strip()
+            color: str = positive_color if action == "买入" else negative_color
+            result[us_id] = (text or "-", color)
+        return result
 
     def _filtered_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """按筛选条件过滤行数据。
@@ -486,7 +563,7 @@ def show_strategies_page() -> None:
         with pagination_container:
             ui.label(f"显示第 {start_idx}-{end_idx} 条结果，共 {total_items} 条").classes(
                 "text-sm tracking-tight"
-            ).style("color: #6b7280;")
+            ).style("color: var(--qs-faint);")
             with ui.row().classes("items-center gap-2"):
                 prev_style: str = _page_btn_style(disabled=(current <= 0))
                 ui.label("上一页").classes("text-sm rounded-lg px-4 py-2 cursor-pointer").style(
@@ -495,10 +572,10 @@ def show_strategies_page() -> None:
                 for p in range(total_pages):
                     active: bool = p == current
                     style: str = (
-                        "border: 1px solid #3b82f6; background-color: #1e293b; "
-                        "color: #e5e7eb; font-weight: 500;"
+                        "border: 1px solid var(--qs-primary); background-color: var(--qs-surface); "
+                        "color: var(--qs-text); font-weight: 500;"
                         if active
-                        else f"border: 1px solid {border_color}; background-color: transparent; color: #9ca3af;"
+                        else f"border: 1px solid {border_color}; background-color: transparent; color: var(--qs-muted);"
                     )
                     ui.label(str(p + 1)).classes(
                         "text-sm rounded-lg px-3 py-2 cursor-pointer"
@@ -515,8 +592,8 @@ def show_strategies_page() -> None:
         :return: CSS 样式字符串
         """
         if disabled:
-            return f"border: 1px solid {border_color}; color: #4b5563; cursor: not-allowed;"
-        return f"border: 1px solid {border_color}; color: #9ca3af;"
+            return f"border: 1px solid {border_color}; color: var(--qs-icon-muted); cursor: not-allowed;"
+        return f"border: 1px solid {border_color}; color: var(--qs-muted);"
 
     def _goto_page(page: int) -> None:
         """跳转到指定页并刷新表格。
@@ -542,12 +619,15 @@ def show_strategies_page() -> None:
         start: int = page_state["page"] * PAGE_SIZE
         page_rows: list[dict[str, Any]] = filtered[start:start + PAGE_SIZE]
 
-        # 预计算每行的信号和状态
+        # 预计算每行的信号和状态（信号一次性批量取回，避免逐行查询）
+        signal_map: dict[str, tuple[str, str]] = _latest_signal_map(
+            [str(r.get("us_id", "") or "") for r in page_rows]
+        )
         for r in page_rows:
-            sig_t, sig_c = _latest_signal_text(r["us_id"])
+            sig_t, sig_c = signal_map.get(r["us_id"], ("-", "var(--qs-faint)"))
             r["_signal_text"] = sig_t
             r["_signal_color"] = sig_c
-            st = _STATUS_STYLES.get(r["status"], ("未知", "#d1d5db", "rgba(55,65,81,0.8)"))
+            st = _STATUS_STYLES.get(r["status"], ("未知", "var(--qs-label)", "var(--qs-chip-neutral)"))
             r["_status_text"] = st[0]
             r["_status_color"] = st[1]
             r["_status_bg"] = st[2]
@@ -564,7 +644,7 @@ def show_strategies_page() -> None:
                     align: str = "text-align: right;" if col_cls == "s-col-action" else ""
                     ui.label(label_text).classes(
                         "text-xs font-semibold uppercase tracking-wider"
-                    ).style(f"color: #9ca3af; {align}").classes(col_cls)
+                    ).style(f"color: var(--qs-muted); {align}").classes(col_cls)
 
             # 数据行
             for row_data in page_rows:
@@ -573,16 +653,16 @@ def show_strategies_page() -> None:
                     with ui.column().classes("s-col-name gap-0"):
                         ui.label(row_data["name"]).classes(
                             "text-sm font-medium"
-                        ).style("color: #e5e7eb;")
+                        ).style("color: var(--qs-text);")
                         ui.label(row_data["_desc"]).classes(
                             "text-xs italic"
                         ).style(
-                            "color: #6b7280; overflow:hidden; text-overflow:ellipsis;"
+                            "color: var(--qs-faint); overflow:hidden; text-overflow:ellipsis;"
                             "white-space:nowrap; max-width:260px;"
                         )
                     # 类型
                     ui.label(row_data["stype"]).classes("text-sm s-col-type").style(
-                        "color: #9ca3af;"
+                        "color: var(--qs-muted);"
                     )
                     # 总收益（正数红色，负数绿色，A 股惯例）
                     ui.label(row_data["total_profit"]).classes(
@@ -593,7 +673,7 @@ def show_strategies_page() -> None:
                         if row_data["status"] == "running":
                             ui.label("").classes(
                                 "inline-block w-[6px] h-[6px] rounded-full mr-1 animate-pulse"
-                            ).style("background-color: #34d399;")
+                            ).style("background-color: var(--qs-negative);")
                         ui.label(row_data["_status_text"]).classes(
                             "text-xs font-medium rounded-full px-2.5 py-0.5"
                         ).style(
@@ -603,15 +683,22 @@ def show_strategies_page() -> None:
                     ui.label(row_data["_signal_text"]).classes(
                         "text-sm font-medium s-col-signal"
                     ).style(f"color: {row_data['_signal_color']};")
-                    # 操作按钮（编辑图标）
+                    # 操作按钮（回测记录 + 编辑图标）
                     with ui.column().classes("s-col-action gap-0 items-end"):
                         def _make_edit_click(r: dict[str, Any]) -> Callable[[], None]:
                             """创建编辑按钮回调（闭包捕获当前行数据）。"""
                             return lambda: _open_edit_strategy_dialog(r, _refresh)
-                        ui.button(icon="edit", on_click=_make_edit_click(row_data)) \
-                            .props("flat round dense").style(
-                                "color: #60a5fa; cursor: pointer;"
-                            )
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            # 回测记录：跳转到策略回测记录页（/strategy-backtest?strategy_id=…）
+                            # 回测按**策略模板 ID** 关联，因此入口带的是行里的 sid
+                            ui.button(icon="query_stats", on_click=_make_backtest_click(row_data)) \
+                                .props("flat round dense").style(
+                                    "color: var(--qs-link); cursor: pointer;"
+                                )
+                            ui.button(icon="edit", on_click=_make_edit_click(row_data)) \
+                                .props("flat round dense").style(
+                                    "color: var(--qs-link); cursor: pointer;"
+                                )
 
                     # 绑定整行点击事件（点击行的任意位置触发详情展示）
                     def _make_row_click(r: dict[str, Any]) -> Callable[[], None]:
@@ -629,6 +716,27 @@ def show_strategies_page() -> None:
         """
         view_state["selected"] = row
         _show_detail(row)
+
+    def _make_backtest_click(row: dict[str, Any]) -> Callable[[], None]:
+        """创建「回测记录」按钮回调（闭包捕获当前行数据）。"""
+        return lambda: _open_backtest(row)
+
+    def _open_backtest(row: dict[str, Any]) -> None:
+        """打开该策略的回测记录页。
+
+        ⚠ 回测按**策略模板 ID** 关联（GET /api/strategy/{strategy_id}/backtest）：
+        同一个模板被多个用户策略复用时，它们看到的是**同一份**回测记录 ——
+        这是接口与数据模型决定的，不是串数据。
+        模板 ID 缺失（历史数据）时不跳转，给一句提示，免得落到只能看空态的页面。
+
+        :param row: 表格行数据（含 sid = 策略模板 ID）
+        """
+        sid: str = str(row.get("sid", "") or "").strip()
+        if not sid:
+            ui.notify("该策略未关联策略模板，无法查看回测记录", type="warning")
+            return
+        # 带上来源标识：回测页的「返回」按钮会回到本页（策略列表）而不是策略监控
+        ui.navigate.to(backtest_route(sid, "strategies"))
 
     def _refresh() -> None:
         """刷新表格与分页；首次加载后自动在页面底部展示第一条策略详情。"""
@@ -660,10 +768,10 @@ def show_strategies_page() -> None:
                 f"padding: 16px 24px; border-bottom: 1px solid {border_color};"
             ):
                 ui.label(f"{row['name']} — 策略详情").classes("text-base font-semibold").style(
-                    "color: #e5e7eb;"
+                    "color: var(--qs-text);"
                 )
                 ui.button(icon="close", on_click=_hide_detail).props("flat round dense").style(
-                    "color: #9ca3af;"
+                    "color: var(--qs-muted);"
                 )
             tabs_row: ui.row = ui.row().classes("w-full items-center gap-2").style(
                 f"padding: 12px 24px; border-bottom: 1px solid {border_color};"
@@ -694,9 +802,9 @@ def show_strategies_page() -> None:
                 ]:
                     active: bool = tab_state["tab"] == key
                     style: str = (
-                        "background-color: #1d4ed8; color: #ffffff;"
+                        "background-color: var(--qs-primary-active); color: var(--qs-on-accent);"
                         if active
-                        else "background-color: transparent; color: #9ca3af;"
+                        else "background-color: transparent; color: var(--qs-muted);"
                     )
                     ui.label(text).classes(
                         "text-sm font-medium rounded-lg px-4 py-2 cursor-pointer"
@@ -721,14 +829,18 @@ def show_strategies_page() -> None:
         :param text: 提示文本
         """
         with container, ui.column().classes("w-full items-center justify-center").style("padding: 48px;"):
-            ui.icon("inbox").style("color: #6b7280; font-size: 40px;")
-            ui.label(text).classes("text-sm").style("color: #6b7280; margin-top: 8px;")
+            ui.icon("inbox").style("color: var(--qs-faint); font-size: 40px;")
+            ui.label(text).classes("text-sm").style("color: var(--qs-faint); margin-top: 8px;")
 
     def _render_positions(container: ui.column, row: dict[str, Any]) -> None:
         """渲染持仓信息标签页内容（原型列：股票代码/股票名称/持仓数量/成本价/现价/盈亏）。
 
         持仓字典字段来自 PositionItem: code/name/quantity/cost_price/current_price/
         profit_rate/profit_amount。
+
+        「盈亏」列展示 **收益率(收益额)**，形如 ``+10.00%(2000.00)``；两者都用实时价与
+        成本价现算，**必须忽略** ``profit_rate`` / ``profit_amount``（详见下方注释）。
+        拿不到实时价时，现价与盈亏一并显示 ``--``。
 
         :param container: 目标容器
         :param row: 表格行数据
@@ -742,8 +854,8 @@ def show_strategies_page() -> None:
         if not positions:
             _detail_empty(container, "暂无持仓")
             return
-        positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
-        negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
+        positive_color: str = theme.var("positive")
+        negative_color: str = theme.var("negative")
         with container:
             # 表头（原型样式：深色背景 + 底部边框）
             with ui.row().classes("w-full items-center").style(
@@ -754,45 +866,79 @@ def show_strategies_page() -> None:
                     align: str = "text-align: right;" if hdr in ("成本价", "现价", "盈亏") else ""
                     ui.label(hdr).classes(
                         "text-xs font-semibold uppercase tracking-wider"
-                    ).style(f"color: #9ca3af; flex: 1; {align}")
-            # 数据行（字段: code/name/quantity/cost_price/current_price/profit_amount）
+                    ).style(f"color: var(--qs-muted); flex: 1; {align}")
+            # 数据行（可用字段: code/name/quantity/cost_price；current_price 见下）
+            #
+            # 盈亏口径（2026-09-22 需求方明确）：百分率与金额都必须**用实时价与成本价
+            # 现算**，不得读 PositionItem 的 profit_rate / profit_amount。
+            # 这两个字段是**成交时点值**——买入时写入、持仓期间后端不参与计算、
+            # 直到卖出那一刻才重算。所以持仓期间读它，读到的是「买入时点的收益」，
+            # 恒为手续费口径的微亏，与当前浮动盈亏无关。
+            # 持仓期间唯一可用的事实是 cost_price 与 quantity（不随行情变），
+            # 收益必须由它们和实时价现推。另外本页「现价」列已用 market_api 的实时价，
+            # 若盈亏取快照，同一行会出现「现价是新的、盈亏是旧的」自相矛盾；
+            # 同源重算后恒有 收益率 × 成本价 × 数量 ≈ 收益额。
             codes: str = ",".join(str(p.get("code")) for p in positions if p.get("code", "") != "")
             rt_hq_list = AppContext().market_api.get_real_time(codes=codes)
-            price_dict: dict[str, float] = {
-                str(hq.get("code")): float(hq.get("price") or hq.get("close") or 0)
-                for hq in rt_hq_list
-                if hq.get("code")
-            }
+            price_dict: dict[str, float] = {}
+            for hq in rt_hq_list:
+                code_key: str = str(hq.get("code", "") or "")
+                px: float = float(hq.get("price") or hq.get("close") or 0)
+                # 只认正价：返回 0 / 空值时按「没有实时价」处理，不能当成跌到 0
+                if code_key and px > 0:
+                    price_dict[code_key] = px
             for idx, pos in enumerate(positions):
                 code: str = pos.get("code", "")
                 quantity: int = int(float(pos.get("quantity", 0) or 0))
                 cost_price: float = float(pos.get("cost_price", 0.0) or 0.0)
-                current_price: float = float(price_dict.get(code, pos.get("current_price", 0.0)) or 0.0)
-                profit_amount: float = (current_price - cost_price) * quantity
-                bg: str = input_bg if idx % 2 == 0 else "#151c29"
-                profit_text: str = f"{profit_amount:+,.0f}"
-                profit_color: str = positive_color if profit_amount >= 0 else negative_color
+                # 实时价缺失（停牌 / 行情接口失败 / 代码不在返回里）时，现价与盈亏一并显示
+                # "--"：持仓期内 cost_price 与 quantity 是唯一可用的事实，收益必须由它们
+                # 现推，没有实时价就算不出来。此时**不能**回退 PositionItem.current_price
+                # ——它与 profit_* 同属成交时点写入，大概率是买入时的价；拿它算出来的数字
+                # 看着像实时、其实是建仓当刻的收益，正是本次要避免的误导。
+                current_price: float = float(price_dict.get(code, 0.0) or 0.0)
+                if current_price > 0.0:
+                    profit_amount: float = (current_price - cost_price) * quantity
+                    # 成本价为 0 时收益率无定义（除零），退化为 0.00% 而不是抛异常
+                    profit_rate: float = (
+                        0.0 if cost_price == 0.0
+                        else (current_price - cost_price) / cost_price * 100
+                    )
+                    # 展示「收益率(收益额)」，形如 +10.00%(2000.00)：正负号由百分率承担，
+                    # 金额只给绝对值 + 两位小数（需求方 2026-09-22 确认的格式）。
+                    profit_text: str = f"{profit_rate:+.2f}%({abs(profit_amount):.2f})"
+                    profit_color: str = positive_color if profit_amount >= 0 else negative_color
+                    price_text: str = f"{current_price:.2f}"
+                    price_color: str = "var(--qs-label)"
+                else:
+                    profit_text = "--"
+                    profit_color = "var(--qs-faint)"
+                    price_text = "--"
+                    price_color = "var(--qs-faint)"
+                bg: str = input_bg if idx % 2 == 0 else "var(--qs-row-alt-2)"
                 with ui.row().classes("w-full items-center").style(
                     f"padding: 12px 24px; background-color: {bg}; "
-                    "border-bottom: 1px solid rgba(45,55,72,0.6);"
+                    "border-bottom: 1px solid var(--qs-divider-strong);"
                 ):
                     ui.label(str(pos.get("code", "-"))).classes("text-sm font-medium").style(
                         f"color: {font_color}; flex: 1;"
                     )
                     ui.label(str(pos.get("name", "-"))).classes("text-sm").style(
-                        "color: #d1d5db; flex: 1;"
+                        "color: var(--qs-label); flex: 1;"
                     )
                     ui.label(str(quantity)).classes("text-sm").style(
-                        "color: #d1d5db; flex: 1;"
+                        "color: var(--qs-label); flex: 1;"
                     )
                     ui.label(f"{cost_price:.2f}").classes("text-sm").style(
-                        "color: #d1d5db; flex: 1; text-align: right;"
+                        "color: var(--qs-label); flex: 1; text-align: right;"
                     )
-                    ui.label(f"{current_price:.2f}").classes("text-sm").style(
-                        "color: #d1d5db; flex: 1; text-align: right;"
+                    ui.label(price_text).classes("text-sm").style(
+                        f"color: {price_color}; flex: 1; text-align: right;"
                     )
+                    # nowrap：加了「率(额)」后文案近乎翻倍，flex 列在窄屏下会被折行，
+                    # 「+10.00%(2000.00)」断成两行很难读
                     ui.label(profit_text).classes("text-sm font-medium").style(
-                        f"color: {profit_color}; flex: 1; text-align: right;"
+                        f"color: {profit_color}; flex: 1; text-align: right; white-space: nowrap;"
                     )
 
     def _stock_name_map(codes: list[str]) -> dict[str, str]:
@@ -842,7 +988,7 @@ def show_strategies_page() -> None:
         orders: list[dict[str, Any]] = []
         try:
             orders = AppContext().order_api.get_latest(
-                row["us_id"], codes, action="买入"
+                row["us_id"], codes, action=""
             )
         except Exception:
             logger.warning("查询最新订单失败: %s", codes, exc_info=True)
@@ -852,8 +998,8 @@ def show_strategies_page() -> None:
         names: dict[str, str] = _stock_name_map(
             [str(o.get("stock_code", "")) for o in orders if o.get("stock_code")]
         )
-        positive_color: str = AppContext().theme_manager.get_current_theme().get("positive", "#f87171")
-        negative_color: str = AppContext().theme_manager.get_current_theme().get("negative", "#34d399")
+        positive_color: str = theme.var("positive")
+        negative_color: str = theme.var("negative")
         with container:
             with ui.row().classes("w-full items-center").style(
                 f"background-color: {card_bg}; border-bottom: 1px solid {border_color}; "
@@ -863,7 +1009,7 @@ def show_strategies_page() -> None:
                     align: str = "text-align: right;" if hdr in ("数量", "价格", "成交额") else ""
                     ui.label(hdr).classes(
                         "text-xs font-semibold uppercase tracking-wider"
-                    ).style(f"color: #9ca3af; flex: 1; {align}")
+                    ).style(f"color: var(--qs-muted); flex: 1; {align}")
             for idx, order in enumerate(orders):
                 action: str = str(order.get("action", ""))
                 code: str = str(order.get("stock_code", ""))
@@ -871,17 +1017,17 @@ def show_strategies_page() -> None:
                 quantity: int = int(float(order.get("entrust_quantity", 0) or 0))
                 trade_qty: int = int(float(order.get("trade_quantity", 0) or 0))
                 amount: float = price * trade_qty
-                bg: str = input_bg if idx % 2 == 0 else "#151c29"
+                bg: str = input_bg if idx % 2 == 0 else "var(--qs-row-alt-2)"
                 action_color: str = positive_color if action == "买入" else (
                     negative_color if action == "卖出" else font_color
                 )
                 display_name: str = f"{code} {names.get(code, '')}".strip() or "-"
                 with ui.row().classes("w-full items-center").style(
                     f"padding: 12px 24px; background-color: {bg}; "
-                    "border-bottom: 1px solid rgba(45,55,72,0.6);"
+                    "border-bottom: 1px solid var(--qs-divider-strong);"
                 ):
                     ui.label(str(order.get("create_time", ""))[:16]).classes("text-sm").style(
-                        "color: #d1d5db; flex: 1;"
+                        "color: var(--qs-label); flex: 1;"
                     )
                     ui.label(display_name).classes("text-sm").style(
                         f"color: {font_color}; flex: 1;"
@@ -916,27 +1062,111 @@ def show_strategies_page() -> None:
             _detail_empty(container, "暂无日志")
             return
         level_colors: dict[str, str] = {
-            "ERROR": "#f87171", "WARNING": "#fbbf24", "INFO": "#9ca3af",
+            "ERROR": "var(--qs-positive)", "WARNING": "var(--qs-accent)", "INFO": "var(--qs-muted)",
         }
         with container, ui.scroll_area().classes("w-full").style("max-height: 240px;"):
             for log_item in logs:
                     level: str = str(log_item.get("level", "INFO")).upper()
-                    line_color: str = level_colors.get(level, "#9ca3af")
+                    line_color: str = level_colors.get(level, "var(--qs-muted)")
                     log_line: str = (
                         f"{str(log_item.get('create_time', ''))[:19]} "
                         f"[{level}] {log_item.get('log_content', '')!s}"
                     ).strip()
                     ui.label(log_line).classes("text-sm").style(
                         f"color: {line_color}; word-break: break-all; "
-                        "padding: 6px 24px; border-bottom: 1px solid rgba(30,41,59,0.8);"
+                        "padding: 6px 24px; border-bottom: 1px solid var(--qs-divider-strong);"
                     )
     # ---- 创建策略对话框 ----
+
+    def _strategy_card_style(
+        picked: bool,
+        *,
+        width: str = "240px",
+        clickable: bool = True,
+        stretch: bool = False,
+    ) -> str:
+        """策略卡片的内联样式；选中态改变边框、底色与描边。
+
+        用 ``style(replace=...)`` 整体替换而不是追加，避免反复切换时内联样式越拼越长。
+
+        :param picked: 是否选中
+        :param width: 卡片宽度（创建对话框的横向列表用 240px）
+        :param clickable: 是否可点击（决定鼠标手型）
+        :param stretch: 是否横向撑满父容器（编辑对话框的单张只读卡片用）。
+            这里刻意不用 ``width: 100%``：卡片父级是 nicegui 的 flex 纵向容器
+            （``align-items: flex-start``），且在 ``ui.scroll_area`` 的内容层内，
+            百分比宽度既要跟父宽推导、又容易比可用宽度大 1~2px 而多出横向滚动条。
+            ``align-self: stretch`` 直接取容器内容盒宽度，精确且与内边距无关。
+        :return: CSS 样式串
+        """
+        border: str = primary_color if picked else border_color
+        bg: str = "rgba(var(--qs-primary-strong-rgb), 0.14)" if picked else input_bg
+        shadow: str = f"0 0 0 3px {primary_glow}" if picked else "none"
+        sizing: str = "align-self: stretch; width: auto;" if stretch else f"width: {width};"
+        return (
+            f"flex: 0 0 auto; {sizing} min-height: 158px; "
+            f"cursor: {'pointer' if clickable else 'default'}; "
+            "border-radius: 10px; padding: 14px 16px; transition: all 0.15s; "
+            f"background-color: {bg}; border: 2px solid {border}; "
+            f"box-shadow: {shadow};"
+        )
+
+    def _build_strategy_card(
+        tpl: dict[str, Any],
+        *,
+        picked: bool,
+        on_pick: Callable[[str], None] | None = None,
+        width: str = "240px",
+        stretch: bool = False,
+    ) -> tuple[ui.card, ui.checkbox]:
+        """渲染一张策略模板卡片（左上角勾选框 / 右上角类型徽标 / 名称 / 描述三行省略）。
+
+        :param tpl: 策略模板对象（name / strategy_type / description）
+        :param picked: 初始是否选中
+        :param on_pick: 点击回调（入参为模板名）；None 表示只读展示（不注册点击、鼠标不改手型）
+        :param width: 卡片宽度（stretch=True 时忽略）
+        :param stretch: 是否横向撑满父容器（编辑对话框的单张只读卡片用）
+        :return: (卡片元素, 勾选框元素) —— 供调用方就地切换选中态
+        """
+        tpl_name: str = str(tpl.get("name", ""))
+        tpl_type: str = str(tpl.get("strategy_type", "") or "-")
+        tpl_desc: str = str(tpl.get("description", "") or "暂无描述")
+        card: ui.card = ui.card().classes("gap-0").style(
+            replace=_strategy_card_style(
+                picked, width=width, clickable=on_pick is not None, stretch=stretch
+            )
+        )
+        if on_pick is not None:
+            card.on("click", lambda _n=tpl_name: on_pick(_n))
+        with card:
+            # 左上角勾选框：pointer-events:none 让点击穿透到卡片，
+            # 由卡片统一处理选中，避免勾选框与卡片各触发一次而互相抵消
+            with ui.row().classes("w-full items-center").style("margin-bottom: 10px;"):
+                check: ui.checkbox = (
+                    ui.checkbox(value=picked).props("dense").style("pointer-events: none;")
+                )
+                ui.space()
+                ui.label(tpl_type).classes("text-xs font-medium rounded px-2 py-0.5").style(
+                    "color: var(--qs-info); background-color: rgba(var(--qs-primary-rgb), 0.2);"
+                )
+            # 名称/描述都占满卡片宽度：否则在 flex 列里会收缩到内容宽度，
+            # -webkit-line-clamp 的多行省略也会失效
+            ui.label(tpl_name).classes("w-full text-sm font-bold").style(f"color: {font_color};")
+            ui.label(tpl_desc).classes("w-full text-xs").style(
+                f"color: {muted_color}; margin-top: 6px; "
+                "display: -webkit-box; -webkit-line-clamp: 3; "
+                "-webkit-box-orient: vertical; overflow: hidden; word-break: break-all;"
+            )
+        return card, check
 
     def _open_create_strategy_dialog(on_saved: Callable[[], None]) -> None:
         """打开创建策略对话框。
 
-        左栏（2/3）：策略选择 + 筛选条件 + 回测参数
-        右栏（1/3）：热门板块股票列表
+        内容：「策略」标签页为 策略模板卡片选择 + 自定义名称 + 股票池 / 初始资金 /
+        最大持仓数 + 「立即运行」开关；「参数」标签页为所选模板的运行参数。
+
+        「立即运行」默认勾选：勾选时以 status=running 创建（创建完成即开始运行），
+        取消勾选则以 status=stopped 创建。
 
         :param on_saved: 保存成功后的回调（用于刷新表格）
         """
@@ -961,12 +1191,13 @@ def show_strategies_page() -> None:
         }
         field_label_style = f"font-size: 0.875rem; font-weight: 500; color: {field_label_color};"
         input_style = f"flex: 1; background-color: {input_bg}; color: {font_color}; width: 100%;"
-        with ui.dialog() as dialog, ui.card().classes("w-[600px] max-w-[95vw] gap-0").style(
+        with ui.dialog() as dialog, ui.card().classes("w-[760px] max-w-[95vw] gap-0").style(
                 f"background-color: {card_bg}; border: 1px solid {border_color}; "
                 f"border-radius: 12px; padding: 0; "
-                f"display: flex; flex-direction: column; "
-                f"min-height: min(calc(100vh - {_DIALOG_VIEWPORT_MARGIN_PX}px), "
-                f"{_DIALOG_MIN_HEIGHT_PX}px);"
+                f"display: flex; flex-direction: column; overflow: hidden; "
+                # 定高（见 _dialog_card_height）：内容区（滚动条）的高度由
+                # .strategy-dialog-panels 的 flex 链从卡片高度里分配，不依赖手算常量。
+                f"height: {_dialog_card_height()};"
             ):
                 # ---- 头部 ----
                 with ui.row().classes("w-full items-center justify-between").style(
@@ -979,12 +1210,10 @@ def show_strategies_page() -> None:
                 with ui.tabs().classes("w-full strategy-dialog-tabs").props("dense") as dialog_tabs:
                     ui.tab("策略").classes("text-sm")
                     ui.tab("参数").classes("text-sm")
-                with ui.tab_panels(dialog_tabs, value="策略").classes("w-full flex-1").style(f"background-color: {card_bg};"):
+                with ui.tab_panels(dialog_tabs, value="策略").classes("w-full flex-1 strategy-dialog-panels").style(f"background-color: {card_bg};"):
                     # ---- 策略 tab：策略选择 + 股票池 配置 ----
                     with ui.tab_panel("策略").classes("p-0"):  # noqa: SIM117
-                        with ui.scroll_area().classes("w-full").style(
-                            f"max-height: min(calc(100vh - {_DIALOG_CHROME_PX}px), 560px);"
-                        ):
+                        with ui.scroll_area().classes("w-full"):
                             with ui.column().classes("w-full gap-0"):
                                 def _section(title: str) -> None:
                                     """渲染对话框内的小节标题。"""
@@ -993,40 +1222,54 @@ def show_strategies_page() -> None:
                                     ):
                                         ui.label(title).classes("text-lg font-bold").style(f"flex: 1; color: {title_color};")
 
-                                # ---- STEP 01：策略选择 ----
+                                # ---- STEP 01：策略选择（卡片横向滑动 + 左上角勾选） ----
                                 _section("策略选择")
-                                strategy_name_options: list[str] = list(strategy_name_map.keys())
+                                strategy_templates: list[dict[str, Any]] = [
+                                    tpl for tpl in strategy_name_map.values() if tpl
+                                ]
+                                # 当前选中的策略模板名（"" 表示尚未勾选）
+                                selected_state: dict[str, str] = {"name": ""}
+                                # {模板名: {"card": 卡片元素, "check": 勾选框}}，用于切换选中态时就地改样式
+                                card_refs: dict[str, dict[str, Any]] = {}
 
-                                def _on_strategy_select(e: Any) -> None:
-                                    """选中策略后刷新类型与描述标签，并重新渲染参数页。"""
-                                    val: Any = e.value if hasattr(e, "value") else ""
-                                    tpl = strategy_name_map.get(str(val), {})
-                                    type_detail_label.set_text(
-                                        str(tpl.get("strategy_type", "-") or "-")
-                                    )
-                                    desc_detail_label.set_text(
-                                        str(tpl.get("description", "暂无描述") or "暂无描述")
-                                    )
+                                def _apply_card_selection(tpl_name: str) -> None:
+                                    """勾选某张策略卡片：刷新全部卡片选中态并重渲染参数页。
+
+                                    刻意**不**整块重渲染——重渲染会把横向滚动位置重置到最左，
+                                    勾选靠右的卡片时列表会明显跳动。这里只改样式与勾选值。
+                                    """
+                                    selected_state["name"] = tpl_name
+                                    for name, ref in card_refs.items():
+                                        picked: bool = (name == tpl_name)
+                                        # style(replace=...) 会整体替换内联样式（非追加），
+                                        # 因此反复切换不会残留上一次的边框色
+                                        ref["card"].style(replace=_strategy_card_style(picked))
+                                        ref["check"].set_value(picked)
+                                    # 参数页跟随所选模板刷新（仅在 param_state 已创建后才有交互）
                                     if "params" in param_state:
                                         _render_params_panel()
 
-                                with ui.row().classes("w-full gap-1 items-center").style("padding: 8px 24px 0;"):
-                                    ui.label("* 策略名称").classes("w-[20%] text-xs").style(
-                                        field_label_style,
-                                    )
-                                    strategy_name_select: ui.select = (
-                                        ui.select(
-                                            options=strategy_name_options,
-                                            value=(
-                                                strategy_name_options[0]
-                                                if strategy_name_options else None
-                                            ),
-                                            on_change=_on_strategy_select,
+                                with ui.row().classes("w-full").style(
+                                    # 显式定宽 + nowrap + overflow-x:auto → 卡片左右滑动
+                                    # （宽度不能交给父容器推导，原因见 _card_row_width）
+                                    f"width: {_card_row_width()}; flex-wrap: nowrap; "
+                                    "overflow-x: auto; overflow-y: hidden; "
+                                    "gap: 16px; padding: 8px 24px 16px; align-items: stretch;"
+                                ):
+                                    if not strategy_templates:
+                                        ui.label("暂无可用策略模板").classes("text-sm").style(
+                                            f"color: {muted_color}; padding: 12px 0;"
                                         )
-                                        .props("outlined dense").style(
-                                            "flex: 1; min-width: 100px; border-bottom: 1px solid {border_color}"
+                                    for _tpl in strategy_templates:
+                                        # 卡片结构/样式见 _build_strategy_card（两个对话框共用）
+                                        _card, _check = _build_strategy_card(
+                                            _tpl,
+                                            picked=False,
+                                            on_pick=_apply_card_selection,
                                         )
-                                    )
+                                        card_refs[str(_tpl.get("name", ""))] = {
+                                            "card": _card, "check": _check,
+                                        }
 
                                 # 自定义名称（user_strategy.name，必填，列表按此名称展示）
                                 with ui.row().classes("w-full gap-1 items-center").style("padding: 8px 24px 0;"):
@@ -1039,35 +1282,6 @@ def show_strategies_page() -> None:
                                         .props("outlined dense")
                                         .style(input_style)
                                     )
-
-                                # 选中后显示策略类型和描述（只读）
-                                with ui.column().classes("w-full gap-3").style("padding: 8px 24px 0; margin-top: 10px"):
-                                    with ui.row().classes("w-full gap-1 items-center"):
-                                        ui.label("策略类型").classes("w-[20%] text-xs").style(
-                                            field_label_style,
-                                        )
-                                        first_tpl = strategy_name_map.get(
-                                            strategy_name_options[0], {}
-                                        ) if strategy_name_options else {}
-                                        type_detail_label = ui.label(
-                                            str(first_tpl.get("strategy_type", "-") or "-")
-                                        ).classes("text-sm").style(
-                                            f"color: {font_color}; padding: 8px 12px; "
-                                            "border-radius: 6px; "
-                                        )
-                                    with ui.row().classes("w-full gap-1 items-center"):
-                                        ui.label("策略描述").classes("w-[20%] text-xs").style(
-                                            field_label_style,
-                                        )
-                                        desc_detail_label = ui.label(
-                                            str(
-                                                first_tpl.get("description", "暂无描述")
-                                                or "暂无描述"
-                                            )
-                                        ).classes("text-sm").style(
-                                            f"color: {font_color}; padding: 8px 12px; "
-                                            "border-radius: 6px; word-break: break-all;"
-                                        )
 
                                 _section("股票池")
                                 pool_name_options: list[str] = list(pool_name_map.keys())
@@ -1105,6 +1319,21 @@ def show_strategies_page() -> None:
                                             value=4, format="%d",
                                         ).classes("w-[30%]").props("outlined dense").style(input_style)
 
+                                    # 创建后是否立即运行：默认勾选 → status=running；
+                                    # 取消勾选 → status=stopped（保存时决定，见 _save）
+                                    with ui.row().classes("w-full gap-1 items-center"):
+                                        ui.label("运行状态").classes("w-[20%] text-xs").style(
+                                            field_label_style,
+                                        )
+                                        run_now_checkbox: ui.checkbox = (
+                                            ui.checkbox("立即运行", value=True)
+                                            .classes("text-sm")
+                                            .style(f"color: {font_color};")
+                                        )
+                                        ui.label("勾选后创建完成即开始运行").classes(
+                                            "text-xs"
+                                        ).style(f"color: {muted_color};")
+
                     # ---- 参数 tab：策略运行参数（高度随参数数量自适应）----
                     with ui.tab_panel("参数").classes("p-0"):
                         params_tab_container: ui.column = (
@@ -1115,18 +1344,26 @@ def show_strategies_page() -> None:
                 param_state: dict[str, Any] = {"collector": {}, "params": {}}
 
                 def _render_params_panel() -> None:
-                    """根据当前选中策略重新渲染参数页（参数区高度随参数数量自适应）。"""
+                    """根据当前勾选的策略模板重新渲染参数页（参数区高度随参数数量自适应）。"""
                     params_tab_container.clear()
-                    current_name: str = str(strategy_name_select.value or "")
+                    current_name: str = str(selected_state.get("name", "") or "")
+                    # 尚未勾选任何卡片：给出引导，而不是让参数页显示成"该策略暂无参数配置"
+                    if not current_name:
+                        with params_tab_container, ui.column().classes(
+                            "w-full items-center justify-center"
+                        ).style("padding: 56px 24px;"):
+                            ui.icon("touch_app").style(f"color: {muted_color}; font-size: 40px;")
+                            ui.label("请先在「策略」标签页勾选一个策略模板").classes(
+                                "text-sm"
+                            ).style(f"color: {muted_color}; margin-top: 10px;")
+                        param_state["collector"] = {}
+                        param_state["params"] = {}
+                        return
                     tpl = strategy_name_map.get(current_name, {})
                     params: dict[str, Any] = tpl.get("default_params", {}) or {}
                     param_state["params"] = params
                     with params_tab_container:  # noqa: SIM117
-                        # 参数少 → 高度即内容高度，所有参数直接可见；
-                        # 参数多 → 上限为视口剩余高度，仅超出部分需要滚动
-                        with ui.scroll_area().classes("w-full").style(
-                            f"max-height: {_params_area_max_height(params)};"
-                        ):
+                        with ui.scroll_area().classes("w-full"):
                             params_container: ui.column = (
                                 ui.column().classes("w-full gap-0").style("padding: 16px 24px;")
                             )
@@ -1148,9 +1385,10 @@ def show_strategies_page() -> None:
 
                     def _save() -> None:
                         """保存策略：创建用户关联（策略模板已存在）。"""
-                        name_value: str = str(strategy_name_select.value or "").strip()
+                        # 策略模板来自卡片勾选（左上角勾选框），不再是下拉框
+                        name_value: str = str(selected_state.get("name", "") or "").strip()
                         if not name_value:
-                            ui.notify("请选择策略名称", type="warning")
+                            ui.notify("请点击卡片左上角勾选策略模板", type="warning")
                             return
                         custom_name: str = str(custom_name_input.value or "").strip()
                         if not custom_name:
@@ -1170,12 +1408,17 @@ def show_strategies_page() -> None:
                         if capital_input and capital_input.value and capital_input.value <= 0.0:
                             ui.notify("请输入初始模拟资金")
                             return
-                        
+
+                        # 「立即运行」勾选 → 创建即为运行中；取消勾选 → 创建为已停止
+                        create_status: str = (
+                            "running" if run_now_checkbox.value else "stopped"
+                        )
+
                         try:
                             result = AppContext().user_strategy_api.create(
                                 strategy_id=strategy_id,
                                 pool_id=pool_id,
-                                status="stopped",
+                                status=create_status,
                                 initial_amount=float(capital_input.value or 0.0),
                                 max_stock_count=int(max_stock_count_input.value or 0),
                                 strategy_params=_collect_params(
@@ -1184,6 +1427,13 @@ def show_strategies_page() -> None:
                                 name=custom_name,
                             )
                             user_strategy_id = result.get("_id", result.get("id", ""))
+                            # 仅在后端**没回填**该字段时兜底：后端若已经给出状态
+                            # （例如启动失败被判为 error），不能拿本次选择覆盖它。
+                            if not str(result.get("status", "") or "").strip():
+                                result["status"] = create_status
+                            if create_status == "running" and not result.get("update_time"):
+                                # 监控页的「已运行」以 update_time 起算，就地补一个现在时刻
+                                result["update_time"] = cur_date_time_str()
                             UserStrategyManager().update_user_strategy(user_strategy_id, result)
                         except httpx.HTTPStatusError as exc:
                             if exc.response.status_code == 409:
@@ -1197,13 +1447,18 @@ def show_strategies_page() -> None:
                             ui.notify(f"创建策略失败: {exc}", type="negative")
                             return
                         dialog.close()
-                        ui.notify("创建成功", type="positive")
+                        ui.notify(
+                            "创建成功，策略已开始运行"
+                            if create_status == "running"
+                            else "创建成功",
+                            type="positive",
+                        )
                         on_saved()
 
                     ui.button("保存", on_click=_save).props("unelevated no-caps").classes(
                         "text-sm font-medium"
                     ).style(
-                        f"background-color: {primary_color}; color: #ffffff; "
+                        f"background-color: {primary_color}; color: var(--qs-on-accent); "
                         "border-radius: 8px; padding: 8px 20px;"
                     )
 
@@ -1212,9 +1467,12 @@ def show_strategies_page() -> None:
     # ---- 编辑策略对话框 ----
 
     def _open_edit_strategy_dialog(row: dict[str, Any], on_saved: Callable[[], None]) -> None:
-        """打开编辑策略对话框：可选择股票池、修改初始资金与最大持仓数量。
+        """打开编辑策略对话框：可修改自定义名称、股票池、初始资金、最大持仓数量与运行状态。
 
-        :param row: 表格行数据（含 us_id/pool_id/initial_amount/max_stock_count）
+        运行状态可在此直接切换（等价于监控卡片上的启动/暂停/停止），保存后落库并
+        同步会话缓存。
+
+        :param row: 表格行数据（含 us_id/pool_id/initial_amount/max_stock_count/status）
         :param on_saved: 保存成功后的回调（用于刷新表格）
         """
         field_label_style = f"font-size: 0.875rem; font-weight: 500; color: {field_label_color};"
@@ -1240,26 +1498,48 @@ def show_strategies_page() -> None:
                 current_pool_name = pname
                 break
 
-        # 加载策略模板的默认参数与已保存的参数
+        # 运行状态下拉选项：默认选中当前状态。当前状态不在可选集合里时
+        # （例如后端判定的「异常」）临时补进选项 —— ui.select 的 value 若不在
+        # options 中会显示成空白，用户一保存就会把状态改成别的值。
+        current_status: str = str(row.get("status", "") or "stopped")
+        status_options: dict[str, str] = dict(_EDITABLE_STATUS_TEXTS)
+        if current_status not in status_options:
+            status_options[current_status] = _STATUS_STYLES.get(
+                current_status, (current_status,)
+            )[0]
+
+        # 加载策略模板的默认参数与已保存的参数（模板走进程级缓存，避免重复请求）
+        tpl: dict[str, Any] = {}
         default_params: dict[str, Any] = {}
         try:
-            tpl: dict[str, Any] = AppContext().strategy_api.get_by_id(row["sid"])
-            default_params = tpl.get("default_params", {}) or {}
+            tpl = AppContext().strategy_cache.get(row["sid"])
+            default_params = dict(tpl.get("default_params", {}) or {})
         except Exception:
             logger.warning("查询策略模板失败: %s", row["sid"], exc_info=True)
+        if not isinstance(tpl, dict):
+            tpl = {}
         saved_params: dict[str, Any] = row.get("strategy_params", {}) or {}
-
-        # 参数区高度随参数数量自适应：参数全部可见时无需滚动，过多时占满剩余视口后再滚动
-        params_max_h: str = _params_area_max_height(default_params)
+        # 顶部只读卡片的模板信息：模板查询失败时逐项回退行数据，
+        # 保证卡片仍有名称 / 类型 / 描述可展示（而不是变成空卡片）
+        card_tpl: dict[str, Any] = {
+            "name": str(tpl.get("name", "") or row.get("name", "") or row.get("sid", "")),
+            "strategy_type": str(tpl.get("strategy_type", "") or row.get("stype", "") or "-"),
+            "description": str(
+                tpl.get("description", "") or row.get("description", "") or "暂无描述"
+            ),
+        }
 
         dialog = ui.dialog()
         with dialog:
-            card = ui.card().classes("w-[600px] max-w-[95vw] gap-0").style(
+            # 宽度与创建对话框一致（w-[760px]，见 _DIALOG_WIDTH_PX）：
+            # 两个对话框等高同宽，避免编辑框出现"又窄又高"的失衡观感
+            card = ui.card().classes("w-[760px] max-w-[95vw] gap-0").style(
                 f"background-color: {card_bg}; border: 1px solid {border_color}; "
                 f"border-radius: 12px; padding: 0; "
-                f"display: flex; flex-direction: column; "
-                f"min-height: min(calc(100vh - {_DIALOG_VIEWPORT_MARGIN_PX}px), "
-                f"{_DIALOG_MIN_HEIGHT_PX}px);"
+                f"display: flex; flex-direction: column; overflow: hidden; "
+                # 与创建对话框同一策略：定高，内容区滚动条高度由 flex 链分配
+                # （见 _dialog_card_height / .strategy-dialog-panels）。
+                f"height: {_dialog_card_height()};"
             )
             with card:
                 # ---- 头部 ----
@@ -1277,13 +1557,23 @@ def show_strategies_page() -> None:
                 with ui.tabs().classes("w-full strategy-dialog-tabs").props("dense") as edit_tabs:
                     ui.tab("策略").classes("text-sm")
                     ui.tab("参数").classes("text-sm")
-                with ui.tab_panels(edit_tabs, value="策略").classes("w-full flex-1").style(f"background-color: {card_bg};"):
+                with ui.tab_panels(edit_tabs, value="策略").classes("w-full flex-1 strategy-dialog-panels").style(f"background-color: {card_bg};"):
                     # ---- 策略 tab：股票池 + 资金配置 ----
                     with ui.tab_panel("策略").classes("p-0"):  # noqa: SIM117
-                        with ui.scroll_area().classes("w-full").style(
-                            f"max-height: min(calc(100vh - {_DIALOG_CHROME_PX}px), 360px);"
-                        ):
+                        with ui.scroll_area().classes("w-full"):
                             with ui.column().classes("w-full gap-3").style("padding: 20px 24px;"):
+                                # ---- 当前关联的策略模板（只展示这一张，选中态；编辑时不可更换）----
+                                # 卡片与创建对话框同款（见 _build_strategy_card），此处只读：
+                                # 不注册点击、鼠标保持默认光标，避免用户误以为能换模板
+                                with ui.row().classes("w-full items-center gap-2"):
+                                    ui.label("策略模板").classes(
+                                        "text-base font-semibold"
+                                    ).style(f"color: {title_color};")
+                                    ui.label("（编辑时不可更换）").classes("text-xs").style(
+                                        f"color: {muted_color};"
+                                    )
+                                _build_strategy_card(card_tpl, picked=True, stretch=True)
+
                                 # 自定义名称（user_strategy.name，列表显示用）
                                 with ui.row().classes("w-full gap-1 items-center"):
                                     ui.label("* 自定义名称").classes("w-[20%] text-xs").style(
@@ -1330,12 +1620,24 @@ def show_strategies_page() -> None:
                                         value=int(row.get("max_stock_count", 0) or 0),
                                         format="%d",
                                     ).classes("w-[30%]").props("outlined dense").style(input_style)
+                                # 运行状态：在此直接切换（等价于监控卡片上的启动/暂停/停止）
+                                with ui.row().classes("w-full gap-1 items-center"):
+                                    ui.label("运行状态").classes("w-[20%] text-xs").style(
+                                        field_label_style,
+                                    )
+                                    status_select: ui.select = (
+                                        ui.select(options=status_options, value=current_status)
+                                        .classes("w-[30%]")
+                                        .props("outlined dense")
+                                        .style(input_style)
+                                    )
+                                    ui.label("保存后立即生效").classes("text-xs").style(
+                                        f"color: {muted_color};"
+                                    )
 
-                    # ---- 参数 tab：策略运行参数（高度随参数数量自适应）----
+                    # ---- 参数 tab：策略运行参数 ----
                     with ui.tab_panel("参数").classes("p-0"):  # noqa: SIM117
-                        with ui.scroll_area().classes("w-full").style(
-                            f"max-height: {params_max_h};"
-                        ):
+                        with ui.scroll_area().classes("w-full"):
                             params_container: ui.column = (
                                 ui.column().classes("w-full gap-0").style("padding: 16px 24px;")
                             )
@@ -1370,12 +1672,18 @@ def show_strategies_page() -> None:
                         pool_id: str = str(
                             pool_dao.get("_id", "") or pool_dao.get("id", "")
                         )
+                        # 目标状态：下拉框取不到值时保持原状态，绝不臆造
+                        new_status: str = str(
+                            status_select.value or current_status or "stopped"
+                        )
+                        status_changed: bool = new_status != current_status
                         try:
                             params = _collect_params(param_state.get("collector", {}))
                             AppContext().user_strategy_api.update(
                                 user_strategy_id=row["us_id"],
                                 name=custom_name,
                                 pool_id=pool_id,
+                                status=new_status,
                                 initial_amount=float(capital_input.value or 0.0),
                                 max_stock_count=int(max_stock_count_input.value or 0),
                                 strategy_params=params,
@@ -1383,22 +1691,52 @@ def show_strategies_page() -> None:
                             row["custom_name"] = custom_name
                             row["name"] = custom_name
                             row["pool_id"] = pool_id
+                            row["status"] = new_status
                             row["initial_amount"] = float(capital_input.value or 0.0)
                             row["max_stock_count"] = int(max_stock_count_input.value or 0)
                             row["strategy_params"] = params
-                            UserStrategyManager().update_user_strategy(row["us_id"], row)
+                            # ⚠ 只能把**业务字段**写回会话缓存，不能把 row 整份合并进去。
+                            # row 是「表格展示行」，含 total_profit="0.0%"（已格式化的字符串）、
+                            # profit_color、stype/_desc/_signal_* 等展示专用键；真实现的
+                            # update_user_strategy 是**浅合并**，整份写入会把缓存里的
+                            # total_profit(数值) 覆盖成字符串 "0.0%"，而 _load_rows() 下一次
+                            # 会 float("0.0%") ⇒ ValueError ⇒ 表格已 clear 但渲染中断，
+                            # 页面表现为「列表什么都不显示了」（监控页读同一份缓存，同样会炸）。
+                            cache_patch: dict[str, Any] = {
+                                "name": custom_name,
+                                "pool_id": pool_id,
+                                "status": new_status,
+                                "initial_amount": float(capital_input.value or 0.0),
+                                "max_stock_count": int(max_stock_count_input.value or 0),
+                                "strategy_params": params,
+                            }
+                            if status_changed:
+                                # 监控页的「已运行」以 user_strategy.update_time 起算。
+                                # 状态变更时一并就地刷新，卡片才能立刻从本次变更起算，
+                                # 不必等会话缓存 60s 节流后的重新拉取（与监控页启停同做法）。
+                                stamp: str = cur_date_time_str()
+                                row["update_time"] = stamp
+                                cache_patch["update_time"] = stamp
+                            UserStrategyManager().update_user_strategy(row["us_id"], cache_patch)
                         except Exception as exc:
                             logger.exception("编辑策略失败")
                             ui.notify(f"编辑策略失败: {exc}", type="negative")
                             return
                         dialog.close()
-                        ui.notify("保存成功", type="positive")
+                        if status_changed:
+                            ui.notify(
+                                f"保存成功，状态已切换为"
+                                f"「{status_options.get(new_status, new_status)}」",
+                                type="positive",
+                            )
+                        else:
+                            ui.notify("保存成功", type="positive")
                         on_saved()
 
                     ui.button("保存", on_click=_save).props("unelevated no-caps").classes(
                         "text-sm font-medium"
                     ).style(
-                        f"background-color: {primary_color}; color: #ffffff; "
+                        f"background-color: {primary_color}; color: var(--qs-on-accent); "
                         "border-radius: 8px; padding: 8px 20px;"
                     )
 

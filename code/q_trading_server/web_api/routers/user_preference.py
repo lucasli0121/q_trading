@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/user/preference", tags=["用户偏好"])
 
 
 @router.get("", response_model=ApiResponse[UserPreferenceResponse])
-async def get_preference(
+def get_preference(
     user_id: str = Depends(get_current_user),
 ):
     """查询当前用户的偏好设置，若未设置则返回默认值"""
@@ -51,7 +51,7 @@ async def get_preference(
     )
 
 @router.get("/{user_id}", response_model=ApiResponse[UserPreferenceResponse])
-async def get_preference_by_user(
+def get_preference_by_user(
     user_id: str,  admin_id = Depends(require_admin),
 ):
     """
@@ -84,7 +84,7 @@ async def get_preference_by_user(
 
 
 @router.put("", response_model=ApiResponse[UserPreferenceResponse])
-async def update_preference(
+def update_preference(
     req: UserPreferenceRequest,
     user_id: str = Depends(get_current_user),
 ):
