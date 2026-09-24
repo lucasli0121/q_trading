@@ -9,6 +9,7 @@ Description: 策略工作流测试 —— 覆盖策略加载、状态机、分�
 from __future__ import annotations
 
 import json
+import logging
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -620,12 +621,35 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._process_bar(state, "000001", {})
         submit.assert_not_called()
 
-    def test_process_bar_skip_reason_is_info_visible(self) -> None:
-        """买单被拦下时，原因必须进 INFO 日志 —— 否则「有信号、无订单」无从排查。
+    # ---- 配置级「限制买入」：max_stock_count=0 / initial_amount=0（2026-09-24 确认） ----
 
-        2026-09-24 线上就是如此：`max_stock_count=0`（按 `_parse_max_stock_count`
-        语义 = 不允许新建持仓）把该策略的买单全部拦掉，而这条日志原本是 DEBUG，
-        而 info.log 只收 INFO 及以上 ⇒ 运维侧完全看不到。
+    def test_buy_block_reason_matrix(self) -> None:
+        """`_buy_block_reason` 判定矩阵 —— 实盘两个处理入口共用的唯一真源。"""
+        state = make_state(cash=100000.0)
+        self.assertEqual(self.wf._buy_block_reason(state, {}), "")
+
+        state.max_stock_count = 0
+        self.assertIn("max_stock_count=0", self.wf._buy_block_reason(state, {}))
+
+        state.max_stock_count = -1
+        self.assertEqual(self.wf._buy_block_reason(state, {}), "")
+
+        state.initial_amount = 0.0
+        self.assertIn("initial_amount=0", self.wf._buy_block_reason(state, {}))
+
+        state.initial_amount = 100000.0
+        state.max_stock_count = 2
+        self.assertEqual(
+            self.wf._buy_block_reason(state, {"600519": {}, "000002": {}}),
+            "持仓数 2 已达上限 2",
+        )
+        self.assertEqual(self.wf._buy_block_reason(state, {"600519": {}}), "")
+
+    def test_max_stock_count_zero_blocks_buy_as_restriction(self) -> None:
+        """`max_stock_count=0` = 限制买入（不是「不限制」），原因必须进 INFO。
+
+        2026-09-24 线上就是如此：这条日志原本是 DEBUG，而 info.log 只收 INFO，
+        于是运维侧只能看到「有信号」、看不到「为什么没订单」。
         """
         instance = self._fake_instance("BUY")
         state = make_state(instance=instance)
@@ -639,9 +663,86 @@ class TestStrategyWorkflow(unittest.TestCase):
 
         submit.assert_not_called()
         self.assertTrue(
-            any("已达上限" in r.getMessage() for r in cm.records),
-            "阻断原因必须记 INFO（DEBUG 不进 info.log）",
+            any(
+                r.levelno == logging.INFO
+                and "跳过买入" in r.getMessage()
+                and "max_stock_count=0" in r.getMessage()
+                for r in cm.records
+            ),
+            "max_stock_count=0 拦下买单时必须能从 INFO 看到原因",
         )
+
+    def test_initial_amount_zero_blocks_buy_as_restriction(self) -> None:
+        """`initial_amount=0` 同样 = 限制买入，实时链路（_process_tick）也要拦。"""
+        instance = self._fake_instance("BUY")
+        state = make_state(cash=0.0, instance=instance)
+        self.wf._user_strategies["sid"] = [state]
+        self._patch_load_positions({})
+        submit = self._patch_submit()
+
+        with self.assertLogs("workflow.strategy_workflow", level="INFO") as cm:
+            self.wf._process_tick(state, "000001", {})
+
+        submit.assert_not_called()
+        self.assertTrue(
+            any(
+                r.levelno == logging.INFO and "initial_amount=0" in r.getMessage()
+                for r in cm.records
+            ),
+            "initial_amount=0 拦下买单时必须能从 INFO 看到原因",
+        )
+
+    def test_initial_amount_zero_still_allows_sell(self) -> None:
+        """「限制买入」只拦买入：卖出（清仓）不读这两个字段，必须放行。"""
+        instance = self._fake_instance("SELL")
+        state = make_state(cash=0.0, instance=instance)
+        self.wf._user_strategies["sid"] = [state]
+        self._patch_load_positions({"000001": {"cost_price": 10.0, "quantity": 100}})
+        submit = self._patch_submit()
+
+        self.wf._process_bar(state, "000001", {})
+
+        submit.assert_called_once()
+        self.assertEqual(submit.call_args.args[0].action, "卖出")
+
+    def test_max_stock_count_negative_means_unlimited(self) -> None:
+        """`-1` = 不限制持仓数量：持仓再多也应继续放行买单。"""
+        instance = self._fake_instance("BUY")
+        state = make_state(instance=instance)
+        state.max_stock_count = -1
+        self.wf._user_strategies["sid"] = [state]
+        self._patch_load_positions({f"60000{i}": {"quantity": 100} for i in range(6)})
+        submit = self._patch_submit()
+
+        self.wf._process_bar(state, "000001", {})
+
+        submit.assert_called_once()
+
+    def test_configured_zero_initial_amount_not_overridden_by_execution(self) -> None:
+        """配置 initial_amount=0（限制买入）不得被执行记录里的历史值洗白。"""
+        state = make_state(cash=0.0, status="stopped")
+        state.initial_amount_configured = True
+        self.wf._user_strategy_api.get_latest_execution.return_value = {
+            "initial_amount": 20000.0,
+        }
+
+        self.wf._load_execution_data(state)
+
+        self.assertEqual(state.initial_amount, 0.0)
+        self.assertNotEqual(self.wf._buy_block_reason(state, {}), "")
+
+    def test_missing_initial_amount_field_still_falls_back(self) -> None:
+        """字段缺失（而非显式 0）时仍用执行记录兜底，避免误伤缺字段的历史数据。"""
+        state = make_state(cash=0.0, status="stopped")
+        state.initial_amount_configured = False
+        self.wf._user_strategy_api.get_latest_execution.return_value = {
+            "initial_amount": 20000.0,
+        }
+
+        self.wf._load_execution_data(state)
+
+        self.assertEqual(state.initial_amount, 20000.0)
+        self.assertEqual(self.wf._buy_block_reason(state, {}), "")
 
     # ---- 订单创建与回滚 ----
 

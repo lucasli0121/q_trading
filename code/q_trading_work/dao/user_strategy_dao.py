@@ -39,6 +39,10 @@ class UserStrategyDao:
     strategy_params: dict  # 策略运行参数
     update_time: str # 更新状态的时间
     create_time: str  # 创建时间
+    # 服务端记录里是否带了 `initial_amount` 字段（含值为 0）。
+    # `0` 是有效语义（限制买入），必须与「字段缺失」区分：缺字段才允许用
+    # 历史执行记录里的值兜底，见 `StrategyWorkflow._load_execution_data`。
+    initial_amount_configured: bool = False
 
     def __init__(
         self,
@@ -54,6 +58,7 @@ class UserStrategyDao:
         strategy_params: dict = {},
         update_time: str = "",
         create_time: str = "",
+        initial_amount_configured: bool = False,
     ) -> None:
         """初始化用户策略关联对象
 
@@ -63,10 +68,11 @@ class UserStrategyDao:
         :param status: 策略状态
         :param user_id: 所属用户 ID
         :param pool_id: 关联股票池 ID
-        :param initial_amount: 初始金额
+        :param initial_amount: 初始金额（0 表示限制买入）
         :param strategy_params: 策略运行参数
         :param update_time: 更新状态时间
         :param create_time: 创建时间
+        :param initial_amount_configured: 服务端记录是否显式携带 initial_amount 字段
         """
         self.id = id
         self.name = name
@@ -80,6 +86,7 @@ class UserStrategyDao:
         self.strategy_params = strategy_params
         self.update_time = update_time
         self.create_time = create_time
+        self.initial_amount_configured = initial_amount_configured
 
     def from_db(self, data: dict[str, Any]) -> None:
         """从数据库记录填充对象字段
@@ -93,6 +100,8 @@ class UserStrategyDao:
         self.user_id = data.get("user_id", "")
         self.pool_id = data.get("pool_id", "")
         self.initial_amount = float(data.get("initial_amount", 0.0) or 0.0)
+        # 区分「显式配置 0」与「字段缺失」：前者是限制买入，后者才允许兜底
+        self.initial_amount_configured = data.get("initial_amount") is not None
         self.total_profit = float(data.get("total_profit", 0.0) or 0.0)
         self.max_stock_count = int(data.get("max_stock_count", 0) or 0)
         self.strategy_params = data.get("strategy_params", {})

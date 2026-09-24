@@ -57,20 +57,23 @@ class UserStrategyApi:
         :param strategy_id: 关联的全局策略 ID（StrategyDao._id）
         :param pool_id: 关联股票池 ID（可选）
         :param status: 策略状态，默认 stopped（可选值: running/stopped/paused）
-        :param initial_amount: 初始资金（元）
-        :param max_stock_count: 最大持仓数量，默认 0 表示不限制
+        :param initial_amount: 初始资金（元）；**0 表示限制买入**（不允许新建持仓/加仓）
+        :param max_stock_count: 最大持仓数量；**0 表示限制买入**（不允许新建持仓/加仓），
+            `-1` 表示不限制。默认 0
         :return: 包含 user_strategy 信息的字典
         """
+        # 2026-09-24 语义确认：`max_stock_count=0` 与 `initial_amount=0` 都是「限制买入」，
+        # 不是「不限制」。两者都显式下发（旧实现 `if initial_amount:` 会把 0 静默省略，
+        # 语义依赖服务端 default，含义不明确）。
         body: dict[str, Any] = {
             "strategy_id": strategy_id,
             "status": status,
             "total_profit": 0,
             "max_stock_count": max_stock_count,
+            "initial_amount": initial_amount,
         }
         if pool_id:
             body["pool_id"] = pool_id
-        if initial_amount:
-            body["initial_amount"] = initial_amount
         result: Any = self._client.post("/api/user_strategy/create", body)
         return dict(result)
 
@@ -124,8 +127,10 @@ class UserStrategyApi:
         :param user_strategy_id: 用户策略关联 ID
         :param pool_id: 关联股票池 ID（可选，None 表示不修改）
         :param status: 目标状态（可选，None 表示不修改）
-        :param initial_amount: 初始资金（可选，None 表示不修改）
-        :param max_stock_count: 最大持仓数量（可选，None 表示不修改）
+        :param initial_amount: 初始资金（可选，None 表示不修改）；
+            **0 表示限制买入**（不允许新建持仓/加仓）
+        :param max_stock_count: 最大持仓数量（可选，None 表示不修改）；
+            **0 表示限制买入**，`-1` 表示不限制
         :param total_profit: 累计盈利（可选，None 表示不修改）
         :return: 操作结果提示信息
         """

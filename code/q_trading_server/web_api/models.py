@@ -163,9 +163,13 @@ class UserStrategyCreateRequest(BaseModel):
     strategy_id: str = Field(..., description="全局策略 ID（StrategyDao 的 ID）")
     pool_id: str = Field(default="", description="关联股票池 ID")
     status: str = Field(default="stopped", description="策略状态: running(运行中) / stopped(已停止) / paused(已暂停)")
-    initial_amount: float = Field(default=0.0, description="初始金额")
+    initial_amount: float = Field(
+        default=0.0, description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）"
+    )
     total_profit: float = Field(default=0.0, description="总收益金额")
-    max_stock_count: int = Field(default=0, description="最大持仓数量")
+    max_stock_count: int = Field(
+        default=0, description="最大持仓数量；0 表示限制买入，-1 表示不限制"
+    )
     strategy_params: dict[str, Any] = Field(default_factory=dict, description="策略运行参数")
 
 
@@ -174,9 +178,13 @@ class UserStrategyUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, description="个人策略自定义名称")
     pool_id: Optional[str] = Field(default=None, description="关联股票池 ID")
     status: Optional[str] = Field(default=None, description="策略状态: running(运行中) / stopped(已停止) / paused(已暂停)")
-    initial_amount: Optional[float] = Field(default=None, description="初始金额")
+    initial_amount: Optional[float] = Field(
+        default=None, description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）"
+    )
     total_profit: Optional[float] = Field(default=None, description="总收益金额")
-    max_stock_count: Optional[int] = Field(default=None, description="最大持仓数量")
+    max_stock_count: Optional[int] = Field(
+        default=None, description="最大持仓数量；0 表示限制买入，-1 表示不限制"
+    )
     strategy_params: Optional[dict[str, Any]] = Field(default=None, description="策略运行参数")
 
 
@@ -188,9 +196,13 @@ class UserStrategyItem(BaseModel):
     status: str = Field(default="", description="策略状态")
     user_id: str = Field(default="", description="用户 ID")
     pool_id: str = Field(default="", description="关联股票池 ID")
-    initial_amount: float = Field(default=0.0, description="初始金额")
+    initial_amount: float = Field(
+        default=0.0, description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）"
+    )
     total_profit: float = Field(default=0.0, description="总收益金额")
-    max_stock_count: int = Field(default=0, description="最大持仓数量")
+    max_stock_count: int = Field(
+        default=0, description="最大持仓数量；0 表示限制买入，-1 表示不限制"
+    )
     strategy_params: dict[str, Any] = Field(default_factory=dict, description="策略运行参数")
     update_time: str = Field(default="", description="status 最近一次变更的时间")
     create_time: str = Field(default="", description="创建时间")

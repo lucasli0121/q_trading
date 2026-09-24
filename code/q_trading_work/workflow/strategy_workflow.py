@@ -65,6 +65,11 @@ class StrategyState:
     positions: dict[str, dict[str, Any]] = field(default_factory=dict)  # code -> 持仓信息
     load_error: str = ""  # 加载失败时的错误信息
     initial_amount: float = 0.0  # 初始资金（来自 UserStrategyDao.initial_amount）
+    # 用户策略是否显式配置了 `initial_amount`（值为 0 也算配置）。
+    # 配置 0 是有效语义 —— 表示限制买入（2026-09-24 语义确认）。
+    # True 时禁止用历史执行记录里的 initial_amount 覆盖，否则配置的 0 会被
+    # 旧记录里的正数「洗白」，限制失效（见 `_load_execution_data` / `_load_positions`）。
+    initial_amount_configured: bool = False
     current_profit: float = 0.0  # 已实现盈利（来自 StrategyExecutionDao.current_profit）
     max_stock_count: int = 4  # 最大持仓数量（来自 UserStrategyDao.max_stock_count）
     available_cash: float = 0.0  # 剩余可用资金（初始资金 + 已实现盈利 - 持仓成本）
@@ -417,11 +422,19 @@ class StrategyWorkflow(BaseWorkflow):
             )
             state.available_cash = self._calc_available_cash(state)
             return
-        # initial_amount 优先使用 UserStrategyDao 的值（已在 state 初始化时设置），
-        # 执行数据中的值仅作为兜底
+        # initial_amount 以用户策略配置为真源（已在 state 初始化时设置），
+        # 执行数据中的值只在「配置里没有该字段」时兜底。
+        # 配置为 0 表示限制买入（2026-09-24 语义确认），不能被历史记录里的正数覆盖。
         ia: float = float(exec_data.get("initial_amount", 0))
         if ia > 0 and state.initial_amount <= 0:
-            state.initial_amount = ia
+            if state.initial_amount_configured:
+                self.logger.info(
+                    "[%s] 策略配置 initial_amount=0（0 表示限制买入），"
+                    "忽略执行记录中的历史 initial_amount=%.2f",
+                    state.strategy_name, ia,
+                )
+            else:
+                state.initial_amount = ia
         state.current_profit = float(exec_data.get("current_profit", 0) or 0)
         positions_list: list[dict[str, Any]] = exec_data.get("positions", [])
         if positions_list:
@@ -804,10 +817,15 @@ class StrategyWorkflow(BaseWorkflow):
             pool_id: str = str(us_item.get("pool_id", ""))
             db_status: str = str(us_item.get("status", "stopped"))
             # 从 UserStrategyDao 读取初始资金和最大持仓数
-            # P0-6：不再用 `or 4` 兜底 —— `0` 是有效值（不允许持仓），
-            # 只有字段缺失/非法时才回退到默认 4；`-1` 表示不限制持仓数量。
+            # P0-6 + 2026-09-24 语义确认：`max_stock_count=0` 与 `initial_amount=0`
+            # 都表示**限制买入**（不允许新建持仓或加仓），`-1` 才是不限制持仓数量。
+            # 解析处不再用 `or 4` 兜底 —— 只有字段缺失/非法才回退默认 4。
             max_stocks: int = self._parse_max_stock_count(us_item.get("max_stock_count"))
-            initial_amt: float = float(us_item.get("initial_amount", 0) or 0)
+            raw_initial: Any = us_item.get("initial_amount")
+            initial_amt: float = float(raw_initial or 0)
+            # 「显式配置 0」与「字段缺失」必须区分：0 是限制买入的有效语义，
+            # 不能被历史执行记录里的值覆盖（见 _load_execution_data）。
+            initial_configured: bool = raw_initial is not None
 
             state = StrategyState(
                 strategy_id=us_sid,
@@ -819,8 +837,18 @@ class StrategyWorkflow(BaseWorkflow):
                 pool_id=pool_id,
                 status=db_status if db_status in ("running", "stopped", "paused") else "stopped",
                 initial_amount=initial_amt,
+                initial_amount_configured=initial_configured,
                 max_stock_count=max_stocks,
             )
+
+            # 配置级限制买入在加载期就提示一次：这类策略会持续产出信号但永不创建订单，
+            # 只在「跳过买入」那一刻记 INFO 的话，运维得先翻到那条行情才看得出来。
+            if max_stocks == 0 or initial_amt <= 0:
+                self.logger.info(
+                    "[%s] 该策略配置为限制买入（max_stock_count=%d, initial_amount=%.2f，"
+                    "均以 0 表示限制买入），不会创建买单；卖出不受影响",
+                    instance.strategy_name, max_stocks, initial_amt,
+                )
 
             # 解析股票池
             if pool_id:
@@ -979,7 +1007,9 @@ class StrategyWorkflow(BaseWorkflow):
             pool_id=pool_id,
             status=status if status in ("running", "stopped", "paused") else "stopped",
             initial_amount=user_strategy.initial_amount,
-            max_stock_count=user_strategy.max_stock_count,
+            initial_amount_configured=user_strategy.initial_amount_configured,
+            # 与 _load_user_strategy 走同一套解析：`0` = 限制买入，`-1` = 不限制持仓数量
+            max_stock_count=self._parse_max_stock_count(user_strategy.max_stock_count),
         )
 
         if pool_id:
@@ -1266,15 +1296,17 @@ class StrategyWorkflow(BaseWorkflow):
                             "[%s] code=%s 已有在途买入订单，跳过",
                             state.strategy_name, code,
                         )
-                    elif self._is_position_limit_reached(state, positions):
-                        self.logger.info(
-                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入"
-                            "（max_stock_count=0 表示不允许新建持仓）",
-                            state.strategy_name, code,
-                            len(positions), state.max_stock_count,
-                        )
                     else:
-                        reserved = self._reserve_buy_order(state, code, extra)
+                        # 配置级限制（max_stock_count=0 / initial_amount=0）与持仓数
+                        # 达上限都在这里统一给出原因，记 INFO 供运维直接定位
+                        block_reason: str = self._buy_block_reason(state, positions)
+                        if block_reason:
+                            self.logger.info(
+                                "[%s] code=%s 跳过买入：%s",
+                                state.strategy_name, code, block_reason,
+                            )
+                        else:
+                            reserved = self._reserve_buy_order(state, code, extra)
                 elif signal_type == "SELL":
                     if code not in positions:
                         self.logger.info(
@@ -1377,15 +1409,17 @@ class StrategyWorkflow(BaseWorkflow):
                         self.logger.info(
                             "[%s] code=%s 已有在途买入订单，跳过", state.strategy_name, code,
                         )
-                    elif self._is_position_limit_reached(state, positions):
-                        self.logger.info(
-                            "[%s] code=%s 持仓数 %d 已达上限 %d，跳过买入"
-                            "（max_stock_count=0 表示不允许新建持仓）",
-                            state.strategy_name, code,
-                            len(positions), state.max_stock_count,
-                        )
                     else:
-                        reserved = self._reserve_buy_order(state, code, extra)
+                        # 配置级限制（max_stock_count=0 / initial_amount=0）与持仓数
+                        # 达上限都在这里统一给出原因，记 INFO 供运维直接定位
+                        block_reason: str = self._buy_block_reason(state, positions)
+                        if block_reason:
+                            self.logger.info(
+                                "[%s] code=%s 跳过买入：%s",
+                                state.strategy_name, code, block_reason,
+                            )
+                        else:
+                            reserved = self._reserve_buy_order(state, code, extra)
                 elif signal_type == "SELL":
                     if code not in positions:
                         self.logger.info(
@@ -1972,7 +2006,11 @@ class StrategyWorkflow(BaseWorkflow):
             return 0
         available: float = state.available_cash
         if available <= 0:
-            self.logger.warning("[%s] 可用资金不足，无法买入", state.strategy_name)
+            self.logger.warning(
+                "[%s] 可用资金为 0，无法买入"
+                "（initial_amount=0 表示限制买入；建仓后资金耗尽属正常情况）",
+                state.strategy_name,
+            )
             return 0
         max_amount: float = min(available, self.MAX_SINGLE_ORDER_AMOUNT)
         quantity: int = int(max_amount / price / 100) * 100
@@ -1983,8 +2021,10 @@ class StrategyWorkflow(BaseWorkflow):
     def _parse_max_stock_count(self, raw: Any) -> int:
         """解析 `max_stock_count`（P0-6）。
 
-        语义：`-1`（或任何负数）= 不限制持仓数量；`0` = 不允许新建持仓；
-        正数 = 持仓上限。字段缺失或非法（None / "" / 非数字）时才回退默认 4。
+        语义（2026-09-24 最终确认）：`-1`（或任何负数）= 不限制持仓数量；
+        `0` = **限制买入**（不允许新建持仓，也不允许对已有持仓加仓）；正数 = 持仓上限。
+        字段缺失或非法（None / "" / 非数字）时才回退默认 4 —— `0` 是有效值，不再被
+        `or 4` 改写成 4。
 
         :param raw: 服务端/DAO 返回的原始值
         :return: 规范化后的最大持仓数量
@@ -1997,20 +2037,44 @@ class StrategyWorkflow(BaseWorkflow):
             self.logger.warning("max_stock_count 取值非法: %r，回退默认 4", raw)
             return 4
 
-    def _is_position_limit_reached(
+    def _buy_block_reason(
         self, state: StrategyState, positions: dict[str, dict[str, Any]]
-    ) -> bool:
-        """判断持仓数量是否已达上限（P0-6：`max_stock_count` 为 -1 表示不限制）。
+    ) -> str:
+        """返回禁止买入的原因文本；返回空字符串表示允许买入。
+
+        2026-09-24 语义确认（原 P0-6 争议项的最终结论）：
+        `max_stock_count = 0` 与 `initial_amount = 0` **都表示限制买入** —— 既不允许
+        新建持仓，也不允许对已有持仓加仓。卖出不受影响（卖出路径只依赖持仓，
+        不读这两个字段），因此「限制买入」的策略仍可正常清仓。
+
+        判定顺序（先命中先返回，原因文案要能直接回答「为什么有信号没订单」）：
+
+        1. `max_stock_count == 0` → 限制买入
+        2. `initial_amount <= 0` → 限制买入
+        3. `max_stock_count > 0` 且持仓数已达上限 → 已达上限
+        4. 其余 → 允许（`max_stock_count < 0` 时不限制持仓数量）
+
+        判定必须放在 `_process_bar` / `_process_tick` 的买入分支里，与其它跳过原因
+        一样记 INFO —— `cfg/log.yaml` 的 info.log 是 INFO 级，记 DEBUG 等于运维看不见。
 
         :param state: 用户策略运行时状态
         :param positions: 当前持仓（code → 持仓信息）
-        :return: True 表示已达上限，应跳过买入
+        :return: 禁止买入的原因；可买入时为空字符串
         """
         limit: int = int(state.max_stock_count or 0)
-        if limit < 0:
-            # -1（或任何负数）= 不限制持仓数量
-            return False
-        return len(positions) >= limit
+        if limit == 0:
+            return (
+                "策略配置 max_stock_count=0（0 表示限制买入，"
+                "不允许新建持仓或加仓）"
+            )
+        if float(state.initial_amount or 0) <= 0:
+            return (
+                "策略配置 initial_amount=0（0 表示限制买入，"
+                "不允许新建持仓或加仓）"
+            )
+        if limit > 0 and len(positions) >= limit:
+            return f"持仓数 {len(positions)} 已达上限 {limit}"
+        return ""
 
     # ---- 持仓管理 ----
 
@@ -2057,7 +2121,9 @@ class StrategyWorkflow(BaseWorkflow):
             }
             state.positions = positions
             ia: float = float(exec_data.get("initial_amount", 0))
-            if ia > 0:
+            if ia > 0 and not state.initial_amount_configured:
+                # 配置里没有 initial_amount 时才用执行记录兜底；
+                # 配置 0 表示限制买入，不能被历史执行记录洗白（见 _load_execution_data）
                 state.initial_amount = ia
             state.current_profit = float(exec_data.get("current_profit", 0) or 0)
             if "remaining_cash" in exec_data:
