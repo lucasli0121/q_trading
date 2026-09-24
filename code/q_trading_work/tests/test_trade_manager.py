@@ -59,6 +59,36 @@ def _sell_order(price: float = 12.0, qty: int = 100, cost: float = 10.2) -> Orde
     )
 
 
+def _flow(
+    order_id: str,
+    action: str,
+    code: str,
+    qty: int,
+    price: float,
+    fee: float = 0.0,
+    profit_amount: float = 0.0,
+    when: str = "",
+    status: str = OrderStatus.SUCCESS.value,
+) -> dict:
+    """构造一条订单流水记录，字段与 `OrderApi.list` 的返回保持一致。"""
+    return {
+        "id": order_id,
+        "user_strategy_id": "us-1",
+        "stock_code": code,
+        "entrust_quantity": qty,
+        "trade_price": price,
+        "trade_quantity": qty,
+        "position_price": price,
+        "profit_rate": 0.0,
+        "profit_amount": profit_amount,
+        "commission_fee": fee,
+        "status": status,
+        "create_time": when,
+        "action": action,
+        "client_order_id": "",
+    }
+
+
 def _isolate_manager_files(test_case: unittest.TestCase) -> None:
     """把 `TradeManager` 落盘到 `log/` 下的文件重定向到临时目录。
 
@@ -101,7 +131,13 @@ class TestTradeManager(unittest.TestCase):
         _isolate_manager_files(self)
 
     def _manager(self, cost_config: TradeCostConfig | None = None) -> TradeManager:
-        return TradeManager(cost_config=cost_config, config_path=self.cfg)
+        manager = TradeManager(cost_config=cost_config, config_path=self.cfg)
+        # 订单流水接口默认置为「无记录」：`_update_strategy_execution` 在「无执行记录」
+        # 或「执行记录取数失败」时会调用它重建持仓，测试里不能真的发 HTTP。
+        # 需要断言订单保存/更新行为的用例再自行覆盖 `_order_api`。
+        manager._order_api = MagicMock()
+        manager._order_api.list.return_value = []
+        return manager
 
     # ---- 成本模型 ----
 
@@ -450,7 +486,11 @@ class TestTradeManager(unittest.TestCase):
         self.assertEqual(pos["quantity"], 100)
 
     def test_update_strategy_execution_api_error(self) -> None:
-        """取数故障不抛异常，但必须留 WARNING：此时执行记录会以零持仓重建。"""
+        """取数故障不抛异常，且必须留 WARNING。
+
+        新口径：先尝试从订单流水重建（本例流水为空 → 相当于零持仓），
+        订单流水也取不到时才放弃本次记录。
+        """
         manager = self._manager(TradeCostConfig())
         manager._user_strategy_api = MagicMock()
         manager._user_strategy_api.get_latest_execution.side_effect = Exception(
@@ -460,10 +500,113 @@ class TestTradeManager(unittest.TestCase):
         manager.execute_order(order)
         with self.assertLogs("trade.manager", level="WARNING") as cm:
             manager._update_strategy_execution(order)  # 不应抛异常
-
         self.assertTrue(
-            any("已有持仓可能丢失" in r.getMessage() for r in cm.records),
-            "取数故障导致持仓截断的风险必须以 WARNING 暴露（DEBUG 运维看不到）",
+            any("订单流水重建" in r.getMessage() for r in cm.records),
+            "取数故障必须能从日志看到已改走订单流水重建",
+        )
+
+    def test_rebuild_positions_from_orders_on_load_failure(self) -> None:
+        """执行记录取数失败时从订单流水重放持仓，不再以零持仓重建。
+
+        本次成交订单已落库（先存订单再更新执行记录），重放时必须排除它，
+        否则本次持仓会被重复计入。非成交（撤单）记录不参与重放。
+        """
+        manager = self._manager(TradeCostConfig())
+        manager._user_strategy_api = MagicMock()
+        manager._user_strategy_api.get_latest_execution.side_effect = Exception(
+            "api down"
+        )
+        manager._user_strategy_api.get.return_value = {"initial_amount": 100000.0}
+        manager._get_stock_name = MagicMock(return_value="平安银行")  # type: ignore[method-assign]
+
+        order = _buy_order(price=11.0, qty=100)
+        order.id = "order-now"
+        manager.execute_order(order)
+
+        manager._order_api.list.return_value = [
+            _flow("o-1", "买入", "600000", 200, 10.0, fee=5.0, when="2026-09-20 10:00:00"),
+            _flow("o-2", "买入", "600519", 100, 20.0, when="2026-09-21 10:00:00"),
+            _flow("order-now", "买入", "600000", 100, 11.0, when="2026-09-24 10:00:00"),
+            _flow(
+                "o-x", "买入", "000001", 100, 5.0,
+                when="2026-09-22 10:00:00", status=OrderStatus.CANCELLED.value,
+            ),
+        ]
+
+        manager._update_strategy_execution(order)
+
+        kwargs = manager._user_strategy_api.save_execution.call_args.kwargs
+        positions = {p["code"]: p for p in kwargs["positions"]}
+        self.assertEqual(set(positions), {"600000", "600519"})
+        # 600000 = 历史 200 股（成本 (200*10+5)/200 = 10.025）+ 本次 100 股 @11
+        self.assertEqual(positions["600000"]["quantity"], 300)
+        self.assertAlmostEqual(positions["600000"]["cost_price"], 10.35, places=4)
+        self.assertEqual(positions["600519"]["quantity"], 100)
+        self.assertEqual(kwargs["start_date"], "2026-09-20")
+
+    def test_rebuild_accumulates_realized_profit_from_orders(self) -> None:
+        """重建时按卖出订单累计已实现盈亏（与 metrics 口径一致）。"""
+        manager = self._manager(TradeCostConfig())
+        manager._user_strategy_api = MagicMock()
+        manager._user_strategy_api.get_latest_execution.side_effect = Exception(
+            "api down"
+        )
+        manager._get_stock_name = MagicMock(return_value="平安银行")  # type: ignore[method-assign]
+
+        order = _buy_order(price=20.0, qty=100)
+        order.stock_code = "600519"
+        manager.execute_order(order)
+
+        manager._order_api.list.return_value = [
+            _flow("o-1", "买入", "600000", 100, 10.0, fee=5.0, when="2026-09-20 10:00:00"),
+            _flow(
+                "o-2", "卖出", "600000", 100, 12.0, fee=5.0,
+                profit_amount=200.0, when="2026-09-21 10:00:00",
+            ),
+        ]
+
+        manager._update_strategy_execution(order)
+
+        kwargs = manager._user_strategy_api.save_execution.call_args.kwargs
+        # 历史卖出已实现 200；本次为买入（profit_amount=0），不再增加
+        self.assertEqual(kwargs["current_profit"], 200.0)
+        self.assertEqual([p["code"] for p in kwargs["positions"]], ["600519"])
+
+    def test_give_up_execution_record_when_both_sources_fail(self) -> None:
+        """持仓与订单流水都取不到：放弃本次新记录，不写一条残缺记录。"""
+        manager = self._manager(TradeCostConfig())
+        manager._user_strategy_api = MagicMock()
+        manager._user_strategy_api.get_latest_execution.side_effect = Exception(
+            "api down"
+        )
+        manager._order_api.list.side_effect = Exception("api down")
+        order = _buy_order()
+        manager.execute_order(order)
+
+        with self.assertLogs("trade.manager", level="ERROR") as cm:
+            manager._update_strategy_execution(order)  # 不应抛异常
+
+        manager._user_strategy_api.save_execution.assert_not_called()
+        self.assertTrue(
+            any("放弃本次执行记录" in r.getMessage() for r in cm.records),
+            "放弃记录必须留 ERROR，便于运维发现记录滞后",
+        )
+
+    def test_no_execution_record_and_order_flow_failure_keeps_writing(self) -> None:
+        """「尚无执行记录」是合法初始状态：订单流水取不到时仍按零持仓写入。"""
+        manager = self._manager(TradeCostConfig())
+        manager._user_strategy_api = MagicMock()
+        manager._user_strategy_api.get_latest_execution.return_value = {}
+        manager._order_api.list.side_effect = Exception("api down")
+        order = _buy_order()
+        manager.execute_order(order)
+
+        with self.assertLogs("trade.manager", level="WARNING") as cm:
+            manager._update_strategy_execution(order)
+
+        manager._user_strategy_api.save_execution.assert_called_once()
+        self.assertTrue(
+            any("按零持仓处理" in r.getMessage() for r in cm.records),
         )
 
     def test_update_strategy_execution_save_error(self) -> None:
@@ -566,7 +709,13 @@ class TestTradeManagerAccountingAndMetrics(unittest.TestCase):
         _isolate_manager_files(self)
 
     def _manager(self, cost_config: TradeCostConfig | None = None) -> TradeManager:
-        return TradeManager(cost_config=cost_config, config_path=self.cfg)
+        manager = TradeManager(cost_config=cost_config, config_path=self.cfg)
+        # 订单流水接口默认置为「无记录」：`_update_strategy_execution` 在「无执行记录」
+        # 或「执行记录取数失败」时会调用它重建持仓，测试里不能真的发 HTTP。
+        # 需要断言订单保存/更新行为的用例再自行覆盖 `_order_api`。
+        manager._order_api = MagicMock()
+        manager._order_api.list.return_value = []
+        return manager
 
     def _execution(self, **overrides: object) -> StrategyExecutionDao:
         """构造 StrategyExecutionDao。

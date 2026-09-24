@@ -314,23 +314,51 @@ class TradeManager:
         """
         user_strategy_id: str = order.user_strategy_id
         exec_data: dict[str, Any] = {}
+        exec_load_failed: bool = False
         try:
             exec_data = self._user_strategy_api.get_latest_execution(user_strategy_id)
         except Exception:
             # 走到这里说明是真实取数故障（「尚无执行记录」的 404 已在上层收敛为 {}）。
-            # 后果不只是日志：exec_data 为空 ⇒ 下面会以「零持仓」为基础重建这条执行
-            # 记录，**原有持仓会从新记录里消失**（只剩本次成交的那只）。
-            # 因此必须用 WARNING 让它可见（DEBUG 只进文件不进聚合视图，运维看不到），
-            # 便于发生后对账。是否要改成 fail-closed（宁可记录滞后也不写残缺记录）
-            # 属于账务口径决策，待确认。
+            # 旧实现以「零持仓」为基础重建记录 ⇒ 原有持仓从新记录里消失（只剩本次
+            # 成交的那只）。现改为从订单流水重放持仓，见 _rebuild_execution_from_orders。
+            exec_load_failed = True
             self.logger.warning(
-                "加载最近执行记录失败，本次执行记录将以零持仓为基础重建"
-                "（已有持仓可能丢失，请对账）user_strategy_id=%s",
+                "加载最近执行记录失败，改从订单流水重建持仓 user_strategy_id=%s",
                 user_strategy_id, exc_info=True,
             )
 
         execution = StrategyExecutionDao(user_strategy_id=user_strategy_id)
-        if exec_data:
+        if exec_load_failed or not exec_data:
+            # 取数故障，或服务端还没有执行记录（404 已收敛为 {}）时都从订单流水重建。
+            # 前者是本次改动的主目标（不让已有持仓从记录里消失）；后者顺带兜住
+            # 「执行记录丢失但订单流水仍在」的不一致。
+            # 本次成交订单已落库（_execute_and_notify 先存订单再更新执行记录），
+            # 重建时必须排除它，交给下面的 _apply_order_to_positions 应用一次。
+            rebuilt: StrategyExecutionDao | None = self._rebuild_execution_from_orders(
+                user_strategy_id, exclude_order=order
+            )
+            if rebuilt is not None:
+                execution = rebuilt
+            elif exec_load_failed:
+                # 持仓与订单流水都取不到：放弃本次新记录。宁可不写，也不写一条把已有
+                # 持仓清空的记录（订单本身已落库，下次成功写入时会从流水重建完整持仓）。
+                self.logger.error(
+                    "持仓与订单流水均取不到，放弃本次执行记录"
+                    "（订单已成交并落库，下次成功写入时从订单流水重建）"
+                    "user_strategy_id=%s, code=%s, action=%s, qty=%s, price=%.4f",
+                    user_strategy_id, order.stock_code, order.action,
+                    order.trade_quantity, float(order.trade_price or 0),
+                )
+                return
+            else:
+                # 「尚无执行记录」是合法初始状态，不该因为订单流水取不到就放弃记录，
+                # 退回零持仓继续（与旧行为一致）。
+                self.logger.warning(
+                    "无执行记录且订单流水取不到，本次按零持仓处理"
+                    "user_strategy_id=%s, code=%s",
+                    user_strategy_id, order.stock_code,
+                )
+        else:
             execution.from_db(exec_data)
 
         # 无历史记录（或加载失败）时，从 UserStrategyDao 补齐初始资金与累计收益，
@@ -375,6 +403,107 @@ class TradeManager:
         # 仅在卖出（profit_amount 非零）时同步 total_profit，避免买入时无意义的 API 调用
         if float(order.profit_amount or 0) != 0:
             self._sync_user_strategy_total_profit(user_strategy_id, execution.current_profit)
+
+    def _rebuild_execution_from_orders(
+        self, user_strategy_id: str, exclude_order: OrderDao | None = None
+    ) -> StrategyExecutionDao | None:
+        """从订单流水重放持仓与已实现盈亏（执行记录取数失败时的兜底）。
+
+        2026-09-24：`GET /api/user_strategy/execution/latest` 取数失败时，旧实现以
+        「零持仓」为基础重建执行记录，已有持仓会从记录里消失。现改为按订单流水
+        （`GET /api/order/list/{user_strategy_id}`）重放：
+
+        - 只重放**成交**订单（`status == 成功`，`execute_order` 落库时写死该状态，
+          并以 `entrust_quantity` 回填 `trade_quantity`）；跳过非成交与零成交量的记录；
+        - 按 `create_time` 升序重放，复用 `_apply_order_to_positions`，因此成本价含
+          买入手续费、加仓加权、卖出减仓与清仓的规则与实时链路完全一致，
+          不存在第二套口径；
+        - `current_profit` = 各卖出订单 `profit_amount` 累加，与
+          `_refresh_execution_metrics` 的「已实现收益累计」同口径；
+        - `start_date` = 最早一笔买入订单的日期，使 `execution_days` 可正常回算。
+
+        需要说明的是 `exclude_order`：本次成交的订单已由 `_execute_and_notify` 先落库，
+        重建时必须把它排除，交给调用方通过 `_apply_order_to_positions` 应用一次，
+        否则本次持仓与已实现盈亏会被重复计入。
+
+        局限：重建出的 `t1_qty` / `t1_day` 是重放后的值，可能与最后交易日的真实
+        可卖量有偏差；T+1 只影响卖出数量的收敛，不影响持仓与资金口径。
+
+        :param user_strategy_id: 用户策略关联 ID
+        :param exclude_order: 需排除的订单（本次成交订单），可为 None
+        :return: 重建的执行记录；订单流水也取不到时为 None
+        """
+        try:
+            orders: list[dict[str, Any]] = self._order_api.list(user_strategy_id)
+        except Exception as exc:
+            self.logger.warning(
+                "订单流水取数失败，无法重建持仓 user_strategy_id=%s: %s",
+                user_strategy_id, exc, exc_info=True,
+            )
+            return None
+
+        exclude_id: str = str(getattr(exclude_order, "id", "") or "")
+        exclude_cid: str = str(getattr(exclude_order, "client_order_id", "") or "")
+
+        succeeded: list[dict[str, Any]] = []
+        for item in orders:
+            if not isinstance(item, dict):  # pragma: no cover - 防御性
+                continue
+            if str(item.get("status", "") or "") != OrderStatus.SUCCESS.value:
+                continue
+            if str(item.get("action", "") or "") not in ("买入", "卖出"):
+                continue
+            if int(item.get("trade_quantity", 0) or 0) <= 0:
+                continue
+            item_id: str = str(item.get("id", "") or "")
+            item_cid: str = str(item.get("client_order_id", "") or "")
+            if exclude_id and item_id and item_id == exclude_id:
+                continue
+            # 订单没有 id（服务端未回传）时退回按幂等键识别本笔
+            if not exclude_id and exclude_cid and item_cid == exclude_cid:
+                continue
+            succeeded.append(item)
+
+        # 时间升序重放；同一秒的订单按 id 保证顺序稳定
+        succeeded.sort(
+            key=lambda it: (
+                str(it.get("create_time", "") or ""),
+                str(it.get("id", "") or ""),
+            )
+        )
+
+        execution = StrategyExecutionDao(user_strategy_id=user_strategy_id)
+        realized_profit: float = 0.0
+        for item in succeeded:
+            action: str = str(item.get("action", "") or "")
+            rebuilt_order = OrderDao(
+                id=str(item.get("id", "") or ""),
+                user_strategy_id=user_strategy_id,
+                stock_code=str(item.get("stock_code", "") or ""),
+                entrust_quantity=int(item.get("entrust_quantity", 0) or 0),
+                trade_price=float(item.get("trade_price", 0) or 0),
+                trade_quantity=int(item.get("trade_quantity", 0) or 0),
+                position_price=float(item.get("position_price", 0) or 0),
+                profit_rate=float(item.get("profit_rate", 0) or 0),
+                profit_amount=float(item.get("profit_amount", 0) or 0),
+                commission_fee=float(item.get("commission_fee", 0) or 0),
+                status=OrderStatus.SUCCESS.value,
+                create_time=str(item.get("create_time", "") or ""),
+                action=action,
+            )
+            self._apply_order_to_positions(execution, rebuilt_order)
+            realized_profit += float(rebuilt_order.profit_amount or 0)
+            if action == "买入" and not execution.start_date:
+                execution.start_date = rebuilt_order.create_time[:10]
+
+        execution.current_profit = round(realized_profit, 2)
+        self.logger.info(
+            "已从订单流水重建持仓：成交订单 %d 笔，持仓 %d 只，累计已实现 %.2f，"
+            "起始日期 %s（user_strategy_id=%s）",
+            len(succeeded), len(execution.positions), execution.current_profit,
+            execution.start_date or "-", user_strategy_id,
+        )
+        return execution
 
     def _refresh_current_prices(
         self, execution: StrategyExecutionDao, order: OrderDao
