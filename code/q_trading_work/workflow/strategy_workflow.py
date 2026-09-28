@@ -1553,7 +1553,8 @@ class StrategyWorkflow(BaseWorkflow):
         **通知用 `user_strategy_name`（2026-09-28）**：`trade notify` 的 recipient
         与 MQTT 载荷都改用用户策略名（`UserStrategyDao.name`）。同一个模板下用户
         可能建多条策略，用策略类名（如「波段交易策略」）无法区分是哪一条发出的信号。
-        `strategy_name`（模板名）保留在载荷里做兼容，未传时回退成它。
+        `strategy_name`（模板名）保留在载荷里做兼容，但**不再作为 recipient 的回退值**：
+        未传时兜底查一次用户策略名，查不到则 recipient 为空（通知器显示 default）。
 
         `extra` 里的 `score` / `star` 会一并写入信号记录（服务端
         `TradeSignalCreateRequest` 已有这两个字段，此前本端一直没传，恒为 0）。
@@ -1600,6 +1601,20 @@ class StrategyWorkflow(BaseWorkflow):
                 strategy_name = str(strategy_dao.get("name", "") or "")
             except Exception as exc:
                 self.logger.debug("查询策略 %s 名称失败: %s", strategy_id, exc)
+
+        # recipient 一律用**用户策略名**（UserStrategyDao.name）。StrategyState 在加载时
+        # 已带上，正常路径不发请求；旧调用点未传时才兜底查一次。
+        # 不回退到 strategy_name（策略模板名）：同一模板下用户可以建多条策略，
+        # 模板名区分不开是哪一条发出的信号。
+        if not user_strategy_name:
+            try:
+                us_info: Any = self._user_strategy_api.get(user_strategy_id)
+                if isinstance(us_info, dict):
+                    user_strategy_name = str(us_info.get("name", "") or "")
+            except Exception as exc:
+                self.logger.debug(
+                    "查询用户策略 %s 名称失败: %s", user_strategy_id, exc
+                )
 
         # 查询最近一次同股票+同策略的交易信号（不限方向），用于信号风暴过滤
         try:
@@ -1722,16 +1737,16 @@ class StrategyWorkflow(BaseWorkflow):
             # 不再在这里手拼字符串 —— 股票名称、星级格式都属于展示层，
             # 且此处拼的文案无法覆盖「名称要查接口」这类需求。
             # 卖出传 profit_rate（买入传 None，不显示收益率段）。
-            self._notifier.notify(
-                # recipient 用**用户策略名**（不再用策略模板名）：同一模板下可能有多条
-                # 用户策略，只有用户自定义名才能对上号
-                recipient=user_strategy_name or strategy_name,
-                user_strategy_id=user_strategy_id,
+            self._notifier.notify_signal(
                 action=action,
-                stock_code=code,
+                code=code,
                 price=price,
                 reason=reason,
                 star=star,
+                # recipient 用**用户策略名**（不是策略模板名）：同一模板下可能有多条
+                # 用户策略，只有用户自定义名才能对上号
+                recipient=user_strategy_name,
+                user_strategy_id=user_strategy_id,
                 profit_rate=profit_rate if signal_type == "SELL" else None,
             )
 

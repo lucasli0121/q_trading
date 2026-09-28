@@ -97,7 +97,8 @@ class TradeManager:
         self._notifier: TradeNotifier = TradeNotifier(
             api_client=self._api_client, config_path=_cfg_path
         )
-        self._strategy_name_cache: dict[str, str] = {}
+        # 用户策略名缓存（user_strategy_id -> UserStrategyDao.name）
+        self._user_strategy_name_cache: dict[str, str] = {}
         self._stock_name_cache: dict[str, str] = {}
         # 交易日历缓存（P1-27，懒加载）
         self._calendar: Any = None
@@ -251,27 +252,26 @@ class TradeManager:
         # 更新策略执行结果（持仓、总收益等）
         self._update_strategy_execution(order)
 
-        strategy_name = self._get_strategy_name(order.user_strategy_id)
+        # recipient 用**用户策略名**（UserStrategyDao.name），不用策略模板名
+        user_strategy_name: str = self._get_user_strategy_name(order.user_strategy_id)
 
         usid: str = order.user_strategy_id
-        if result.action == "卖出":
-            self._notifier.notify(
-                f"时间:{result.order.create_time} 股票:{result.order.stock_code} {result.action} "
-                f"数量 {result.order.trade_quantity} "
-                f"持仓价 {result.order.position_price} "
-                f"成交价 {result.order.trade_price} 状态 {result.status} "
-                f"收益 {result.order.profit_amount:.2f}({result.order.profit_rate:.4%})",
-                recipient=strategy_name,
-                user_strategy_id=usid,
-            )
-        else:
-            self._notifier.notify(
-                f"时间:{result.order.create_time} 股票:{result.order.stock_code} {result.action} "
-                f"数量 {result.order.trade_quantity} "
-                f"成交价 {result.order.trade_price} 状态 {result.status} ",
-                recipient=strategy_name,
-                user_strategy_id=usid,
-            )
+        is_sell: bool = result.action == "卖出"
+        # 成交回执（2026-09-28）：文案由 TradeNotifier 按结构化字段拼装，
+        # 买卖共用一条路径，差异只在「持仓价 / 收益」两组字段的有无。
+        self._notifier.notify_trade_result(
+            action=result.action,
+            code=result.order.stock_code,
+            price=result.order.trade_price,
+            quantity=result.order.trade_quantity,
+            status=result.status,
+            position_price=result.order.position_price if is_sell else None,
+            profit_amount=result.order.profit_amount if is_sell else None,
+            profit_rate=result.order.profit_rate if is_sell else None,
+            create_time=result.order.create_time,
+            recipient=user_strategy_name,
+            user_strategy_id=usid,
+        )
         if callback is not None:
             callback(result)
         return result
@@ -1256,33 +1256,29 @@ class TradeManager:
             self.logger.exception("failed to update order via API: %s", err)
             return False
 
-    def _get_strategy_name(self, user_strategy_id: str) -> str:
-        """通过 user_strategy_id 解析策略名称，优先使用缓存。
+    def _get_user_strategy_name(self, user_strategy_id: str) -> str:
+        """通过 user_strategy_id 解析**用户策略名称**（`UserStrategyDao.name`），优先使用缓存。
 
-        先通过 UserStrategyApi 获取 user_strategy 记录，
-        再通过其 strategy_id 获取 StrategyDao 中的策略名称。
+        原实现先查 user_strategy 拿 strategy_id，再回查策略模板拿 name，返回的是
+        **策略模板名**（如「波段交易策略」）。同一模板下用户可以建多条策略，模板名
+        区分不开，通知里的 recipient 因此对不上号。现直接取用户策略记录本身的 `name`。
 
         :param user_strategy_id: 用户策略关联 ID
-        :return: 策略名称，解析失败时返回 user_strategy_id 本身
+        :return: 用户策略名称，解析失败时返回 user_strategy_id 本身
         """
-        if user_strategy_id in self._strategy_name_cache:
-            return self._strategy_name_cache[user_strategy_id]
+        if user_strategy_id in self._user_strategy_name_cache:
+            return self._user_strategy_name_cache[user_strategy_id]
 
         name: str = user_strategy_id
         try:
-            # 先查用户策略关联，获取 strategy_id
             us_info: dict[str, Any] = self._user_strategy_api.get(user_strategy_id)
-            strategy_id: str = us_info.get("strategy_id", "")
-            if strategy_id:
-                # 再按 ID 查策略模板，获取策略名称
-                info: dict[str, Any] = self._strategy_api.get_by_id(strategy_id)
-                name = info.get("name", user_strategy_id) or user_strategy_id
+            name = str(us_info.get("name", "") or "") or user_strategy_id
         except Exception:
             self.logger.debug(
-                "解析策略名称失败 user_strategy_id=%s", user_strategy_id, exc_info=True
+                "解析用户策略名称失败 user_strategy_id=%s", user_strategy_id, exc_info=True
             )
 
-        self._strategy_name_cache[user_strategy_id] = name
+        self._user_strategy_name_cache[user_strategy_id] = name
         return name
 
     @staticmethod

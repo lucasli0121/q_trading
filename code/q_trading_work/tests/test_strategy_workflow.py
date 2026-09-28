@@ -1000,21 +1000,29 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.assertAlmostEqual(add_kwargs["score"], 7.5)
             self.assertAlmostEqual(add_kwargs["star"], 3.8)
             # 通知的 recipient 用用户策略名
-            notify_kwargs = self.wf._notifier.notify.call_args.kwargs
+            notify_kwargs = self.wf._notifier.notify_signal.call_args.kwargs
             self.assertEqual(notify_kwargs["recipient"], "爸爸的强趋势")
-            # 2026-09-28：推送文案改由 TradeNotifier 按结构化字段拼装，
+            # 2026-09-28：推送文案由 TradeNotifier 按结构化字段拼装，
             # workflow 只负责把字段传下去（不再自己拼字符串）
             self.assertEqual(notify_kwargs["action"], "买入")
-            self.assertEqual(notify_kwargs["stock_code"], "000001")
+            self.assertEqual(notify_kwargs["code"], "000001")
             self.assertAlmostEqual(notify_kwargs["price"], 10.5)
             self.assertAlmostEqual(notify_kwargs["star"], 3.8)
             # 买入不适用收益率段
             self.assertIsNone(notify_kwargs["profit_rate"])
+            # 传了用户策略名就不再兜底查接口
+            self.wf._user_strategy_api.get.assert_not_called()
 
-    def test_save_trade_signal_notify_falls_back_to_strategy_name(self) -> None:
-        """未传用户策略名（旧调用点）时，recipient 回退到模板名而不是 None。"""
+    def test_save_trade_signal_notify_resolves_user_strategy_name(self) -> None:
+        """未传用户策略名（旧调用点）时兜底查服务端，**不回退到策略模板名**。
+
+        2026-09-28：recipient 必须是用户策略名（user_strategy.name）。同一模板下
+        用户可以建多条策略，模板名（如「波段交易策略」）区分不开是哪一条。
+        """
         self.wf._trade_signal_api = MagicMock()
         self.wf._trade_signal_api.latest.return_value = None
+        self.wf._user_strategy_api = MagicMock()
+        self.wf._user_strategy_api.get.return_value = {"name": "爸爸的强趋势"}
         with patch("workflow.strategy_workflow.AppContext") as mock_ctx:
             mock_mqtt = MagicMock()
             mock_mqtt.publish.return_value = True
@@ -1024,10 +1032,27 @@ class TestStrategyWorkflow(unittest.TestCase):
                 {"signal": "BUY", "current_price": 10.5},
                 strategy_name="强势反弹策略",
             )
-        self.assertEqual(
-            self.wf._notifier.notify.call_args.kwargs["recipient"],
-            "强势反弹策略",
-        )
+        self.wf._user_strategy_api.get.assert_called_once_with("us1")
+        notify_kwargs = self.wf._notifier.notify_signal.call_args.kwargs
+        self.assertEqual(notify_kwargs["recipient"], "爸爸的强趋势")
+
+    def test_save_trade_signal_notify_name_lookup_failure_keeps_empty(self) -> None:
+        """兜底也拿不到时 recipient 为空（通知器显示 default），不回退模板名。"""
+        self.wf._trade_signal_api = MagicMock()
+        self.wf._trade_signal_api.latest.return_value = None
+        self.wf._user_strategy_api = MagicMock()
+        self.wf._user_strategy_api.get.side_effect = Exception("api down")
+        with patch("workflow.strategy_workflow.AppContext") as mock_ctx:
+            mock_mqtt = MagicMock()
+            mock_mqtt.publish.return_value = True
+            mock_ctx.return_value.mqtt_client = mock_mqtt
+            self.wf._save_trade_signal(
+                "sid", "us1", "000001",
+                {"signal": "BUY", "current_price": 10.5},
+                strategy_name="强势反弹策略",
+            )
+        notify_kwargs = self.wf._notifier.notify_signal.call_args.kwargs
+        self.assertEqual(notify_kwargs["recipient"], "")
 
     def test_save_trade_signal_score_star_default_zero(self) -> None:
         """extra 缺 score/star 时落 0，不应抛异常也不应传脏值。"""
@@ -1094,7 +1119,7 @@ class TestStrategyWorkflow(unittest.TestCase):
             # 卖出盈亏只用于展示，不再回传服务端信号表
             self.assertNotIn("profit_amount", self.wf._trade_signal_api.add.call_args.kwargs)
             # 卖出推文带收益率段（买入侧传 None 不显示）
-            sell_notify_kwargs = self.wf._notifier.notify.call_args.kwargs
+            sell_notify_kwargs = self.wf._notifier.notify_signal.call_args.kwargs
             self.assertEqual(sell_notify_kwargs["action"], "卖出")
             self.assertAlmostEqual(sell_notify_kwargs["profit_rate"], 20.0)
 

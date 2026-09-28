@@ -249,11 +249,19 @@ class TestTradeManager(unittest.TestCase):
         manager._save_order_via_api = MagicMock(return_value="order-s")  # type: ignore[method-assign]
         manager._update_order_via_api = MagicMock(return_value=True)  # type: ignore[method-assign]
         manager._update_strategy_execution = MagicMock()  # type: ignore[method-assign]
-        manager._notifier.notify = MagicMock()  # type: ignore[method-assign]
+        manager._user_strategy_api = MagicMock()
+        manager._user_strategy_api.get.return_value = {"name": "爸爸的波段交易"}
+        manager._notifier.notify_trade_result = MagicMock()  # type: ignore[method-assign]
 
         manager.submit_order(_sell_order(price=12.0, qty=100, cost=10.2))
 
-        self.assertIn("收益", manager._notifier.notify.call_args.args[0])
+        # 2026-09-28：成交回执改为传结构化字段，卖出带持仓价与收益
+        kwargs = manager._notifier.notify_trade_result.call_args.kwargs
+        self.assertEqual(kwargs["action"], "卖出")
+        self.assertIsNotNone(kwargs["position_price"])
+        self.assertIsNotNone(kwargs["profit_amount"])
+        # recipient 用**用户策略名**，不用策略模板名
+        self.assertEqual(kwargs["recipient"], "爸爸的波段交易")
 
     def test_execute_and_notify_falls_back_to_save_order(self) -> None:
         """订单 ID 为空时，成交后再次尝试保存订单。"""
@@ -261,7 +269,9 @@ class TestTradeManager(unittest.TestCase):
         manager._save_order_via_api = MagicMock(side_effect=["", "order-fb"])  # type: ignore[method-assign]
         manager._update_order_via_api = MagicMock(return_value=True)  # type: ignore[method-assign]
         manager._update_strategy_execution = MagicMock()  # type: ignore[method-assign]
-        manager._notifier.notify = MagicMock()  # type: ignore[method-assign]
+        manager._user_strategy_api = MagicMock()
+        manager._user_strategy_api.get.return_value = {"name": "测试策略"}
+        manager._notifier.notify_trade_result = MagicMock()  # type: ignore[method-assign]
 
         order = _buy_order()
         manager.submit_order(order)
@@ -306,10 +316,10 @@ class TestTradeManager(unittest.TestCase):
             self.assertEqual(manager._get_stock_name("600000"), "")
         self.assertEqual(manager._stock_name_cache.get("600000"), "")
 
-    def test_get_strategy_name_cache_hit(self) -> None:
+    def test_get_user_strategy_name_cache_hit(self) -> None:
         manager = self._manager(TradeCostConfig())
-        manager._strategy_name_cache["us-1"] = "策略A"
-        self.assertEqual(manager._get_strategy_name("us-1"), "策略A")
+        manager._user_strategy_name_cache["us-1"] = "策略A"
+        self.assertEqual(manager._get_user_strategy_name("us-1"), "策略A")
 
     # ---- 策略执行数据同步 ----
 
@@ -659,18 +669,27 @@ class TestTradeManager(unittest.TestCase):
         # 第二次命中缓存，不应再次调用 API
         self.assertEqual(manager._stock_name_cache.get("600000"), "平安银行")
 
-    def test_get_strategy_name_resolves_and_falls_back(self) -> None:
+    def test_get_user_strategy_name_resolves_and_falls_back(self) -> None:
+        """2026-09-28：取用户策略名（user_strategy.name），不再回查策略模板名。
+
+        原实现「user_strategy → strategy_id → 策略模板 name」拿到的是模板名，
+        同一模板下多条用户策略区分不开，通知的 recipient 对不上号。
+        """
         manager = self._manager(TradeCostConfig())
         manager._user_strategy_api = MagicMock()
-        manager._user_strategy_api.get.return_value = {"strategy_id": "s1"}
+        manager._user_strategy_api.get.return_value = {
+            "strategy_id": "s1",
+            "name": "爸爸的波段交易",
+        }
         manager._strategy_api = MagicMock()
-        manager._strategy_api.get_by_id.return_value = {"name": "强势反弹策略"}
+        manager._strategy_api.get_by_id.return_value = {"name": "波段交易策略"}
 
-        self.assertEqual(manager._get_strategy_name("us-1"), "强势反弹策略")
+        self.assertEqual(manager._get_user_strategy_name("us-1"), "爸爸的波段交易")
+        manager._strategy_api.get_by_id.assert_not_called()
 
         # 失败时回退为 user_strategy_id
         manager._user_strategy_api.get.side_effect = Exception("api down")
-        self.assertEqual(manager._get_strategy_name("us-2"), "us-2")
+        self.assertEqual(manager._get_user_strategy_name("us-2"), "us-2")
 
     # ---- 通知 ----
 

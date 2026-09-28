@@ -202,6 +202,57 @@ class TradeNotifier:
             message += f"，收益率:{profit_rate:.2f}%"
         return message
 
+    @staticmethod
+    def format_trade_result_message(
+        action: str,
+        code: str,
+        price: float = 0.0,
+        quantity: int = 0,
+        status: str = "",
+        stock_name: str = "",
+        position_price: float | None = None,
+        profit_amount: float | None = None,
+        profit_rate: float | None = None,
+        create_time: str = "",
+    ) -> str:
+        """拼装订单成交回执文案。
+
+        格式（2026-09-28 确认，与信号文案同构）：
+            买入000001.SZ(平安银行)，成交价:10.50,数量:100,状态:成功，时间:2026-09-28 10:00:00
+            卖出000001.SZ(平安银行)，成交价:12.00,数量:100,持仓价:10.00,状态:成功，收益:200.00(20.00%)，时间:…
+
+        与原格式的差异：加上股票名称；把「时间/股票/数量/成交价/状态」的标签式写法
+        改为「动作+代码(名称)，成交价:…」；收益率由 `:.4%`（20.0000%）改为
+        `:.2%`（20.00%）。
+
+        :param action: 交易方向（买入/卖出）
+        :param code: 股票代码
+        :param price: 成交价
+        :param quantity: 成交数量（股）
+        :param status: 订单状态
+        :param stock_name: 股票名称，空串时不显示括号
+        :param position_price: 持仓成本价，None 或 <= 0 时不显示（买入不适用）
+        :param profit_amount: 收益金额，与 profit_rate 一起给才显示收益段
+        :param profit_rate: 收益率（小数比率，0.2 → 20.00%）
+        :param create_time: 订单创建时间，空串时不显示
+        :return: 推送正文
+        """
+        name_part: str = f"({stock_name})" if stock_name else ""
+        message: str = f"{action}{code}{name_part}"
+        if price > 0:
+            message += f"，成交价:{price:.2f}"
+        if quantity > 0:
+            message += f",数量:{quantity}"
+        if position_price is not None and position_price > 0:
+            message += f",持仓价:{position_price:.2f}"
+        if status:
+            message += f",状态:{status}"
+        if profit_amount is not None and profit_rate is not None:
+            message += f"，收益:{profit_amount:.2f}({profit_rate:.2%})"
+        if create_time:
+            message += f"，时间:{create_time}"
+        return message
+
     # ---- 发送渠道 ----
 
     def _send_http_text(self, url: str, message: str, recipient: str | None) -> bool:
@@ -358,48 +409,21 @@ class TradeNotifier:
         message: str = "",
         recipient: str | None = None,
         user_strategy_id: str = "",
-        *,
-        action: str = "",
-        stock_code: str = "",
-        stock_name: str = "",
-        price: float = 0.0,
-        reason: str = "",
-        star: float = 0.0,
-        profit_rate: float | None = None,
     ) -> None:
-        """向接收者发送通知。
+        """向接收者发送通知。只负责发送，不做文案加工。
 
         企业微信推送优先级：用户偏好 wx_push_url > 配置文件 enterprise_wechat_webhook_url。
         用户偏好中 enable_wx_push 为 False 时跳过企业微信推送。
 
-        **文案（2026-09-28）**：交易信号类通知改为按结构化字段重排，`message`
-        仅在未传结构化字段时原样推送（成交通知等场景仍走旧路径）。判定条件是
-        `action` 与 `stock_code` 同时非空；重排格式见 `format_signal_message`。
+        文案由调用方给出：交易信号走 `notify_signal()`、成交回执走
+        `notify_trade_result()`；需要自定义文案的调用方直接传 `message`。
 
-        :param message: 通知内容（未传结构化字段时原样推送）
-        :param recipient: 策略名称等上下文
+        :param message: 通知正文
+        :param recipient: **用户策略名称**（同一模板下用户可以建多条策略，模板名
+            区分不开，见 `notify_signal` 的说明）
         :param user_strategy_id: 用户策略关联 ID，用于查询用户偏好
-        :param action: 交易方向（买入/卖出），传入即启用信号文案重排
-        :param stock_code: 股票代码，传入即启用信号文案重排
-        :param stock_name: 股票名称，留空时按代码查询（结果缓存）
-        :param price: 触发价，仅用于信号文案
-        :param reason: 触发原因，仅用于信号文案
-        :param star: 推荐星级（0~5），0 表示无星级信息，不显示
-        :param profit_rate: 卖出收益率（%），None 表示不适用
         """
-        if action and stock_code:
-            message = self.format_signal_message(
-                action=action,
-                code=stock_code,
-                price=price,
-                reason=reason,
-                star=star,
-                stock_name=self._resolve_stock_name(stock_code, stock_name),
-                profit_rate=profit_rate,
-            )
-
         if not message:
-            # 结构化字段与 message 都没给，推一条空消息没有意义
             self.logger.warning(
                 "notify 内容为空，跳过推送 recipient=%s", recipient or "default"
             )
@@ -418,3 +442,93 @@ class TradeNotifier:
         if self._wechat_friend_names:
             for friend_name in self._wechat_friend_names:
                 self._send_to_wechat_friend(friend_name, message, recipient)
+
+    def notify_signal(
+        self,
+        action: str,
+        code: str,
+        price: float = 0.0,
+        reason: str = "",
+        star: float = 0.0,
+        profit_rate: float | None = None,
+        stock_name: str = "",
+        recipient: str | None = None,
+        user_strategy_id: str = "",
+    ) -> None:
+        """推送交易信号（文案格式见 `format_signal_message`）。
+
+        信号推送在分钟级链路上同股反复触发，股票名称走 `_resolve_stock_name`
+        的缓存，不会每条都打接口。
+
+        :param action: 交易方向（买入/卖出）
+        :param code: 股票代码
+        :param price: 触发价
+        :param reason: 触发原因
+        :param star: 推荐星级（0~5），0 表示无星级信息、不显示该段
+        :param profit_rate: 卖出收益率（%），买入传 None 表示不适用
+        :param stock_name: 股票名称，留空时按代码查询（结果缓存）
+        :param recipient: 用户策略名称
+        :param user_strategy_id: 用户策略关联 ID
+        """
+        self.notify(
+            self.format_signal_message(
+                action=action,
+                code=code,
+                price=price,
+                reason=reason,
+                star=star,
+                stock_name=self._resolve_stock_name(code, stock_name),
+                profit_rate=profit_rate,
+            ),
+            recipient=recipient,
+            user_strategy_id=user_strategy_id,
+        )
+
+    def notify_trade_result(
+        self,
+        action: str,
+        code: str,
+        price: float = 0.0,
+        quantity: int = 0,
+        status: str = "",
+        position_price: float | None = None,
+        profit_amount: float | None = None,
+        profit_rate: float | None = None,
+        create_time: str = "",
+        stock_name: str = "",
+        recipient: str | None = None,
+        user_strategy_id: str = "",
+    ) -> None:
+        """推送订单成交回执（文案格式见 `format_trade_result_message`）。
+
+        买卖共用一条路径，差异只在「持仓价 / 收益」两组字段的有无：买入传 None。
+
+        :param action: 交易方向（买入/卖出）
+        :param code: 股票代码
+        :param price: 成交价
+        :param quantity: 成交数量（股）
+        :param status: 订单状态（成功/失败等）
+        :param position_price: 持仓成本价，买入传 None
+        :param profit_amount: 收益金额，买入传 None
+        :param profit_rate: 收益率（小数比率），买入传 None
+        :param create_time: 订单创建时间
+        :param stock_name: 股票名称，留空时按代码查询（结果缓存）
+        :param recipient: 用户策略名称
+        :param user_strategy_id: 用户策略关联 ID
+        """
+        self.notify(
+            self.format_trade_result_message(
+                action=action,
+                code=code,
+                price=price,
+                quantity=quantity,
+                status=status,
+                stock_name=self._resolve_stock_name(code, stock_name),
+                position_price=position_price,
+                profit_amount=profit_amount,
+                profit_rate=profit_rate,
+                create_time=create_time,
+            ),
+            recipient=recipient,
+            user_strategy_id=user_strategy_id,
+        )
