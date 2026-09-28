@@ -1717,18 +1717,22 @@ class StrategyWorkflow(BaseWorkflow):
                 )
 
             # 3. 通过企业微信/微信发送交易信号推送通知
-            notify_msg: str = (
-                f"交易信号: {action} code={code} price={price:.2f} "
-                f"reason={reason}"
-            )
-            if signal_type == "SELL":
-                notify_msg += f" 收益率={profit_rate:.2f}%"
+            # 文案统一由 TradeNotifier 按结构化字段拼装（2026-09-28）：
+            # 「买入002050.SZ(三花智控)，买入价:35.42,买入条件：…，买入推荐: 3颗星」。
+            # 不再在这里手拼字符串 —— 股票名称、星级格式都属于展示层，
+            # 且此处拼的文案无法覆盖「名称要查接口」这类需求。
+            # 卖出传 profit_rate（买入传 None，不显示收益率段）。
             self._notifier.notify(
-                notify_msg,
                 # recipient 用**用户策略名**（不再用策略模板名）：同一模板下可能有多条
                 # 用户策略，只有用户自定义名才能对上号
                 recipient=user_strategy_name or strategy_name,
                 user_strategy_id=user_strategy_id,
+                action=action,
+                stock_code=code,
+                price=price,
+                reason=reason,
+                star=star,
+                profit_rate=profit_rate if signal_type == "SELL" else None,
             )
 
             return True

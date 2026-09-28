@@ -1000,10 +1000,16 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.assertAlmostEqual(add_kwargs["score"], 7.5)
             self.assertAlmostEqual(add_kwargs["star"], 3.8)
             # 通知的 recipient 用用户策略名
-            self.assertEqual(
-                self.wf._notifier.notify.call_args.kwargs["recipient"],
-                "爸爸的强趋势",
-            )
+            notify_kwargs = self.wf._notifier.notify.call_args.kwargs
+            self.assertEqual(notify_kwargs["recipient"], "爸爸的强趋势")
+            # 2026-09-28：推送文案改由 TradeNotifier 按结构化字段拼装，
+            # workflow 只负责把字段传下去（不再自己拼字符串）
+            self.assertEqual(notify_kwargs["action"], "买入")
+            self.assertEqual(notify_kwargs["stock_code"], "000001")
+            self.assertAlmostEqual(notify_kwargs["price"], 10.5)
+            self.assertAlmostEqual(notify_kwargs["star"], 3.8)
+            # 买入不适用收益率段
+            self.assertIsNone(notify_kwargs["profit_rate"])
 
     def test_save_trade_signal_notify_falls_back_to_strategy_name(self) -> None:
         """未传用户策略名（旧调用点）时，recipient 回退到模板名而不是 None。"""
@@ -1087,6 +1093,10 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.assertNotIn("profit_amount", payload)
             # 卖出盈亏只用于展示，不再回传服务端信号表
             self.assertNotIn("profit_amount", self.wf._trade_signal_api.add.call_args.kwargs)
+            # 卖出推文带收益率段（买入侧传 None 不显示）
+            sell_notify_kwargs = self.wf._notifier.notify.call_args.kwargs
+            self.assertEqual(sell_notify_kwargs["action"], "卖出")
+            self.assertAlmostEqual(sell_notify_kwargs["profit_rate"], 20.0)
 
     def test_save_trade_signal_flattens_tuple_reason(self) -> None:
         """回归（2026-09-15 线上 422）：reason 是 tuple 时不得污染请求体与 MQTT 载荷。

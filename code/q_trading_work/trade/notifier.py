@@ -73,6 +73,11 @@ class TradeNotifier:
         )
         self._wechat_friend_names: list[str] = self._load_friend_names()
 
+        # 股票名称缓存（code -> name）。推送文案里要显示「002050.SZ(三花智控)」，
+        # 名称只能查一次，否则每条信号都多打一次 /api/stock_info/code。
+        # 查询失败同样写空串（负缓存），避免停牌/退市代码反复触发请求。
+        self._stock_name_cache: dict[str, str] = {}
+
         # 延迟导入，避免循环依赖（TradeNotifier 可能被 api 层引用）
         self._user_strategy_api: Any = None
 
@@ -119,6 +124,83 @@ class TradeNotifier:
             if name:
                 names.append(name)
         return names
+
+    # ---- 文案拼装 ----
+
+    def _resolve_stock_name(self, code: str, name: str = "") -> str:
+        """解析股票名称，用于推送文案中的「代码(名称)」段。
+
+        优先级：调用方显式传入 > 实例缓存 > `/api/stock_info/code` 查询。
+        查询失败返回空串（并做负缓存），此时文案退化为不带括号的纯代码。
+
+        :param code: 股票代码，如 002050.SZ
+        :param name: 调用方已知的名称（非空时直接采用，不再查询）
+        :return: 股票名称，取不到时返回空串
+        """
+        if name:
+            return str(name)
+        if not code:
+            return ""
+        cached: str | None = self._stock_name_cache.get(code)
+        if cached is not None:
+            return cached
+
+        resolved: str = ""
+        try:
+            from app_context import AppContext
+
+            info_list: list[dict[str, Any]] = AppContext().stock_info_api.get_by_codes(code)
+            if info_list:
+                resolved = str(info_list[0].get("name", "") or "")
+        except Exception as exc:
+            # 未初始化 AppContext / 接口异常都不该影响推送本身：
+            # 名称只是文案的修饰，取不到就不显示括号。
+            self.logger.debug("查询股票名称失败 code=%s: %s", code, exc)
+        self._stock_name_cache[code] = resolved
+        return resolved
+
+    @staticmethod
+    def format_signal_message(
+        action: str,
+        code: str,
+        price: float = 0.0,
+        reason: str = "",
+        star: float = 0.0,
+        stock_name: str = "",
+        profit_rate: float | None = None,
+    ) -> str:
+        """拼装交易信号推送文案。
+
+        格式（2026-09-28 按用户确认的样例固定，分隔符沿用样例本身）：
+            买入002050.SZ(三花智控)，买入价:35.42,买入条件：条件满足: ...,买入推荐: 3颗星
+
+        缺失字段整段省略，不输出 `name=` / `price=0.00` 这类占位：
+        - 名称取不到 → 只显示代码；
+        - `price <= 0` → 不输出价格段；
+        - `star <= 0` → 不输出推荐段（拿不到星级时不显示「0颗星」）；
+        - `profit_rate is None` → 不输出收益率段（买入不适用）。
+
+        :param action: 交易方向（买入/卖出）
+        :param code: 股票代码
+        :param price: 触发价
+        :param reason: 触发原因（策略给出的明细，含各因子分值）
+        :param star: 推荐星级（0~5，可带小数）
+        :param stock_name: 股票名称，为空时不显示括号
+        :param profit_rate: 卖出收益率（%），None 表示不适用
+        :return: 推送正文
+        """
+        name_part: str = f"({stock_name})" if stock_name else ""
+        message: str = f"{action}{code}{name_part}"
+        if price > 0:
+            message += f"，{action}价:{price:.2f}"
+        if reason:
+            message += f",{action}条件：{reason}"
+        if star > 0:
+            # `:g` 让整数星级显示为「3颗星」而不是「3.0颗星」，小数保留（3.5颗星）
+            message += f"，{action}推荐: {star:g}颗星"
+        if profit_rate is not None:
+            message += f"，收益率:{profit_rate:.2f}%"
+        return message
 
     # ---- 发送渠道 ----
 
@@ -273,19 +355,56 @@ class TradeNotifier:
 
     def notify(
         self,
-        message: str,
+        message: str = "",
         recipient: str | None = None,
         user_strategy_id: str = "",
+        *,
+        action: str = "",
+        stock_code: str = "",
+        stock_name: str = "",
+        price: float = 0.0,
+        reason: str = "",
+        star: float = 0.0,
+        profit_rate: float | None = None,
     ) -> None:
         """向接收者发送通知。
 
         企业微信推送优先级：用户偏好 wx_push_url > 配置文件 enterprise_wechat_webhook_url。
         用户偏好中 enable_wx_push 为 False 时跳过企业微信推送。
 
-        :param message: 通知内容
+        **文案（2026-09-28）**：交易信号类通知改为按结构化字段重排，`message`
+        仅在未传结构化字段时原样推送（成交通知等场景仍走旧路径）。判定条件是
+        `action` 与 `stock_code` 同时非空；重排格式见 `format_signal_message`。
+
+        :param message: 通知内容（未传结构化字段时原样推送）
         :param recipient: 策略名称等上下文
         :param user_strategy_id: 用户策略关联 ID，用于查询用户偏好
+        :param action: 交易方向（买入/卖出），传入即启用信号文案重排
+        :param stock_code: 股票代码，传入即启用信号文案重排
+        :param stock_name: 股票名称，留空时按代码查询（结果缓存）
+        :param price: 触发价，仅用于信号文案
+        :param reason: 触发原因，仅用于信号文案
+        :param star: 推荐星级（0~5），0 表示无星级信息，不显示
+        :param profit_rate: 卖出收益率（%），None 表示不适用
         """
+        if action and stock_code:
+            message = self.format_signal_message(
+                action=action,
+                code=stock_code,
+                price=price,
+                reason=reason,
+                star=star,
+                stock_name=self._resolve_stock_name(stock_code, stock_name),
+                profit_rate=profit_rate,
+            )
+
+        if not message:
+            # 结构化字段与 message 都没给，推一条空消息没有意义
+            self.logger.warning(
+                "notify 内容为空，跳过推送 recipient=%s", recipient or "default"
+            )
+            return
+
         self.logger.info(
             "trade notify user_strategy_id: %s to %s: %s", user_strategy_id, recipient or "default", message
         )
