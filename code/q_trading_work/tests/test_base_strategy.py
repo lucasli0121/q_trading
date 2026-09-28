@@ -117,6 +117,55 @@ class TestBaseStrategy(unittest.TestCase):
         self.assertEqual(BaseStrategy._normalize_params({}), {})
         self.assertIsNone(BaseStrategy._normalize_params(None))
 
+    def test_price_limit_pct_matrix(self) -> None:
+        """R13：涨跌停幅度按板块判定（ST 5%、创业板/科创板 20%、其余 10%）。"""
+        cases = (
+            ("000001", "平安银行", 10.0),
+            ("601398", "工商银行", 10.0),
+            ("002594", "比亚迪", 10.0),
+            ("300750", "宁德时代", 20.0),
+            ("301029", "怡合达", 20.0),
+            ("688981", "中芯国际", 20.0),
+            ("002456", "*ST欧菲", 5.0),
+            ("600001", "ST某某", 5.0),
+            ("002456", "st小写", 5.0),
+            ("002456", "", 10.0),
+        )
+        for code, name, expected in cases:
+            with self.subTest(code=code, name=name):
+                self.assertEqual(
+                    BaseStrategy.price_limit_pct(code, name), expected
+                )
+
+    def test_near_price_limit_pct_margin(self) -> None:
+        """接近涨跌停的余量可配置，且不会退化成非正数。"""
+        strategy = DummyStrategy()
+        self.assertEqual(strategy._near_price_limit_pct("000001"), 9.0)
+        self.assertEqual(strategy._near_price_limit_pct("300750"), 19.0)
+        self.assertEqual(strategy._near_price_limit_pct("300750", margin=2.0), 18.0)
+        # 余量（30）大于幅度（10）时夹到 1.0，避免阈值变成负数把判定方向反过来
+        self.assertEqual(strategy._near_price_limit_pct("000001", margin=30.0), 1.0)
+
+    def test_change_percent_scales_ratio_field(self) -> None:
+        """R16/R13：`change_percent` 是小数比率，需 ×100；缺失时用昨收自算。"""
+        strategy = DummyStrategy()
+        self.assertAlmostEqual(
+            strategy._change_percent({"change_percent": 0.0325}, 10.325, 10.0), 3.25
+        )
+        # 字段缺失 / 为 0 / 非法 → 用昨收自算
+        for bar in ({}, {"change_percent": None}, {"change_percent": 0.0},
+                    {"change_percent": "abc"}):
+            with self.subTest(bar=bar):
+                self.assertAlmostEqual(
+                    strategy._change_percent(bar, 9.5, 10.0), -5.0
+                )
+
+    def test_change_percent_no_division_by_zero(self) -> None:
+        """R13：preclose<=0（数据不全）时不得除零。"""
+        strategy = DummyStrategy()
+        self.assertEqual(strategy._change_percent({}, 10.0, 0.0), 0.0)
+        self.assertEqual(strategy._change_percent({"change_percent": 0.0}, 10.0, -1.0), 0.0)
+
     def test_select_returns_matched_results(self) -> None:
         strategy = DummyStrategy()
 

@@ -74,6 +74,8 @@ class TestTradeSignalAddContract(unittest.TestCase):
             action="卖出",
             profit_rate=12.34,
             reason="条件满足",
+            score=7.567,
+            star=3.78,
         )
 
         client.post.assert_called_once_with(
@@ -87,8 +89,28 @@ class TestTradeSignalAddContract(unittest.TestCase):
                 "profit_rate": 12.34,
                 "profit_amount": 0.0,
                 "reason": "条件满足",
+                # 服务端 TradeSignalCreateRequest 已有 score/star，本端必须透传
+                # （否则库里这两列恒为默认 0，等于白加字段）
+                "score": 7.57,
+                "star": 3.8,
             },
         )
+
+    def test_add_score_star_default_zero(self) -> None:
+        """不传 score/star 时也要带默认 0，保持请求体结构稳定。"""
+        api, client = self._api()
+
+        api.add(
+            strategy_id="sid",
+            user_strategy_id="us1",
+            stock_code="000001",
+            trade_price=10.5,
+            action="买入",
+        )
+
+        body = client.post.call_args.args[1]
+        self.assertEqual(body["score"], 0.0)
+        self.assertEqual(body["star"], 0.0)
 
     def test_add_flattens_tuple_reason(self) -> None:
         """回归：tuple 形态的 reason 不应再产生 422 请求体。"""

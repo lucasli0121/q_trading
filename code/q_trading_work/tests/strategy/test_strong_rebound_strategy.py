@@ -21,6 +21,8 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+import pandas as pd
+
 from app_context import AppContext
 from core.user_strategy_cache import UserStrategyCache
 from strategy.strong_rebound_strategy import StrongReboundStrategy
@@ -31,6 +33,7 @@ USID: str = "test-strong-rebound-us"
 
 # 与类属性默认值等价的纯值参数：显式传入可跳过三级回退中的网络查询，
 # 让用例只验证策略逻辑本身（参数加载链路由 test_base_strategy 覆盖）。
+# `min_score` 按 10 分制给出（2026-09-28 起综合分刻度 = 10）。
 TEST_PARAMS: dict[str, Any] = {
     "match": {
         "pe_limit": 300,
@@ -42,7 +45,7 @@ TEST_PARAMS: dict[str, Any] = {
     },
     "buy": {
         "consecutive_minutes": 5,
-        "min_score": 20.0,
+        "min_score": 6.0,
         "trend_minutes_limit": 7,
     },
     "sell": {
@@ -119,6 +122,7 @@ class TestStrongReboundStrategy(unittest.TestCase):
         cache.reset_redis_failure()
         cache.clear_user(USID)
         self._purge_minute_cache()
+        self._purge_highest_price_cache()
         self.strategy._highest_prices.clear()
 
     def tearDown(self) -> None:
@@ -133,6 +137,13 @@ class TestStrongReboundStrategy(unittest.TestCase):
         with cache._lock:
             cache._minute_snapshot.clear()
             cache._last_day = ""
+
+    @staticmethod
+    def _purge_highest_price_cache() -> None:
+        """清空区间最高价内存快照（全局单例，跨用例会串）。"""
+        cache = UserStrategyCache()
+        with cache._lock:
+            cache._highest_price_snapshot.clear()
 
     @staticmethod
     def _frame(
@@ -184,24 +195,29 @@ class TestStrongReboundStrategy(unittest.TestCase):
         b = StrongReboundStrategy(user_strategy_id="us-b", user_strategy_params=TEST_PARAMS)
         self.assertIsNot(a.factor_manager, b.factor_manager)
 
-    def test_init_factors_registers_expected_factors(self) -> None:
-        from factor.high_decline_factor import HighDeclineFactor
-        from factor.kline_support_resistance import KlineSRFactor
+    def test_init_factors_does_not_register(self) -> None:
+        """契约：本策略不再通过 factor_manager 注册因子（`init_factors` 为 `pass`）。
+
+        2026-09-28 重构后，趋势/反弹/成交量因子都在调用点按需 new 出来
+        （`MultiTrendFactor` / `LowReboundFactor` / `VwapFactor`），
+        因子管理器不再持有它们。此处锁定该契约，避免又有人按「已注册」去取因子，
+        拿到 None 后在运行期才炸。
+        """
         from factor.low_rebound_factor import LowReboundFactor
-        from factor.volume_expansion_factor import VolumeExpansionFactor
+        from factor.multi_trend_factor import MultiTrendFactor
         from factor.vwap_factor import VwapFactor
 
         for factor_name in (
             LowReboundFactor.factor_name,
-            HighDeclineFactor.factor_name,
-            VolumeExpansionFactor.factor_name,
+            MultiTrendFactor.factor_name,
             VwapFactor.factor_name,
-            KlineSRFactor.factor_name,
         ):
-            self.assertIsNotNone(
+            self.assertIsNone(
                 self.strategy.factor_manager.get(factor_name),
-                f"因子未注册: {factor_name}",
+                f"不应再注册因子: {factor_name}",
             )
+        # 但这些因子必须可直接实例化使用（策略运行期就是这么做的）
+        self.assertIsInstance(MultiTrendFactor(7).score(pd.DataFrame()), float)
 
     # ---- is_match_strategy 分支 ----
 
@@ -246,21 +262,40 @@ class TestStrongReboundStrategy(unittest.TestCase):
         self.assertIn("条件1不满足", extra["reason"])
 
     def test_is_match_strategy_branch_trend_priority(self) -> None:
-        """趋势分达标 → 直接选中（趋势优先分支）。"""
+        """趋势分达标 **且** 反弹分达标 → 选中（两个条件是 AND，不是 OR）。"""
         rows = self._frame([10.0] * 16)
         with patch.object(
             self.strategy, "_match_pe_profit", return_value=(True, {"score": 2.0})
         ), patch(
             "strategy.strong_rebound_strategy.MultiTrendFactor.score",
             return_value=10.0,
+        ), patch(
+            "strategy.strong_rebound_strategy.LowReboundFactor.score",
+            return_value=20.0,
         ):
             matched, extra = self.strategy.is_match_strategy(rows)
         self.assertTrue(matched, extra)
         self.assertEqual(extra.get("signal"), "BUY")
         self.assertIn("趋势", extra["reason"])
 
-    def test_is_match_strategy_branch_rebound_score(self) -> None:
-        """趋势分不足但「市盈率+反弹」总分达标 → 选中。"""
+    def test_is_match_strategy_requires_rebound_too(self) -> None:
+        """趋势达标但反弹不足 → 未选中（AND 语义，防止把 `or` 当成实现）。"""
+        rows = self._frame([10.0] * 16)
+        with patch.object(
+            self.strategy, "_match_pe_profit", return_value=(True, {"score": 2.0})
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=10.0,
+        ), patch(
+            "strategy.strong_rebound_strategy.LowReboundFactor.score",
+            return_value=1.0,
+        ):
+            matched, extra = self.strategy.is_match_strategy(rows)
+        self.assertFalse(matched)
+        self.assertIn("未选中", extra["reason"])
+
+    def test_is_match_strategy_requires_trend_too(self) -> None:
+        """反弹达标但趋势不足 → 未选中。"""
         rows = self._frame([10.0] * 16)
         with patch.object(
             self.strategy, "_match_pe_profit", return_value=(True, {"score": 2.0})
@@ -272,9 +307,8 @@ class TestStrongReboundStrategy(unittest.TestCase):
             return_value=20.0,
         ):
             matched, extra = self.strategy.is_match_strategy(rows)
-        self.assertTrue(matched, extra)
-        self.assertEqual(extra.get("signal"), "BUY")
-        self.assertIn("反弹", extra["reason"])
+        self.assertFalse(matched)
+        self.assertIn("未选中", extra["reason"])
 
     def test_is_match_strategy_branch_score_not_enough(self) -> None:
         """趋势不足且反弹总分不够 → 未选中。"""
@@ -355,34 +389,81 @@ class TestStrongReboundStrategy(unittest.TestCase):
 
     # ---- 买入条件 ----
 
-    def test_check_buy_conditions_marks_done_in_score_cache(self) -> None:
-        """买入条件满足时，打分缓存写入 done=True（替代原 _bought_codes）。"""
+    def test_check_buy_conditions_weighted_score_and_star(self) -> None:
+        """R8：综合分 = (成交量/5.5×0.7 + 趋势/10×0.3)×10，成交量为主。
+
+        成交量打满（5.5）+ 趋势打满（10）→ 10 分；两者都归一化后加权，
+        不再是把两个分量直接相加再硬除以 2（旧实现成交量条件不成立时
+        只有趋势分进分子却仍被除以 2，等于把门槛抬高一倍）。
+        """
         with patch.object(
             self.strategy, "_check_volume_price_condition",
-            return_value=(True, {"score": 30.0}),
-        ), patch.object(
-            self.strategy, "_check_above_avg_price",
-            return_value=(True, {"score": 5.0}),
+            return_value=(True, {"score": 5.5, "signal": "BUY"}),
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=10.0,
         ):
             matched, extra = self.strategy._check_buy_conditions("000001", make_bar())
 
         self.assertTrue(matched, extra)
         self.assertEqual(extra.get("signal"), "BUY")
-        self.assertGreaterEqual(extra.get("score", 0.0), 20.0)
-        entry = self.strategy._get_score_cache("000001", "BUY", f"{BAR_DAY} 10:30:00")
-        self.assertTrue(entry["done"])
+        self.assertAlmostEqual(extra["score"], 10.0, places=2)
+        # 10 分制折算 5 星
+        self.assertAlmostEqual(extra["star"], 5.0, places=1)
+
+    def test_check_buy_conditions_trend_alone_cannot_pass(self) -> None:
+        """R8：成交量为主 —— 趋势打满（权重 0.3）也补不上成交量不足。"""
+        with patch.object(
+            self.strategy, "_check_volume_price_condition",
+            return_value=(False, {"reason": "量能不足", "score": 0.0}),
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=10.0,
+        ):
+            matched, extra = self.strategy._check_buy_conditions("000001", make_bar())
+        self.assertFalse(matched)
+        # 仅趋势侧生效：10/10 × 0.3 × 10 = 3.0，低于 min_score=6.0
+        self.assertAlmostEqual(extra["score"], 3.0, places=2)
+        self.assertIn("分值不足", extra["reason"])
+
+    def test_check_buy_conditions_volume_alone_can_pass(self) -> None:
+        """R8：成交量打满（0.7×10 = 7.0 ≥ 6.0）即可买入，趋势只用于加厚分数。"""
+        with patch.object(
+            self.strategy, "_check_volume_price_condition",
+            return_value=(True, {"score": 5.5, "signal": "BUY"}),
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=0.0,
+        ):
+            matched, extra = self.strategy._check_buy_conditions("000001", make_bar())
+        self.assertTrue(matched, extra)
+        self.assertAlmostEqual(extra["score"], 7.0, places=2)
 
     def test_check_buy_conditions_score_not_enough(self) -> None:
         with patch.object(
             self.strategy, "_check_volume_price_condition",
-            return_value=(True, {"score": 1.0}),
-        ), patch.object(
-            self.strategy, "_check_above_avg_price",
-            return_value=(True, {"score": 0.0}),
+            return_value=(True, {"score": 1.0, "signal": "BUY"}),
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=0.0,
         ):
             matched, extra = self.strategy._check_buy_conditions("000001", make_bar())
         self.assertFalse(matched)
         self.assertIn("分值不足", extra["reason"])
+
+    def test_check_buy_conditions_negative_volume_score_blocks(self) -> None:
+        """R2/R8：价跌量增（成交量侧为负）必须拉低综合分，不能被当成中性。"""
+        with patch.object(
+            self.strategy, "_check_volume_price_condition",
+            return_value=(True, {"score": -5.0, "signal": "SELL"}),
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=10.0,
+        ):
+            matched, extra = self.strategy._check_buy_conditions("000001", make_bar())
+        self.assertFalse(matched)
+        # (−5/5.5 × 0.7 + 10/10 × 0.3) × 10 ≈ 3.36
+        self.assertLess(extra["score"], self.strategy.BUY_MIN_SCORE)
 
     def test_check_buy_conditions_invalid_price(self) -> None:
         matched, extra = self.strategy._check_buy_conditions("000001", make_bar(price=0))
@@ -395,12 +476,46 @@ class TestStrongReboundStrategy(unittest.TestCase):
         self.assertIn("开盘价或昨收价", extra["reason"])
 
     def test_check_buy_conditions_limit_move_filtered(self) -> None:
-        """接近涨跌停（>9.5%）不操作。"""
+        """接近跌停（主板 −10%，阈值 = 10% − 2 个百分点余量 = 8%）不买入。"""
         matched, extra = self.strategy._check_buy_conditions(
-            "000001", make_bar(price=11.0, preclose=10.0)
+            "000001", make_bar(price=9.0, preclose=10.0)
         )
         self.assertFalse(matched)
-        self.assertIn("没法操作", extra["reason"])
+        self.assertIn("接近涨停或跌停", extra["reason"])
+
+    def test_check_buy_conditions_near_limit_up_filtered(self) -> None:
+        """R13：涨停方向同样拦截（原实现用 abs() 两个方向都挡）。
+
+        主板 +8% 恰好等于阈值，必须挡下；否则会去追已接近涨停的股票。
+        """
+        matched, extra = self.strategy._check_buy_conditions(
+            "000001", make_bar(price=10.8, preclose=10.0)
+        )
+        self.assertFalse(matched)
+        self.assertIn("接近涨停或跌停", extra["reason"])
+
+    def test_check_buy_conditions_limit_move_is_board_aware(self) -> None:
+        """R13：创业板（20% 板，阈值 18%）跌 9% 远未接近跌停，不该被挡。"""
+        with patch.object(
+            self.strategy, "_check_volume_price_condition",
+            return_value=(True, {"score": 5.5, "signal": "BUY"}),
+        ), patch(
+            "strategy.strong_rebound_strategy.MultiTrendFactor.score",
+            return_value=10.0,
+        ):
+            matched, extra = self.strategy._check_buy_conditions(
+                "300750", make_bar(code="300750", price=9.1, preclose=10.0)
+            )
+        self.assertNotIn("接近涨停或跌停", extra.get("reason", ""))
+
+    def test_check_buy_conditions_preclose_zero_no_crash(self) -> None:
+        """R13：preclose=0（数据不全）不得触发除零异常。"""
+        matched, extra = self.strategy._check_buy_conditions(
+            "000001", make_bar(preclose=0)
+        )
+        self.assertFalse(matched)
+        self.assertIn("异常", extra["reason"])
+        self.assertNotIn("检查异常", extra["reason"])
 
     def test_check_buy_conditions_before_935(self) -> None:
         matched, extra = self.strategy._check_buy_conditions(
@@ -475,11 +590,47 @@ class TestStrongReboundStrategy(unittest.TestCase):
         self.assertIn("异常", extra["reason"])
 
     def test_check_sell_conditions_limit_move_filtered(self) -> None:
+        """接近涨停不卖出：主板 +9%（10% 板留 1 个百分点余量）即被挡下。"""
         matched, extra = self.strategy._check_sell_conditions(
-            "000001", {"cost_price": 10.0}, make_bar(price=9.0, preclose=10.0)
+            "000001", {"cost_price": 10.0}, make_bar(price=10.9, preclose=10.0)
         )
         self.assertFalse(matched)
-        self.assertIn("无法操作", extra["reason"])
+        self.assertIn("接近涨停或跌停", extra["reason"])
+
+    def test_check_sell_conditions_limit_move_is_board_aware(self) -> None:
+        """R13：ST（5% 板）+4.6% 已接近涨停，必须挡住挂卖单。
+
+        原实现硬编码 9.5%，ST 封在 +5% 时仍会去挂卖单。
+        """
+        matched, extra = self.strategy._check_sell_conditions(
+            "002456",
+            {"cost_price": 10.0},
+            make_bar(code="002456", name="*ST欧菲", price=10.46, preclose=10.0),
+        )
+        self.assertFalse(matched)
+        self.assertIn("接近涨停或跌停", extra["reason"])
+
+    def test_check_sell_conditions_preclose_zero_no_crash(self) -> None:
+        """R13：preclose=0 时不得除零（原实现会抛 ZeroDivisionError）。"""
+        with patch.object(self.strategy, "_resolve_highest_price", return_value=10.1):
+            matched, extra = self.strategy._check_sell_conditions(
+                "000001", {"cost_price": 10.0}, make_bar(preclose=0)
+            )
+        self.assertIsInstance(matched, bool)
+        self.assertNotIn("检查异常", extra.get("reason", ""))
+
+    def test_check_sell_conditions_reason_field_name(self) -> None:
+        """R9：卖点原因必须写进 `reason`（原实现写成 `reasons`，落库后为空）。"""
+        with patch.object(self.strategy, "_resolve_highest_price", return_value=20.0):
+            matched, extra = self.strategy._check_sell_conditions(
+                "000001",
+                {"cost_price": 20.0, "buy_time": "2026-07-01 10:00:00"},
+                make_bar(price=9.5, low=9.5, high=10.2),
+            )
+        self.assertTrue(matched, extra)
+        self.assertIn("reason", extra)
+        self.assertNotIn("reasons", extra)
+        self.assertIn("卖出分数", extra["reason"])
 
     def test_check_sell_conditions_before_935(self) -> None:
         matched, extra = self.strategy._check_sell_conditions(
@@ -589,6 +740,61 @@ class TestStrongReboundStrategy(unittest.TestCase):
                 "000001", "2026-07-01 10:00:00", f"{BAR_DAY} 10:30:00", 9.5
             )
         self.assertEqual(highest, 9.5)
+
+    def test_get_highest_since_buy_hits_intraday_cache(self) -> None:
+        """R10：同一天同一区间只查一次日K；命中缓存后不再发请求。"""
+        UserStrategyCache().save_highest_price("000001", "2026-07-01", BAR_DAY, 12.5)
+        with patch("strategy.strong_rebound_strategy.AppContext") as mock_ctx:
+            highest = self.strategy._get_highest_since_buy(
+                "000001", "2026-07-01 10:00:00", f"{BAR_DAY} 10:30:00", 10.2
+            )
+        self.assertEqual(highest, 12.5)
+        mock_ctx.return_value.market_api.get_day_kline.assert_not_called()
+
+    def test_get_highest_since_buy_merges_today_high_with_cache(self) -> None:
+        """缓存的是日K口径最高价，当日最高价更高时取当日值。"""
+        UserStrategyCache().save_highest_price("000001", "2026-07-01", BAR_DAY, 10.2)
+        with patch("strategy.strong_rebound_strategy.AppContext") as mock_ctx:
+            highest = self.strategy._get_highest_since_buy(
+                "000001", "2026-07-01 10:00:00", f"{BAR_DAY} 10:35:00", 11.8
+            )
+        self.assertEqual(highest, 11.8)
+        mock_ctx.return_value.market_api.get_day_kline.assert_not_called()
+
+    def test_get_highest_since_buy_writes_cache_after_query(self) -> None:
+        """未命中缓存时查询并回写，第二次调用不再请求。"""
+        with patch("strategy.strong_rebound_strategy.AppContext") as mock_ctx:
+            mock_ctx.return_value.market_api.get_day_kline.return_value = [
+                {"high": 12.0}, {"high": 13.5},
+            ]
+            first = self.strategy._get_highest_since_buy(
+                "000001", "2026-07-01 10:00:00", f"{BAR_DAY} 10:30:00", 0.0
+            )
+            second = self.strategy._get_highest_since_buy(
+                "000001", "2026-07-01 10:00:00", f"{BAR_DAY} 10:40:00", 0.0
+            )
+        self.assertEqual(first, 13.5)
+        self.assertEqual(second, 13.5)
+        self.assertEqual(mock_ctx.return_value.market_api.get_day_kline.call_count, 1)
+
+    # ---- R1：实例化契约 ----
+
+    def test_init_accepts_user_strategy_name(self) -> None:
+        """R1：workflow 会用关键字传 user_strategy_name，子类签名必须收得住。
+
+        少这个形参时 workflow 的 `_instantiate_strategy` 抛 TypeError 后被
+        `except Exception` 兜住并返回 None，整个用户策略被静默跳过。
+        """
+        strategy = StrongReboundStrategy(
+            user_strategy_id=USID,
+            user_strategy_name="爸爸的强趋势",
+            user_strategy_params=TEST_PARAMS,
+        )
+        self.assertEqual(strategy.user_strategy_name, "爸爸的强趋势")
+        # 且必须往 super 传，否则 self.user_strategy_name 仍是空串，
+        # 策略里所有 `f"{self.user_strategy_name},..."` 的原因文本会以逗号开头
+        _, extra = strategy.is_match_strategy(self._frame([10.0] * 3))
+        self.assertTrue(extra["reason"].startswith("爸爸的强趋势"))
 
     # ---- 路由与其它接口 ----
 

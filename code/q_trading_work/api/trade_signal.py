@@ -67,6 +67,8 @@ class TradeSignalApi:
         profit_rate: float = 0.0,
         profit_amount: float = 0.0,
         reason: str = "",
+        score: float = 0.0,
+        star: float = 0.0,
     ) -> dict[str, Any]:
         """保存交易信号。
 
@@ -78,6 +80,8 @@ class TradeSignalApi:
         :param profit_rate: 收益率（卖出时计算）
         :param profit_amount: 收益金额（卖出时计算）
         :param reason: 信号原因说明（可选）
+        :param score: 策略打分（服务端 `TradeSignalCreateRequest.score`，默认 0）
+        :param star: 星级，最大 5 星、保留一位小数（服务端同名字段，默认 0）
         :return: 保存结果字典
         """
         # 服务端 TradeSignalCreateRequest 的 str 字段不接受 null / 数组，
@@ -91,6 +95,8 @@ class TradeSignalApi:
             "profit_rate": round(profit_rate, 2),
             "profit_amount": round(profit_amount, 2),
             "reason": _as_text(reason),
+            "score": round(float(score or 0.0), 2),
+            "star": round(float(star or 0.0), 1),
         }
         result: Any = self._client.post("/api/trade_signal/add", body)
         return dict(result) if result else {}

@@ -14,8 +14,38 @@ class MultiTrendFactor(BaseFactor):
 
     适用场景: 趋势跟踪
     period: 周期或者天数
+
+    打分采用 **10 分制**（`score()` 的返回值直接落在 0~10，不再做归一化），
+    各分项权重与可达性：
+
+    +------------------+--------+------------------------------------------+
+    | 分项              | 分值   | 生效前提                                 |
+    +------------------+--------+------------------------------------------+
+    | 价格 > MA5 > MA10 | 3.0    | 至少 10 根                                |
+    | MACD 红柱放大     | 3.0    | **至少 34 根**（26+9−1），否则恒为 NaN    |
+    | ADX > 25 且 +DI>-DI| 3.0   | 至少 2×adx_period 根                      |
+    | 价格在 VWAP 上方  | 0.5    | 至少 vwap_period 根                       |
+    | 接近/突破前高     | 0.5    | 至少 high_low_period 根                   |
+    +------------------+--------+------------------------------------------+
+
+    注意 `macd_hist`：talib.MACD 需要 26 + 9 − 1 = 34 根才有值。实盘选股只取
+    20 根日线（`strategy_workflow` 的 days=20，回测 signal_window 同为 20），
+    因此这一项在两个链路里恒为 NaN、那 3 分从来没拿到过。要让它真正参与，
+    需要把日线窗口放大到 40 根以上。NaN 本身是安全的（`NaN > 0` 为 False，
+    不进入计分分支），问题只在于分数上限被静默折损。
     """
     factor_name: str = "MultiTrendFactor"
+
+    # 各分项满分（与 score() 里的加分保持一致），总分即 10 分制刻度
+    MA_SCORE: float = 3.0
+    MACD_SCORE: float = 3.0
+    ADX_SCORE: float = 3.0
+    VWAP_SCORE: float = 0.5
+    PREV_HIGH_SCORE: float = 0.5
+
+    # score() 的可达满分：阈值（如 UP_TREND_SCORE）应按它取比例，
+    # 改动任一权重时必须同步改这里，避免「阈值与尺度脱节」。
+    MAX_SCORE: float = 10.0
 
     def __init__(
             self,
@@ -85,8 +115,12 @@ class MultiTrendFactor(BaseFactor):
         return result
 
     def score(self, stock_array: pd.DataFrame) -> float:
-        """
-        根据calculate计算结果进行判断打分
+        """根据calculate计算结果进行判断打分，返回 0 ~ 10 分（10 分制）。
+
+        各分项权重见类 docstring；条件不成立（含对应指标为 NaN）时该项不计分。
+
+        :param stock_array: 日线或分钟行情 DataFrame（含 high/low/close/volume）
+        :return: 趋势分（0 ~ MAX_SCORE，即 0 ~ 10）
         """
         score: float = 0.0
         result_df = self.calculate(stock_array)
@@ -101,21 +135,20 @@ class MultiTrendFactor(BaseFactor):
             price_arr = FactorUtils.close_array(stock_array)
         current_price: float = price_arr[-1]
 
-        total_score: float = 8.0
         # 价格在均线上方
         if current_price > latest_result["ma5"] > latest_result["ma10"]:
-            score += 2
-        # MACD 红柱放大
+            score += self.MA_SCORE
+        # MACD 红柱放大（<34 根时 macd_hist 为 NaN，条件自然不成立）
         if latest_result['macd_hist'] > 0 and latest_result['macd_hist'] > result_records[-2]['macd_hist']:
-            score += 2
+            score += self.MACD_SCORE
         #  ADX确认趋势
         if latest_result['adx'] > 25 and latest_result['plus_di'] > latest_result['minus_di']:
-            score += 2
+            score += self.ADX_SCORE
         # 价格在VWAP上方
         if current_price > latest_result['vwap']:
-            score += 1
+            score += self.VWAP_SCORE
         # 突破前高
         if current_price > latest_result['prev_high'] * 0.995:  # 接近前高
-            score += 1
+            score += self.PREV_HIGH_SCORE
 
-        return score / total_score * 10
+        return score

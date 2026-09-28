@@ -60,14 +60,31 @@ class InDaySRFactor(BaseFactor):
         return self.score_with_sr(df, stock_array)
 
     def score_with_sr(self, sr_df: pd.DataFrame, stock_array: pd.DataFrame) -> float:
+        """按枢轴点打分；任一侧数据缺失时返回 0.0（视为无点位，不参与买卖判定）。
+
+        必须做空表保护：`sr_df` 由 `SwingTradingStrategy._get_sr_points` 提供，
+        日线取不到时它按设计返回**空表**（注释写明「由下游按无点位处理」）。
+        原实现直接 `to_dict(orient="records")[-1]`，空列表会抛 `IndexError`，
+        被 `_check_buy_conditions` 的 `except Exception` 吞掉后返回 False ——
+        净效果是该股票在这条策略下**永不产生买卖信号**，且每分钟刷一条 warning。
+        新股上市首日、停牌复牌、日线回源失败（服务端只留 3 个月）都会命中。
+
+        :param sr_df: 枢轴点位表（含 pivot/r1..r3/s1..s3），可以为空
+        :param stock_array: 当日分钟行情 DataFrame（含 price 或 close），可以为空
+        :return: 打分（10 / 7.5 / 5 / 0 / -5 / -7.5 / -10）
+        """
+        if sr_df is None or not isinstance(sr_df, pd.DataFrame) or len(sr_df) == 0:
+            return 0.0
+        if stock_array is None or len(stock_array) == 0:
+            return 0.0
         rs_records = sr_df.to_dict(orient="records")
         recent_rs_record = rs_records[-1]
         recent_stock = stock_array.to_dict(orient="records")[-1]
         price: float = 0.0
         if "price" in recent_stock:
-            price = recent_stock.get("price", 0.0)
+            price = float(recent_stock.get("price", 0.0) or 0.0)
         elif "close" in recent_stock:
-            price = recent_stock.get("close", 0.0)
+            price = float(recent_stock.get("close", 0.0) or 0.0)
         p = recent_rs_record.get("pivot", 0.0)
         s1 = recent_rs_record.get("s1", 0.0)
         s2 = recent_rs_record.get("s2", 0.0)
@@ -76,7 +93,10 @@ class InDaySRFactor(BaseFactor):
         r2 = recent_rs_record.get("r2", 0.0)
         r3 = recent_rs_record.get("r3", 0.0)
         score: float = 0.0
-        if p == 0.0:
+        if p == 0.0 or pd.isna(p):
+            return 0.0
+        # 价格异常（0/负数/NaN）时不做多：否则 `price <= s3` 会假成立给出 +10
+        if price <= 0 or pd.isna(price):
             return 0.0
         if price >= p: # 行情向上
             if r3 > 0 and price >= r3: # 超出最大阻力位，可以卖出

@@ -879,8 +879,9 @@ class TestStrategyWorkflow(unittest.TestCase):
             mock_ctx.return_value.mqtt_client = mock_mqtt
             result = self.wf._save_trade_signal(
                 "sid", "us1", "000001",
-                {"signal": "BUY", "current_price": 10.5},
+                {"signal": "BUY", "current_price": 10.5, "score": 7.5, "star": 3.8},
                 strategy_name="强势反弹策略",
+                user_strategy_name="爸爸的强趋势",
             )
             self.assertTrue(result)
             self.assertTrue(mock_mqtt.publish.called)
@@ -891,9 +892,56 @@ class TestStrategyWorkflow(unittest.TestCase):
             self.assertEqual(payload["user_strategy_id"], "us1")
             # P1-21：策略名由调用方传入，不再逐信号回查 /api/strategy/get
             self.assertEqual(payload["strategy_name"], "强势反弹策略")
+            # 2026-09-28：通知与载荷改用用户策略名（同模板下可区分多条策略）
+            self.assertEqual(payload["user_strategy_name"], "爸爸的强趋势")
             self.assertEqual(payload["stock_code"], "000001")
             self.assertEqual(payload["action"], "买入")
+            # R15：score/star 必须进载荷（与落库值一致）
+            self.assertAlmostEqual(payload["score"], 7.5)
+            self.assertAlmostEqual(payload["star"], 3.8)
             self.wf._strategy_api.get_by_id.assert_not_called()
+            # R15：服务端 add 必须收到 score/star
+            add_kwargs = self.wf._trade_signal_api.add.call_args.kwargs
+            self.assertAlmostEqual(add_kwargs["score"], 7.5)
+            self.assertAlmostEqual(add_kwargs["star"], 3.8)
+            # 通知的 recipient 用用户策略名
+            self.assertEqual(
+                self.wf._notifier.notify.call_args.kwargs["recipient"],
+                "爸爸的强趋势",
+            )
+
+    def test_save_trade_signal_notify_falls_back_to_strategy_name(self) -> None:
+        """未传用户策略名（旧调用点）时，recipient 回退到模板名而不是 None。"""
+        self.wf._trade_signal_api = MagicMock()
+        self.wf._trade_signal_api.latest.return_value = None
+        with patch("workflow.strategy_workflow.AppContext") as mock_ctx:
+            mock_mqtt = MagicMock()
+            mock_mqtt.publish.return_value = True
+            mock_ctx.return_value.mqtt_client = mock_mqtt
+            self.wf._save_trade_signal(
+                "sid", "us1", "000001",
+                {"signal": "BUY", "current_price": 10.5},
+                strategy_name="强势反弹策略",
+            )
+        self.assertEqual(
+            self.wf._notifier.notify.call_args.kwargs["recipient"],
+            "强势反弹策略",
+        )
+
+    def test_save_trade_signal_score_star_default_zero(self) -> None:
+        """extra 缺 score/star 时落 0，不应抛异常也不应传脏值。"""
+        self.wf._trade_signal_api = MagicMock()
+        self.wf._trade_signal_api.latest.return_value = None
+        with patch("workflow.strategy_workflow.AppContext") as mock_ctx:
+            mock_mqtt = MagicMock()
+            mock_mqtt.publish.return_value = True
+            mock_ctx.return_value.mqtt_client = mock_mqtt
+            self.wf._save_trade_signal(
+                "sid", "us1", "000001", {"signal": "BUY", "current_price": 10.5},
+            )
+        add_kwargs = self.wf._trade_signal_api.add.call_args.kwargs
+        self.assertEqual(add_kwargs["score"], 0.0)
+        self.assertEqual(add_kwargs["star"], 0.0)
 
     def test_save_trade_signal_buy_suppressed_by_filter(self) -> None:
         """连续相同买入方向且时间间隔 < 10分钟 → 信号被抑制。"""

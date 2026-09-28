@@ -16,6 +16,7 @@ Description: 用户策略全局缓存（单例）。
     | 当日分钟行情   | bar:{code}:{day}                        | workflow（唯一） |
     | 策略打分       | score:{usid}:{code}:{action}:{day}      | 各策略实例       |
     | 选股结果       | select:{usid}:{day}                     | 各策略实例       |
+    | 区间最高价     | hprice:{code}:{buy_date}:{day}          | 各策略实例       |
     +----------------+-----------------------------------------+------------------+
 
 设计要点：
@@ -56,6 +57,8 @@ class UserStrategyCache(metaclass=Singleton):
     SCORE_CACHE_TTL: int = 6 * 60 * 60
     # 选股结果缓存过期时间（秒）：12 小时
     SELECT_CACHE_TTL: int = 12 * 60 * 60
+    # 区间最高价缓存过期时间（秒）：6 小时，覆盖整个交易日
+    HIGHEST_PRICE_CACHE_TTL: int = 6 * 60 * 60
 
     def __init__(self) -> None:
         """初始化内存快照与锁（单例，仅首次生效）。"""
@@ -69,6 +72,8 @@ class UserStrategyCache(metaclass=Singleton):
         self._score_snapshot: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         # 内存快照：选股结果 (user_strategy_id, day) -> set[code]
         self._select_snapshot: dict[tuple[str, str], set[str]] = {}
+        # 内存快照：区间最高价 (code, buy_date, day) -> price
+        self._highest_price_snapshot: dict[tuple[str, str, str], float] = {}
         # Redis 不可用标记：失败一次后本次运行不再重试，避免每次调用都等超时
         self._redis_failed: bool = False
         # 显式关闭 Redis 的开关（回测等离线场景置为 True，只走内存快照，
@@ -133,6 +138,10 @@ class UserStrategyCache(metaclass=Singleton):
     @staticmethod
     def select_key(user_strategy_id: str, day: str) -> str:
         return f"select:{user_strategy_id}:{day}"
+
+    @staticmethod
+    def highest_price_key(code: str, buy_date: str, day: str) -> str:
+        return f"hprice:{code}:{buy_date}:{day}"
 
     # ---- 当日分钟行情 ----
 
@@ -391,10 +400,85 @@ class UserStrategyCache(metaclass=Singleton):
             self._select_snapshot[snapshot_key] = set(codes)
         return codes
 
+    # ---- 区间最高价（日K口径） ----
+
+    def get_highest_price(self, code: str, buy_date: str, day: str) -> float:
+        """读取「买入基准日 → 当日」的日K最高价缓存。
+
+        读取优先级：内存快照 → Redis（命中后回填快照）。**未命中返回 0.0**
+        （日K最高价恒为正，0 可安全表示「没有缓存」）。
+
+        :param code: 股票代码
+        :param buy_date: 区间起始日 YYYY-MM-DD
+        :param day: 当前交易日 YYYY-MM-DD
+        :return: 缓存的区间最高价；未命中返回 0.0
+        """
+        if not code or not buy_date or not day:
+            return 0.0
+        snapshot_key: tuple[str, str, str] = (code, buy_date, day)
+        with self._lock:
+            cached: float | None = self._highest_price_snapshot.get(snapshot_key)
+        if cached is not None:
+            return float(cached)
+
+        if not self._redis_ready():
+            return 0.0
+        try:
+            raw: str | None = self._redis().get_key_string(
+                self.highest_price_key(code, buy_date, day)
+            )
+        except Exception as exc:  # pragma: no cover - 防御性
+            self.logger.warning("区间最高价缓存读取 Redis 失败: %s", exc)
+            return 0.0
+        if not raw:
+            return 0.0
+        try:
+            value: float = float(raw)
+        except (TypeError, ValueError):
+            self.logger.warning("区间最高价缓存内容非法: code=%s, raw=%s", code, raw)
+            return 0.0
+        if value > 0:
+            with self._lock:
+                self._highest_price_snapshot[snapshot_key] = value
+        return value
+
+    def save_highest_price(
+        self, code: str, buy_date: str, day: str, price: float
+    ) -> None:
+        """写入「买入基准日 → 当日」的日K最高价缓存（只增不减）。
+
+        同一交易日内区间只会向右延伸，最高价单调不减，因此取 max 后写入；
+        这样即使并发写入两个不同时点的查询结果，也不会把更高的值覆盖成更低的。
+
+        :param code: 股票代码
+        :param buy_date: 区间起始日 YYYY-MM-DD
+        :param day: 当前交易日 YYYY-MM-DD
+        :param price: 本次查询到的区间最高价（<=0 时忽略）
+        """
+        if not code or not buy_date or not day or price <= 0:
+            return
+        snapshot_key: tuple[str, str, str] = (code, buy_date, day)
+        with self._lock:
+            existing: float = float(self._highest_price_snapshot.get(snapshot_key, 0.0))
+            if price <= existing:
+                return
+            self._highest_price_snapshot[snapshot_key] = float(price)
+
+        if not self._redis_ready():
+            return
+        try:
+            self._redis().set_key_string(
+                self.highest_price_key(code, buy_date, day),
+                str(float(price)),
+                ex=self.HIGHEST_PRICE_CACHE_TTL,
+            )
+        except Exception as exc:  # pragma: no cover - 防御性
+            self.logger.warning("区间最高价缓存写入 Redis 失败: %s", exc)
+
     # ---- 清理 ----
 
     def clear_minute_day(self, day: str) -> None:
-        """清理某日全部行情内存快照（Redis 侧靠 TTL 自然过期）。
+        """清理某日全部行情与区间最高价内存快照（Redis 侧靠 TTL 自然过期）。
 
         :param day: 日期 YYYY-MM-DD
         """
@@ -403,6 +487,8 @@ class UserStrategyCache(metaclass=Singleton):
                 self._minute_snapshot.pop(key, None)
             if self._last_day == day:
                 self._last_day = ""
+            for hkey in [k for k in self._highest_price_snapshot if k[2] == day]:
+                self._highest_price_snapshot.pop(hkey, None)
 
     def clear_user(self, user_strategy_id: str) -> None:
         """清理某用户策略的打分与选股内存快照。

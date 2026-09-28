@@ -55,9 +55,13 @@ class StrategyState:
 
     strategy_id: str  # 全局策略模板 ID（StrategyDao._id）
     user_strategy_id: str  # 用户策略关联 ID（UserStrategyDao._id）
-    strategy_name: str  # 策略名称
+    strategy_name: str  # 策略名称（策略模板/策略类名，如「波段交易策略」）
     class_path: str  # 策略类模块路径
     class_name: str  # 策略类名
+    # 用户策略名称（UserStrategyDao.name，用户在管理端给自己的策略起的名字）。
+    # 交易信号推送、通知的 recipient 一律用它，不再用 strategy_name：同一个模板
+    # 下用户可能建多个策略，只有用户自定义名才能区分是哪一条策略发出的信号。
+    user_strategy_name: str = ""
     instance: BaseStrategy | None = None  # 策略实例对象
     status: str = "stopped"  # 运行状态: running / stopped / paused
     stock_pool: list[str] = field(default_factory=list)  # 关注的股票池
@@ -351,6 +355,7 @@ class StrategyWorkflow(BaseWorkflow):
         self,
         strategy_cls: type[BaseStrategy],
         user_strategy_id: str = "",
+        user_strategy_name: str = "",
         strategy_id: str = "",
         strategy_type: str = "",
         user_strategy_params: dict[str, Any] | None = None,
@@ -360,6 +365,7 @@ class StrategyWorkflow(BaseWorkflow):
         try:
             instance: BaseStrategy = strategy_cls(
                 user_strategy_id=user_strategy_id,
+                user_strategy_name=user_strategy_name,
                 strategy_id=strategy_id,
                 strategy_type=strategy_type,
                 user_strategy_params=user_strategy_params,
@@ -583,6 +589,7 @@ class StrategyWorkflow(BaseWorkflow):
         self,
         template: dict[str, Any],
         user_strategy_id: str = "",
+        user_strategy_name: str = "",
         user_strategy_params: dict[str, Any] | None = None,
     ) -> BaseStrategy | None:
         """根据策略模板构建策略实例。
@@ -609,6 +616,7 @@ class StrategyWorkflow(BaseWorkflow):
         instance = self._instantiate_strategy(
             strategy_cls,
             user_strategy_id=user_strategy_id,
+            user_strategy_name=user_strategy_name,
             strategy_id=strategy_id,
             strategy_type=strategy_type,
             user_strategy_params=user_strategy_params if user_strategy_params is not None else {},
@@ -781,6 +789,7 @@ class StrategyWorkflow(BaseWorkflow):
 
         for us_item in user_strategies:
             user_strategy_id: str = str(us_item.get("id") or us_item.get("_id") or "")
+            user_strategy_name: str = us_item.get("name", "")
             us_sid: str = str(us_item.get("strategy_id", ""))
             if not us_sid or not user_strategy_id:
                 continue
@@ -801,6 +810,7 @@ class StrategyWorkflow(BaseWorkflow):
             instance = self._build_strategy_instance(
                 template,
                 user_strategy_id=user_strategy_id,
+                user_strategy_name=user_strategy_name,
                 user_strategy_params=us_item.get("strategy_params"),
             )
             if instance is None:
@@ -833,6 +843,7 @@ class StrategyWorkflow(BaseWorkflow):
                 strategy_name=instance.strategy_name,
                 class_path=instance.__class__.__module__,
                 class_name=instance.__class__.__name__,
+                user_strategy_name=user_strategy_name,
                 instance=instance,
                 pool_id=pool_id,
                 status=db_status if db_status in ("running", "stopped", "paused") else "stopped",
@@ -959,6 +970,7 @@ class StrategyWorkflow(BaseWorkflow):
     def add_user_strategy(self, user_strategy: UserStrategyDao) -> bool:
         """添加用户策略关联，加载到本地缓存。"""
         strategy_id: str = user_strategy.strategy_id
+        user_strategy_name: str = user_strategy.name
         user_id: str = user_strategy.user_id
         pool_id: str = user_strategy.pool_id
         status: str = user_strategy.status or "stopped"
@@ -988,6 +1000,7 @@ class StrategyWorkflow(BaseWorkflow):
         instance = self._build_strategy_instance(
             template,
             user_strategy_id=user_strategy_id,
+            user_strategy_name=user_strategy_name,
             user_strategy_params=user_strategy.strategy_params,
         )
         if instance is None:
@@ -1003,6 +1016,7 @@ class StrategyWorkflow(BaseWorkflow):
             strategy_name=instance.strategy_name,
             class_path=instance.__class__.__module__,
             class_name=instance.__class__.__name__,
+            user_strategy_name=user_strategy_name,
             instance=instance,
             pool_id=pool_id,
             status=status if status in ("running", "stopped", "paused") else "stopped",
@@ -1263,6 +1277,7 @@ class StrategyWorkflow(BaseWorkflow):
             if not self._save_trade_signal(
                 state.strategy_id, state.user_strategy_id, code, extra,
                 strategy_name=state.strategy_name,
+                user_strategy_name=state.user_strategy_name,
             ):
                 return
 
@@ -1381,6 +1396,7 @@ class StrategyWorkflow(BaseWorkflow):
             if not self._save_trade_signal(
                 state.strategy_id, state.user_strategy_id, code, extra,
                 strategy_name=state.strategy_name,
+                user_strategy_name=state.user_strategy_name,
             ):
                 return
 
@@ -1484,6 +1500,7 @@ class StrategyWorkflow(BaseWorkflow):
         code: str,
         extra: dict[str, Any],
         strategy_name: str = "",
+        user_strategy_name: str = "",
     ) -> bool:
         """保存交易信号到 /api/trade_signal/add，并推送 MQTT / 通知。
 
@@ -1501,17 +1518,35 @@ class StrategyWorkflow(BaseWorkflow):
         不再每个信号都发一次 `/api/strategy/get`。仅当调用方未传时做一次兜底查询
         以兼容旧调用点。
 
+        **通知用 `user_strategy_name`（2026-09-28）**：`trade notify` 的 recipient
+        与 MQTT 载荷都改用用户策略名（`UserStrategyDao.name`）。同一个模板下用户
+        可能建多条策略，用策略类名（如「波段交易策略」）无法区分是哪一条发出的信号。
+        `strategy_name`（模板名）保留在载荷里做兼容，未传时回退成它。
+
+        `extra` 里的 `score` / `star` 会一并写入信号记录（服务端
+        `TradeSignalCreateRequest` 已有这两个字段，此前本端一直没传，恒为 0）。
+
         :param strategy_id: 策略模板 ID
         :param user_strategy_id: 用户策略关联 ID
         :param code: 股票代码
         :param extra: handle_minute_bar 返回的详细信息（含 signal/current_price 等）
         :param strategy_name: 策略名称（来自 StrategyState，避免逐信号 HTTP 查询）
+        :param user_strategy_name: 用户策略名称（来自 StrategyState，用于通知与载荷）
         :return: True 表示信号已保存，False 表示信号被抑制/保存失败
         """
         signal_type: str = extra.get("signal", "")
         price: float = float(extra.get("current_price", extra.get("price", 0)))
         action: str = "买入" if signal_type == "BUY" else "卖出"
         profit_rate: float = 0.0
+        # 打分与星级：策略在 extra 里给出（10 分制打分、0~5 星），缺失时为 0
+        try:
+            score: float = float(extra.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        try:
+            star: float = float(extra.get("star", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            star = 0.0
         reason: str = extra.get("reason", "")
         if not isinstance(reason, str):
             # 防御（2026-09-15 线上 422 根因）：历史 bug 曾把 reason 写成单元素
@@ -1608,12 +1643,15 @@ class StrategyWorkflow(BaseWorkflow):
                 action=action,
                 profit_rate=profit_rate,
                 reason=reason,
+                score=score,
+                star=star,
             )
             self.logger.info(
                 "交易信号已保存: strategy_id=%s, user_strategy_id=%s, strategy_name=%s, "
-                "code=%s, action=%s, price=%.2f, profit_rate=%.2f%%, reason=%s",
-                strategy_id, user_strategy_id, strategy_name,
-                code, action, price, profit_rate, reason,
+                "user_strategy_name=%s, code=%s, action=%s, price=%.2f, "
+                "profit_rate=%.2f%%, score=%.2f, star=%.1f, reason=%s",
+                strategy_id, user_strategy_id, strategy_name, user_strategy_name,
+                code, action, price, profit_rate, score, star, reason,
             )
 
             # 2. 通过 MQTT 发送交易信号通知（字段与服务端信号记录保持一致）
@@ -1621,10 +1659,13 @@ class StrategyWorkflow(BaseWorkflow):
                 "strategy_id": strategy_id,
                 "user_strategy_id": user_strategy_id,
                 "strategy_name": strategy_name,
+                "user_strategy_name": user_strategy_name,
                 "stock_code": code,
                 "trade_price": price,
                 "action": action,
                 "profit_rate": round(profit_rate, 2),
+                "score": round(score, 2),
+                "star": round(star, 1),
                 "reason": reason,
             }
             mqtt_client = AppContext().mqtt_client
@@ -1652,7 +1693,9 @@ class StrategyWorkflow(BaseWorkflow):
                 notify_msg += f" 收益率={profit_rate:.2f}%"
             self._notifier.notify(
                 notify_msg,
-                recipient=strategy_name,
+                # recipient 用**用户策略名**（不再用策略模板名）：同一模板下可能有多条
+                # 用户策略，只有用户自定义名才能对上号
+                recipient=user_strategy_name or strategy_name,
                 user_strategy_id=user_strategy_id,
             )
 

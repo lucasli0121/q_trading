@@ -44,6 +44,7 @@ class BaseStrategy(ABC):
     strategy_id: str = ""
     user_strategy_id: str = ""
     strategy_name: str = "BaseStrategy"
+    user_strategy_name: str = ""
     description: str = ""
     strategy_type: str = "选股策略"
 
@@ -72,6 +73,7 @@ class BaseStrategy(ABC):
     def __init__(
         self,
         user_strategy_id: str = "",
+        user_strategy_name: str = "",
         strategy_id: str = "",
         strategy_type: str = "",
         user_strategy_params: dict[str, Any] | None = None,
@@ -93,6 +95,7 @@ class BaseStrategy(ABC):
         # 导致多用户策略实例用各自的参数互相覆盖同一 key 的因子（原 P0-5）。
         self.factor_manager: FactorManager = FactorManager()
         self.user_strategy_id = user_strategy_id
+        self.user_strategy_name = user_strategy_name
         self.strategy_id = strategy_id
         self.strategy_type = strategy_type
         self.strategy_params: dict[str, Any] = {}  # 已加载的策略参数（来源见 param_source）
@@ -516,6 +519,76 @@ class BaseStrategy(ABC):
             if self.xshg.is_session(today):
                 return today.strftime("%Y-%m-%d")
             today -= datetime.timedelta(days=1)
+
+    # ---- 涨跌停幅度与阈值 ----
+
+    @staticmethod
+    def price_limit_pct(code: str, name: str = "") -> float:
+        """返回该股票的涨跌停幅度（%）。
+
+        原实现把「接近涨跌停」硬编码成 ±9%（按 10% 涨跌停留 1% 余量），
+        对池内的创业板/科创板（20%）与 ST（5%）都会误判：
+        创业板涨到 +9.5% 会被当成「接近涨停」而挡掉卖出，
+        ST 封在 +5% 却仍会去挂卖单。
+
+        判定依据（按优先级）：
+        - 名称含 `ST`（含 `*ST`）→ 5%
+        - 代码前缀 300/301/302（创业板）、688/689（科创板）→ 20%
+        - 其余（主板、中小板）→ 10%
+
+        :param code: 股票代码
+        :param name: 股票名称（分钟/实时行情里的 `name` 字段），为空时不判断 ST
+        :return: 涨跌停幅度（%）
+        """
+        text: str = str(name or "").upper().replace(" ", "")
+        if "ST" in text:
+            return 5.0
+        prefix: str = str(code or "").strip()
+        if prefix[:3] in ("300", "301", "302", "688", "689"):
+            return 20.0
+        return 10.0
+
+    def _near_price_limit_pct(
+        self, code: str, name: str = "", margin: float = 1.0
+    ) -> float:
+        """接近涨跌停的判定阈值（%）= 涨跌停幅度 − 余量（默认 1 个百分点）。
+
+        :param code: 股票代码
+        :param name: 股票名称
+        :param margin: 距离涨跌停价的余量（百分点）
+        :return: 涨跌停幅度减余量，最低 1.0（避免余量大于幅度时得到非正数）
+        """
+        return max(self.price_limit_pct(code, name) - abs(margin), 1.0)
+
+    @staticmethod
+    def _change_percent(
+        stock_data: dict[str, Any], current_price: float, preclose: float
+    ) -> float:
+        """取当前涨跌幅（百分数，如 −3.25 表示跌 3.25%）。
+
+        **量纲约定**：行情快照里的 `change_percent` 是**小数比率**（0.0325 = +3.25%），
+        CLI 两处渲染与小程序接口契约都按比率处理，因此这里统一 ×100。
+        若换了实时数据源而该字段变成百分数，这里会立刻退化成
+        「任何下跌都不买、任何上涨都不卖」，换源时必须重新核对。
+
+        字段缺失、为 0（服务端部分兜底分支会写 0）或非数字时，用昨收自算。
+        `preclose <= 0`（数据不全）时不做除法，直接返回 0，避免除零异常
+        —— 原实现直接 `(current_price - preclose) / preclose * 100`，
+        被外层 `except Exception` 兜住后表现为反复刷「检查异常」warning。
+
+        :param stock_data: 分钟/实时行情快照
+        :param current_price: 当前价
+        :param preclose: 昨收价
+        :return: 涨跌幅（百分数）
+        """
+        try:
+            raw: Any = stock_data.get("change_percent")
+            chg: float = float(raw) * 100.0 if raw is not None else 0.0
+        except (TypeError, ValueError):
+            chg = 0.0
+        if chg == 0.0 and preclose > 0:
+            chg = (current_price - preclose) / preclose * 100.0
+        return chg
 
     # ---- 通用方法 ----
 

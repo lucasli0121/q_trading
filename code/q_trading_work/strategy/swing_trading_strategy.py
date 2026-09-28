@@ -72,15 +72,26 @@ class SwingTradingStrategy(BaseStrategy):
     def __init__(
         self,
         user_strategy_id: str = "",
+        user_strategy_name: str = "",
         strategy_id: str = "",
         strategy_type: str = "",
         user_strategy_params: dict[str, Any] | None = None,
         default_params: dict[str, Any] | None = None,
     ) -> None:
-        """初始化波段交易策略。"""
+        """初始化波段交易策略。
+
+        `user_strategy_name` 必须与基类签名一致：workflow 通过
+        `_instantiate_strategy` 用关键字传参，子类 `__init__` 少了这个形参会抛
+        `TypeError: got an unexpected keyword argument 'user_strategy_name'`，
+        被 `_instantiate_strategy` 的 `except Exception` 兜住后**整个用户策略被跳过**
+        （不建仓、不发信号、不卖），日志里只有一条 ERROR。
+        同时必须继续往 `super().__init__()` 传，否则 `self.user_strategy_name`
+        仍是空串，策略内所有以它为前缀的日志/原因文本会变成以逗号开头的空名字。
+        """
         # 必须调用基类初始化：设置 logger/factor_manager、加载策略参数并创建选股列表缓存字段
         super().__init__(
             user_strategy_id=user_strategy_id,
+            user_strategy_name=user_strategy_name,
             strategy_id=strategy_id,
             strategy_type=strategy_type,
             user_strategy_params=user_strategy_params,
@@ -165,6 +176,19 @@ class SwingTradingStrategy(BaseStrategy):
         """
         重载父类的此函数
         先执行买入判断，再执行卖出判断，目的是为了做T
+
+        **与父类的差异（有意为之，2026-09-28 确认）**：父类 `handle_minute_bar`
+        的买入闸门是「在当日选股列表中 且 无持仓」，这里改为「昨日未突破最大阻力位」
+        （`KlineSRFactor.score == -10.0` 时置位 `_break_max_r`），即**不依赖当日选股
+        结果**。本策略的定位是「在股票池上检测波段做 T 的机会」，把整个池当交易域，
+        用盘中的支撑/阻力位触发，以扩大波段信号的覆盖面。因此：
+
+        - 实盘（workflow）对**整个股票池**派发行情，池内每只股票每分钟都会跑一次
+          买入判定；
+        - 回测只有 `codes_today = matched_candidates + held` 会跑到这里。
+
+        两条链路的信号集合因此**不可直接比较**，回测结果只代表「当日候选股 + 持仓」
+        这一子集。卖出侧同理：实时链路恒传空持仓，未持仓股票也会走一遍卖出判定。
         """
         self._before_minute_route(code, stock_data)
         # 如果昨日股价突破最大阻力位，今天则不进行买入，只判断卖出
@@ -284,13 +308,13 @@ class SwingTradingStrategy(BaseStrategy):
             preclose: float = float(stock_data.get("preclose", 0))
             current_price: float = float(stock_data.get("price", 0))
             open_price: float = float(stock_data.get("open", 0))
-            low_price: float = float(stock_data.get("low", 0))
+            stock_name: str = str(stock_data.get("name", "") or "")
             create_time: str = str(stock_data.get("create_time", ""))
 
             if current_price <= 0:
                 return False, {
                     "reason": (
-                        f"{self.strategy_name},func:_check_buy_conditions,"
+                        f"{self.user_strategy_name},func:_check_buy_conditions,"
                         "当前价格异常"
                     ),
                     "code": code
@@ -300,7 +324,7 @@ class SwingTradingStrategy(BaseStrategy):
             if minute_dt is None:
                 return False, {
                     "reason": (
-                        f"{self.strategy_name}, func:check_buy_conditions,"
+                        f"{self.user_strategy_name}, func:check_buy_conditions,"
                         f"无法解析分钟时间: {create_time}"
                     ),
                     "code": code,
@@ -308,30 +332,33 @@ class SwingTradingStrategy(BaseStrategy):
             current_hour: int = minute_dt.hour
             current_minute: int = minute_dt.minute
                 
-            # ---- 条件1：9:40 前不判断，避免干扰 ----
-            if current_hour == 9 and current_minute < 40:
+            # ---- 避开 9:40以前和 13--13:10时间，避免突然开盘信息干扰 ----
+            if (current_hour == 9 and current_minute <= 40) or (current_hour == 13 and current_minute <= 10):
                 return False, {
                     "reason": (
-                        f"{self.strategy_name}, 9:40前不判断买入条件，当前时间{create_time}"
+                        f"{self.user_strategy_name}, 9:40或者13:10前不判断买入条件，过滤干扰"
                     ),
                     "code": code,
                     "open": open_price,
                     "preclose": preclose,
                 }
 
-            # 如果涨停或跌停则不买入（距离涨停价 0.5% 以内视为涨停）
-            if preclose > 0 and abs((current_price - preclose) / preclose * 100) >= 9.5:
+            chg_percent = self._change_percent(stock_data, current_price, preclose)
+            # 涨停或跌停附近不买入（类文档「涨停不买入」，同时保留原先对跌停的拦截：
+            # 原实现用 abs(...) >= 9.5 两个方向都挡，这里只把阈值改成按板块推算）。
+            # ST 5%、创业板/科创板 20%、其余 10%，统一留 1 个百分点余量；原实现硬编码
+            # 9.5% 会把创业板 −9.5%（远未跌停）一并挡掉，而 ST 封板时又拦不住。
+            near_limit: float = self._near_price_limit_pct(code, stock_name)
+            if preclose > 0 and abs(chg_percent) >= near_limit:
                 return False, {
                     "reason": (
-                        f"{self.strategy_name}"
-                        f"买入条件不满足: 当前价{current_price:.2f}"
-                        f" 接近涨停或跌停s（昨收{preclose:.2f}），不买入"
+                        f"{self.user_strategy_name}"
+                        f" 接近涨停或跌停,涨跌幅{chg_percent:.2f}%（阈值±{near_limit:.1f}%），不买入"
                     ),
                     "code": code,
                     "current_price": current_price,
                 }
 
-            
             minute_cache: list[dict[str, Any]] = self._get_minute_cache(code)
             stock_df = pd.DataFrame(minute_cache)
             inday_sr_factor = InDaySRFactor()  # 确保因子已注册
@@ -339,36 +366,33 @@ class SwingTradingStrategy(BaseStrategy):
             inday_score: float = inday_sr_factor.score_with_sr(sr_df, stock_df)  # 计算当天支撑位和阻力位
             boll_sr_factor = BollSRFactor(timeperiod=self.BUY_SR_WINDOW)  # 确保因子已注册
             boll_score: float = boll_sr_factor.score(stock_df)  # 计算布林带支撑位和阻力位
-            raise_score: int = 0
-            if inday_score > 0.0:
-                raise_score += 1
-            if boll_score > 0.0:
-                raise_score += 1
-            if raise_score >= 2:
+            avg_score: float = (inday_score + boll_score) / 2
+            star: float = avg_score / 2
+            if avg_score > 0:
                 return True, {
                     "reason": (
-                        f"条件满足: 因子返回的分值满足买入条件, 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}"
+                        f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}, 平均分值:{avg_score:.2f}"
                     ),
                     "signal": "BUY",
                     "code": code,
-                    "score": inday_score + boll_score,
-                    "current_price": current_price,
+                    "score": round(avg_score, 2),
+                    "star": round(star, 1),
+                    "current_price": round(current_price, 2),
                     "create_time": create_time,
                 }
             return False, {
                 "reason": (
-                    f"{self.strategy_name},func:_check_buy_conditions,"
-                    f"当前时间{create_time}不在买入窗口或条件未满足"
+                    f"当前时间{create_time}条件未满足,枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}, 平均分值:{avg_score:.2f}"
                 ),
                 "code": code,
-                "current_price": current_price,
+                "current_price": round(current_price, 2),
                 "time": create_time,
             }
 
         except Exception as exc:
             self.logger.warning(
                 "[%s] _check_buy_conditions(%s) error: %s",
-                self.strategy_name, code, exc,
+                self.user_strategy_name, code, exc,
             )
             return False, {"reason": f"检查异常: {exc}", "code": code}
 
@@ -399,21 +423,44 @@ class SwingTradingStrategy(BaseStrategy):
             if current_price <= 0:
                 return False, {
                     "reason": (
-                        f"{self.strategy_name},func:is_match_strategy,"
-                        "当前价格异常"
+                        f"{self.user_strategy_name},_check_sell_conditions, 当前价格异常"
                     ),
                     "code": code
                     }
-
-            extra["current_price"] = current_price
-
-            # 如果涨停或跌停则不卖出（距离涨停价 0.5% 以内视为涨停）
-            if preclose > 0 and abs((current_price - preclose) / preclose * 100) >= 9.5:
+            # 解析当前分钟时间
+            minute_dt: datetime.datetime | None = self._parse_time(create_time)
+            if minute_dt is None:
                 return False, {
                     "reason": (
-                        f"{self.strategy_name},func:is_match_strategy,"
-                        f"卖出条件不满足: 当前价{current_price:.2f}"
-                        f" 接近涨停或跌停（昨收{preclose:.2f}），不操作"
+                        f"{self.user_strategy_name}, func:check_buy_conditions,"
+                        f"无法解析分钟时间: {create_time}"
+                    ),
+                    "code": code,
+                }
+            current_hour: int = minute_dt.hour
+            current_minute: int = minute_dt.minute
+                
+            # ---- 卖出只避开 9:35之前，避免突然开盘信息干扰 ----
+            if current_hour == 9 and current_minute <= 35:
+                return False, {
+                    "reason": (
+                        f"{self.user_strategy_name}, 9:35前不判断买入条件，过滤干扰"
+                    ),
+                    "code": code,
+                }
+                
+            extra["current_price"] = current_price
+            stock_name: str = str(stock_data.get("name", "") or "")
+            chg_percent = self._change_percent(stock_data, current_price, preclose)
+            # 涨停或跌停附近不卖出（类文档「跌停不卖出」，同时保留原先对涨停的拦截）。
+            # 阈值同样按该股票的涨跌停幅度推算（留 1 个百分点余量）：原实现硬编码 9.5%，
+            # ST 封在 ±5% 时仍会去挂卖单，创业板 ±9.5% 却又不卖。
+            near_limit: float = self._near_price_limit_pct(code, stock_name)
+            if preclose > 0 and abs(chg_percent) >= near_limit:
+                return False, {
+                    "reason": (
+                        f"{self.user_strategy_name},"
+                        f"卖出条件不满足: 接近涨停或跌停,涨跌幅{chg_percent:.2f}%（阈值±{near_limit:.1f}%），不操作"
                     ),
                     "code": code,
                     "current_price": current_price,
@@ -426,18 +473,16 @@ class SwingTradingStrategy(BaseStrategy):
             inday_score: float = inday_sr_factor.score_with_sr(sr_df, stock_df)  # 计算当天支撑位和阻力位
             boll_sr_factor = BollSRFactor(timeperiod=self.SELL_SR_WINDOW)  # 确保因子已注册
             boll_score: float = boll_sr_factor.score(stock_df)  # 计算布林带支撑位和阻力位
-            raise_score: int = 0
-            if inday_score < 0.0:
-                raise_score += 1
-            if boll_score < 0.0:
-                raise_score += 1
-            if raise_score >= 2.0:
+            avg_score: float = (inday_score + boll_score) / 2
+            star: float = -1.0 * avg_score / 2
+            if avg_score < 0:
                 extra["signal"] = "SELL"
                 extra["reason"] = (
-                    f"条件满足: 因子返回的分值满足卖出条件, 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}"
+                    f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f},平均分值:{avg_score:.2f}"
                 )
-                extra["current_price"] = current_price
-                extra["score"] = inday_score + boll_score
+                extra["current_price"] = round(current_price, 2)
+                extra["score"] = round(avg_score, 2)
+                extra["star"] = round(star, 1)
                 extra["create_time"] = create_time
                 return True, extra
 
@@ -446,7 +491,7 @@ class SwingTradingStrategy(BaseStrategy):
         except Exception as exc:
             self.logger.warning(
                 "[%s] _check_sell_conditions(%s) error: %s",
-                self.strategy_name, code, exc,
+                self.user_strategy_name, code, exc,
             )
             return False, {"reason": f"检查异常: {exc}", "code": code}
 

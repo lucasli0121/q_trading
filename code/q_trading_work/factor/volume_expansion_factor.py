@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Union
 import numpy as np
 import pandas as pd
+import talib
 from factor.base_factor import BaseFactor
 from factor.factor_utils import FactorUtils
 
@@ -10,90 +11,230 @@ from factor.factor_utils import FactorUtils
 class VolumeExpansionFactor(BaseFactor):
     """成交量放大因子。
 
-    连续 N 次每个周期满足：成交量 >= min_volume 手 or 成交额 >= min_amount 元，
-    且从 N 周期内最低点到当前收盘的涨幅 > min_price_pct%。
+    连续 N 次每个周期满足：成交量均线,量比,成交量连续放大，成交量趋势，量价配合因素给成交量打分，
+    成交量连续放大 + 价格上涨 = 资金持续流入 = 买入信号
+    成交量连续放大 + 价格下跌 = 资金恐慌出逃 = 观望/卖出
+    成交量萎缩 + 价格上涨 = 上涨乏力 = 警惕
     """
 
     factor_name: str = "VolumeExpansionFactor"
 
     def __init__(
         self,
-        days: int = 3,
-        min_volume: int = 500,       # 最低成交量（手）
-        min_amount: float = 10_000_000.0,  # 最低成交额（元，默认 1000 万）
-        min_price_pct: float = 2.0,  # 最低累计涨幅（%）
+        days: int = 20,
     ) -> None:
         """初始化成交量放大因子。
 
-        :param days: 连续周期数
-        :param min_volume: 每周期最低成交量（手）
-        :param min_amount: 每周期最低成交额（元）
-        :param min_price_pct: 从最低点涨幅阈值（%）
+        :param days: 连续周期数最小5
         """
-        self.days: int = days
-        self.min_volume: int = min_volume
-        self.min_amount: float = min_amount
-        self.min_price_pct: float = min_price_pct
+        self.days: int = max(days, 5)
 
     def calculate(self, stocks: pd.DataFrame) -> Any:
         """计算成交量放大信号。
 
         检查最近 self.days 个周期：
-        - 每个周期 volume >= min_volume 或 amount >= min_amount
-        - 累计涨幅 > min_price_pct
-
-        全部满足则返回从最低点的涨幅，否则返回 0.0。
-
-        :param stocks: 结构化 np.ndarray，含 close/volume/amount 字段
-        :return: 从最低点的涨幅（%），不满足条件时返回 0.0
+        成交量均线,量比,成交量连续放大，成交量趋势，量价配合因素
+        :return: 返回各指标结果值
         """
+        df = pd.DataFrame()
         if len(stocks) < self.days:
-            return 0.0  # 数据不足
+            return df  # 数据不足
 
-        price_arr: np.ndarray
-        if "price" in stocks:
-            price_arr = FactorUtils.price_array(stocks)
-        elif "close" in stocks:
-            price_arr = FactorUtils.close_array(stocks)
-        volume_arr: np.ndarray = FactorUtils.volume_array(stocks)
-        amount_arr: np.ndarray = FactorUtils.amount_array(stocks)
+        vol: np.ndarray = FactorUtils.volume_array(stocks)
+        close: np.ndarray = FactorUtils.close_array(stocks)
+        df = pd.DataFrame(index=stocks.index)
+        df['close'] = stocks['close']
+        df['high'] = stocks['high']
+        df['low'] = stocks['low']
+        df['volume'] = stocks['volume']
 
-        # 取最近 self.days 个周期
-        recent_price: np.ndarray = price_arr[-self.days:]
-        recent_volume: np.ndarray = volume_arr[-self.days:]
-        recent_amount: np.ndarray = amount_arr[-self.days:]
-        avg_volumn = np.average(recent_volume)
-        avg_amt = np.average(recent_amount)
-        # 检查每个周期是否满足量/额条件
-        vol_number = 0
-        amt_number = 0
+        # 1. 成交量均线
+        # ===== 1. 成交量均线（动态周期）=====
+        short_period = min(5, self.days)
+        mid_period = min(10, self.days)
+
+        df['vol_ma_short'] = stocks['volume'].rolling(short_period).mean()
+        df['vol_ma_mid'] = stocks['volume'].rolling(mid_period).mean()
+        df['vol_ma_long'] = stocks['volume'].rolling(self.days).mean()
+
+        # 2. 量比（当前量 / 前N日均量）
+        df['vol_ratio_short'] = stocks['volume'] / df['vol_ma_short']
+        df['vol_ratio_mid'] = stocks['volume'] / df['vol_ma_mid']
+        df['vol_ratio_long'] = stocks['volume'] / df['vol_ma_long']
+
+        # 3. 成交量连续放大天数
+        df['vol_up_and_price_up'] = (
+            (stocks['volume'] > stocks['volume'].shift(1)) & 
+            (stocks['close'] > stocks['close'].shift(1))
+        )
+        df['consecutive_vol_up'] = df['vol_up_and_price_up'].rolling(self.days).sum()
+
+        # 4. 成交量趋势（斜率）
+        # df['vol_slope_short'] = self.rolling_slope(stocks['volume'], short_period)
+        # df['vol_slope_mid'] = self.rolling_slope(stocks['volume'], mid_period)
+        df['vol_slope'] = self.rolling_slope(stocks['volume'], self.days)
+
+        # 5. 量价配合
+        df['price_change'] = stocks['close'].pct_change()
+        df['vol_price_align'] = np.where(
+            (df['price_change'] > 0) & (stocks['volume'] > df['vol_ma_short']),
+            1,   # 价涨量增 ✅
+            np.where(
+                (df['price_change'] < 0) & (stocks['volume'] > df['vol_ma_short']),
+                -1,  # 价跌量增 ❌
+                0    # 其他
+            )
+        )
+        # 6. OBV（能量潮）
+        df['obv'] = talib.OBV(close, vol)
+        df['obv_ma'] = df['obv'].rolling(self.days).mean()
+        df['obv_above_ma'] = df['obv'] > df['obv_ma']
+        return df
+
+    def rolling_slope(self, series, window):
+        """通用快速线性回归斜率"""
+        x = np.arange(window)
+        w = x - x.mean()
+        denom = (w ** 2).sum()
         
-        for i in range(self.days):
-            if recent_volume[i] > self.min_volume and recent_volume[i] > avg_volumn:
-                vol_number = vol_number + 1
-            if recent_amount[i] > self.min_amount and recent_amount[i] > avg_amt:
-                amt_number = amt_number + 1
-        rate_vol: float = vol_number / self.days * 10
-        rate_amt: float = amt_number / self.days * 10
-        if rate_vol < 6 or rate_amt < 6:
-            return 0.0
-        # 计算从 N 周期内最低点到当前收盘的涨幅
-        lowest_price: float = float(np.min(recent_price))
-        latest_price: float = float(recent_price[-1])
+        return series.rolling(window).apply(
+            lambda y: np.dot(y, w) / denom, raw=True
+        )
 
-        if lowest_price <= 0:
-            return 0.0
+    def score(self, stock_array: pd.DataFrame) -> dict[str, Any]:
+        """计算成交量放大综合评分（**10 分制**）。
 
-        price_pct: float = (latest_price - lowest_price) / lowest_price * 100
+        评分维度与满分（合计 10.0）：
 
-        if price_pct <= self.min_price_pct:
-            return 0.0
-        volume_sum: float = np.sum(volume_arr)
-        avg_volume_sum: float = avg_volumn * self.days
-        volume_rate = (volume_sum - avg_volume_sum) / volume_sum * 10
-        total_score = price_pct + volume_rate
-        return round(total_score, 2)
+        +------------------+--------+----------------------------------------+
+        | 维度              | 满分   | 说明                                    |
+        +------------------+--------+----------------------------------------+
+        | 成交量连续放大    | 2.0    | 连续 5 天 2.0 / 4 天 1.6 / 3 天 1.2 …   |
+        | 量比              | 2.0    | >=3 倍 2.0 / >=2 倍 1.6 / …（下跌取负） |
+        | 成交量趋势（斜率）| 1.0    | 斜率>0 且量均线金叉 1.0，否则 0.7（下跌取负）|
+        | 量价配合          | 2.0    | 价涨量增 +2.0，价跌量增 −2.0            |
+        | OBV 上升          | 1.0    | OBV 在均线上方且较上一根抬升            |
+        | 放量突破前期高点  | 2.0    | 收盘接近近期高点且量比 > 1.5            |
+        +------------------+--------+----------------------------------------+
 
-    def score(self, stock_array: pd.DataFrame) -> float:
-        result = self.calculate(stock_array)
-        return result
+        信号阈值按同一刻度：`score >= 6.0` → STRONG_BUY，`>= 4.0` → BUY，
+        否则 None。
+
+        **返回值契约（与 BaseFactor 家族其它因子不同，使用方需注意）**：
+        本因子返回 `dict`（含 signal/score/price/volume/reason 等明细），
+        而 `KlineSRFactor` / `BollSRFactor` / `MultiTrendFactor` / `VwapFactor`
+        等均返回 `float`。因此**不能**写成 `score += factor.score(df)`，
+        必须显式取字段：`score += factor.score(df)["score"]`。
+        保留 dict 是为了让调用方能拿到 `reason` 明细；若将来要并入统一因子
+        接口，应另加一个返回 float 的入口，而不是直接改这里的返回类型。
+
+        :param stock_array: 含 close/high/low/volume 列的行情 DataFrame
+        :return: 明细字典，`score` 字段为 0~10 的综合分
+        """
+        score: float = 0.0
+        reason: list[str] = []
+        if len(stock_array) < self.days:
+            return {
+                'signal': 'None', 'score': score, 'price': 0.0, 'volume': 0.0,
+                'vol_ratio': 0.0, 'reason': reason, 'consecutive': 0.0,
+                'vol_slope': 0.0, 'vol_price_align': 0,
+            }
+
+        df: pd.DataFrame = self.calculate(stock_array)
+        row = df.iloc[-1]
+        prev = df.iloc[-2]
+        price_up = row["price_change"] > 0 # 价格上涨标志
+
+        # === 条件1: 成交量连续放大（满分 2.0）===
+        # 连续2天以上放量；未达 2 天时该项不计分（用局部变量，
+        # 原实现写 `score = 0.0` 会把前面已累计的分整体清零）
+        consecutive = row['consecutive_vol_up']
+        reason.append(f'连续{int(row["consecutive_vol_up"])}天放量')
+        consecutive_score: float = 0.0
+        if consecutive >= 5:
+            consecutive_score = 2.0
+        elif consecutive >= 4:
+            consecutive_score = 1.6
+        elif consecutive >= 3:
+            consecutive_score = 1.2
+        elif consecutive >= 2:
+            consecutive_score = 0.8
+        score += consecutive_score
+
+        # === 条件2: 量比达标（满分 2.0）===
+        ratio = row['vol_ratio_short']
+        ratio_score: float = 0.0
+        if ratio >= 3.0:
+            ratio_score += 2.0
+            reason.append('量比≥3倍')
+        elif ratio >= 2.0:
+            ratio_score += 1.6
+            reason.append('量比≥2倍')
+        elif ratio >= 1.5:
+            ratio_score += 1.2
+            reason.append('量比≥1.5倍')
+        elif ratio >= 1.2:
+            ratio_score += 0.6
+            reason.append('量比≥1.2倍')
+        else:
+            ratio_score += 0.0
+
+        # 股票下跌为负分
+        if not price_up:
+            ratio_score *= -1
+        score += ratio_score
+
+        # === 条件3: 成交量趋势向上（满分 1.0）===
+        slope = float(row['vol_slope'])
+        vol_ma = df['vol_ma_short']
+        slope_score: float = 0.0
+        if slope > 0.0 and float(vol_ma.iloc[-1]) > float(vol_ma.shift(5).iloc[-1]):
+            reason.append('成交量斜率向上并且成交量ma金叉')
+            slope_score += 1.0
+        elif slope > 0.0:
+            reason.append('成交量斜率向上')
+            slope_score += 0.7
+        if not price_up:
+            slope_score *= -1
+        score += slope_score
+
+        # === 条件4: 量价配合（价涨量增 +2.0 / 价跌量增 −2.0）===
+        vol_price_align = row['vol_price_align']
+        if vol_price_align == 1:
+            score += 2.0
+            reason.append('价涨量增')
+        elif vol_price_align == -1:
+            score -= 2.0
+
+        # === 条件5: OBV创新高（满分 1.0）===
+        if row['obv'] > row['obv_ma'] and row['obv'] > prev['obv']:
+            score += 1.0
+            reason.append('OBV上升')
+
+        # === 条件6: 价格突破（满分 2.0）===
+        # 放量突破近期高点
+        recent_high = df['high'].iloc[-self.days:-1].max()
+        if row['close'] > recent_high * 0.99 and row['vol_ratio_short'] > 1.5:
+            score += 2.0
+            reason.append('突破前期高点')
+
+        # === 综合判断（10 分制刻度：6.0 强买 / 4.0 买入）===
+        signal = "BUY"
+        if score >= 6.0:
+            signal = 'STRONG_BUY'
+        elif score >= 4.0:
+            signal = "BUY"
+        else:
+            signal = "None"
+
+        return {
+            'signal': signal,
+            'score': score,
+            'price': row['close'],
+            'volume': row['volume'],
+            'vol_ratio': round(row['vol_ratio_short'], 2),
+            'reason': reason,
+            'consecutive': consecutive,
+            'vol_slope': slope,
+            'vol_price_align': row['vol_price_align']
+        }
