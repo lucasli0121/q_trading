@@ -81,7 +81,12 @@ class BacktestConfig:
     start_date: str = ""
     end_date: str = ""
     hold_days: int = 5
-    signal_window: int = 20
+    # 信号检测窗口（日线根数）。2026-09-28 由 20 放大到 40：MultiTrendFactor 的
+    # MACD 分项需要 34 根出值（26+9−1），判定又要与上一根比较 ⇒ 实际需 35 根才成立，
+    # 20 根时恒为 NaN，趋势分上限静默折损 3 分。取 40 留余量。
+    # 必须与 StrategyWorkflow.SELECT_KLINE_DAYS 同值，否则实盘选股与回测的
+    # 趋势分不可比（同一策略在两条链路上选出的股票集合会分叉）。
+    signal_window: int = 40
     frequency: str = "daily"
     trade_config: TradeCostConfig | None = None
     position_size_pct: float = 1.0

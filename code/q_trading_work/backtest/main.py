@@ -81,7 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", default="", help="回测结束日期 YYYY-MM-DD（分钟频带时间）")
     parser.add_argument("--capital", type=float, default=100000.0, help="初始资金（元）")
     parser.add_argument("--hold-days", type=int, default=5, help="持有天数")
-    parser.add_argument("--signal-window", type=int, default=20, help="信号检测窗口（条）")
+    # 默认值与 BacktestConfig.signal_window 同源，避免「改了一处忘了另一处」。
+    # 40 根是 MultiTrendFactor 的 MACD 分项（需 34 根出值、35 根才能比较放大）
+    # 能参与打分的前提。
+    parser.add_argument(
+        "--signal-window",
+        type=int,
+        default=BacktestConfig.signal_window,
+        help="信号检测窗口（日线根数，默认 40；小于 35 时趋势因子的 MACD 分项失效）",
+    )
     parser.add_argument(
         "--frequency", choices=("daily", "minute"), default="daily", help="K线频率"
     )

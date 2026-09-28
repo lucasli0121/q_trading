@@ -35,7 +35,14 @@ from api.workflow_service_user_strategy import WorkflowServiceUserStrategyApi
 from app_context import AppContext
 from core.user_strategy_cache import UserStrategyCache
 from dao.order_dao import OrderDao, OrderStatus
-from dao.user_strategy_dao import StrategyStatus, UserStrategyDao
+from dao.user_strategy_dao import (
+    DEFAULT_INITIAL_AMOUNT as DAO_DEFAULT_INITIAL_AMOUNT,
+    DEFAULT_MAX_STOCK_COUNT as DAO_DEFAULT_MAX_STOCK_COUNT,
+    StrategyStatus,
+    UserStrategyDao,
+    parse_initial_amount,
+    parse_max_stock_count,
+)
 from mq.mqtt_client import MqttTopic
 from strategy.base_strategy import BaseStrategy
 from trade.manager import TradeExecutionResult, TradeManager
@@ -68,14 +75,19 @@ class StrategyState:
     pool_id: str = ""  # 关联的股票池 ID，用于每日重新加载股票池
     positions: dict[str, dict[str, Any]] = field(default_factory=dict)  # code -> 持仓信息
     load_error: str = ""  # 加载失败时的错误信息
-    initial_amount: float = 0.0  # 初始资金（来自 UserStrategyDao.initial_amount）
+    # 初始资金（来自 UserStrategyDao.initial_amount）。
+    # 默认值 10 万与服务端默认一致；仅当服务端字段缺失时才落到这个默认。
+    initial_amount: float = 100000.0
     # 用户策略是否显式配置了 `initial_amount`（值为 0 也算配置）。
     # 配置 0 是有效语义 —— 表示限制买入（2026-09-24 语义确认）。
     # True 时禁止用历史执行记录里的 initial_amount 覆盖，否则配置的 0 会被
     # 旧记录里的正数「洗白」，限制失效（见 `_load_execution_data` / `_load_positions`）。
     initial_amount_configured: bool = False
     current_profit: float = 0.0  # 已实现盈利（来自 StrategyExecutionDao.current_profit）
-    max_stock_count: int = 4  # 最大持仓数量（来自 UserStrategyDao.max_stock_count）
+    # 最大持仓数量（来自 UserStrategyDao.max_stock_count）。
+    # 默认 -1 = 不限制持仓数量；仅当服务端字段缺失/非法时才落到这个默认。
+    # 0 不是默认值，它是「限制买入」的有效配置（2026-09-24 语义确认）。
+    max_stock_count: int = -1
     available_cash: float = 0.0  # 剩余可用资金（初始资金 + 已实现盈利 - 持仓成本）
     pending_codes: set[str] = field(default_factory=set)  # 在途订单股票代码（去重）
     blacklist_codes: set[str] = field(default_factory=set)  # 用户黑名单股票代码（策略信号/选股时过滤）
@@ -100,6 +112,24 @@ class StrategyWorkflow(BaseWorkflow):
 
     # 单笔买入金额上限（元），避免单笔一次性动用全部资金
     MAX_SINGLE_ORDER_AMOUNT: float = 100000.0
+
+    # 选股时加载的日线根数（`instance.select(..., days=...)`）。
+    # 2026-09-28 由 20 放大到 40：MultiTrendFactor 的 MACD 分项需要 34 根才有值
+    # （26+9−1），而判定是「红柱比上一根放大」，所以实际要 **35 根**才能成立 ——
+    # 20 根时该分项恒为 NaN，趋势分上限被静默折损 3 分（那 3 分从来没拿到过）。
+    # 取 40 留 5 根余量。回测的 `signal_window` 必须与它保持一致，否则选股链路与
+    # 回测链路的趋势分不可比（BacktestConfig.signal_window 同值）。
+    SELECT_KLINE_DAYS: int = 40
+
+    # 用户策略未配置 `max_stock_count` / `initial_amount` 时的默认值，
+    # 与服务端 UserStrategyCreateRequest / UserStrategyItem 的默认值一致：
+    # 不限制持仓数量 + 10 万初始资金。
+    # 这里直接引用 dao 模块常量，不在本处重写字面量 —— 两处默认值一旦漂移，
+    # 「配置生效与否」会随加载路径不同而不同，很难查。
+    # 注意 `0` 仍是「限制买入」的有效配置语义（2026-09-24 确认），不是默认值 ——
+    # 只有字段缺失或非法时才落回这两个默认。
+    DEFAULT_MAX_STOCK_COUNT: int = DAO_DEFAULT_MAX_STOCK_COUNT
+    DEFAULT_INITIAL_AMOUNT: float = DAO_DEFAULT_INITIAL_AMOUNT
 
     # 多实例分片：查询本实例负责的 user_strategy_ids 的重试次数与间隔
     # （覆盖启动瞬间后台尚未就绪的情况；查询失败一律空转，见
@@ -829,13 +859,15 @@ class StrategyWorkflow(BaseWorkflow):
             # 从 UserStrategyDao 读取初始资金和最大持仓数
             # P0-6 + 2026-09-24 语义确认：`max_stock_count=0` 与 `initial_amount=0`
             # 都表示**限制买入**（不允许新建持仓或加仓），`-1` 才是不限制持仓数量。
-            # 解析处不再用 `or 4` 兜底 —— 只有字段缺失/非法才回退默认 4。
+            # 2026-09-28：字段缺失/非法时的默认值改为「不限制持仓 + 10 万初始资金」
+            # （与服务端默认值一致），不再回退 4 / 0。
             max_stocks: int = self._parse_max_stock_count(us_item.get("max_stock_count"))
             raw_initial: Any = us_item.get("initial_amount")
-            initial_amt: float = float(raw_initial or 0)
+            initial_amt: float = self._parse_initial_amount(raw_initial)
             # 「显式配置 0」与「字段缺失」必须区分：0 是限制买入的有效语义，
             # 不能被历史执行记录里的值覆盖（见 _load_execution_data）。
-            initial_configured: bool = raw_initial is not None
+            # 空字符串等同于未配置，与服务端写入行为对齐。
+            initial_configured: bool = raw_initial not in (None, "")
 
             state = StrategyState(
                 strategy_id=us_sid,
@@ -2061,24 +2093,33 @@ class StrategyWorkflow(BaseWorkflow):
             return 0
         return quantity
 
+    def _parse_initial_amount(self, raw: Any) -> float:
+        """解析 `initial_amount`，判定逻辑委托 `dao.user_strategy_dao.parse_initial_amount`。
+
+        `0` 是**有效语义**（限制买入），原样保留；只有字段缺失或非法
+        （None / "" / 非数字）才回退默认 `DEFAULT_INITIAL_AMOUNT`（10 万元）。
+        原实现是 `float(raw_initial or 0)` —— 字段缺失时得到 0，而 0 在本项目语义里
+        恰好是「限制买入」，等于让未配置的策略静默不下单（`6a58d62b…` 0/0 即此类）。
+
+        只做转调、不另起一套判定，保证加载链路与 DAO 用的是同一份口径。
+
+        :param raw: 服务端/DAO 返回的原始值
+        :return: 规范化后的初始资金
+        """
+        return parse_initial_amount(raw)
+
     def _parse_max_stock_count(self, raw: Any) -> int:
-        """解析 `max_stock_count`（P0-6）。
+        """解析 `max_stock_count`（P0-6），判定逻辑委托 `dao.user_strategy_dao.parse_max_stock_count`。
 
         语义（2026-09-24 最终确认）：`-1`（或任何负数）= 不限制持仓数量；
         `0` = **限制买入**（不允许新建持仓，也不允许对已有持仓加仓）；正数 = 持仓上限。
-        字段缺失或非法（None / "" / 非数字）时才回退默认 4 —— `0` 是有效值，不再被
-        `or 4` 改写成 4。
+        字段缺失或非法（None / "" / 非数字）时才回退默认 `DEFAULT_MAX_STOCK_COUNT`
+        （2026-09-28 由 4 改为 **-1 不限制**）—— `0` 是有效值，不会被改写成默认值。
 
         :param raw: 服务端/DAO 返回的原始值
         :return: 规范化后的最大持仓数量
         """
-        if raw is None or raw == "":
-            return 4
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            self.logger.warning("max_stock_count 取值非法: %r，回退默认 4", raw)
-            return 4
+        return parse_max_stock_count(raw)
 
     def _buy_block_reason(
         self, state: StrategyState, positions: dict[str, dict[str, Any]]
@@ -2332,7 +2373,9 @@ class StrategyWorkflow(BaseWorkflow):
         # 4. select 筛选（按用户策略执行；选股期间不持任何全局锁，
         #    避免阻塞行情派发 —— P2-24）
         try:
-            results: list[dict[str, Any]] = instance.select(combined, today_str=trade_date, days=20)
+            results: list[dict[str, Any]] = instance.select(
+                combined, today_str=trade_date, days=self.SELECT_KLINE_DAYS
+            )
         except Exception as exc:
             self.logger.error("[%s] select 筛选异常: %s", sname, exc, exc_info=True)
             return

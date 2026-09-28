@@ -12,6 +12,10 @@ from typing import Any
 import httpx
 
 from api.client import ApiClient, is_not_found
+from dao.user_strategy_dao import (
+    DEFAULT_INITIAL_AMOUNT,
+    DEFAULT_MAX_STOCK_COUNT,
+)
 
 
 class UserStrategyApi:
@@ -49,17 +53,18 @@ class UserStrategyApi:
         strategy_id: str,
         pool_id: str = "",
         status: str = "stopped",
-        initial_amount: float = 0.0,
-        max_stock_count: int = 0,
+        initial_amount: float = DEFAULT_INITIAL_AMOUNT,
+        max_stock_count: int = DEFAULT_MAX_STOCK_COUNT,
     ) -> dict[str, Any]:
         """创建用户策略关联。
 
         :param strategy_id: 关联的全局策略 ID（StrategyDao._id）
         :param pool_id: 关联股票池 ID（可选）
         :param status: 策略状态，默认 stopped（可选值: running/stopped/paused）
-        :param initial_amount: 初始资金（元）；**0 表示限制买入**（不允许新建持仓/加仓）
+        :param initial_amount: 初始资金（元）；**0 表示限制买入**（不允许新建持仓/加仓）。
+            默认 10 万元，与服务端默认值一致
         :param max_stock_count: 最大持仓数量；**0 表示限制买入**（不允许新建持仓/加仓），
-            `-1` 表示不限制。默认 0
+            `-1` 表示不限制。默认 -1（不限制），与服务端默认值一致
         :return: 包含 user_strategy 信息的字典
         """
         # 2026-09-24 语义确认：`max_stock_count=0` 与 `initial_amount=0` 都是「限制买入」，

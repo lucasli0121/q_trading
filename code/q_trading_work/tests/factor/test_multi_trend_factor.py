@@ -7,6 +7,7 @@ import sys
 from typing import Any
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from api.market import MarketApi
@@ -131,5 +132,106 @@ class TestMultiTrendFactor(unittest.TestCase):
                 result = factor.score(pd.DataFrame(stocks))
                 create_time = stocks[-1]["create_time"]
                 print(f"code=code, time={create_time}, score={result}")
+class TestMultiTrendWindowContract(unittest.TestCase):
+    """窗口长度与 MACD 分项的契约（2026-09-28，不触网）。
+
+    背景：MACD 判定是「红柱比上一根放大」，需要 34 根出值（26+9−1）+ 1 根用于
+    比较 = **35 根**才能真正参与打分。低于 35 根时那 3 分恒拿不到，趋势分可达
+    上限被静默折损到 7.0 —— 不报错、不告警，只能按窗口长度实测才看得出来，
+    因此用一组构造序列把长度门槛固定下来。
+    """
+
+    N: int = 60
+
+    def _uptrend(self, size: int | None = None) -> pd.DataFrame:
+        """加速上涨序列。
+
+        单纯单调上涨不够：这样 MACD 红柱会收敛，`hist > 上一根 hist` 不成立。
+        用二次项让涨幅递增，红柱持续放大。
+        """
+        n: int = size or self.N
+        idx = np.arange(n)
+        close = 10.0 + 0.05 * idx + 0.002 * idx ** 2
+        return pd.DataFrame(
+            {
+                "high": close * 1.012,
+                "low": close * 0.988,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+                "price": close,
+            }
+        )
+
+    def _factor(self) -> MultiTrendFactor:
+        return MultiTrendFactor(adx_period=7, vwap_period=7, high_low_period=7)
+
+    def test_macd_item_unreachable_below_35_bars(self) -> None:
+        """20 / 25 / 34 根：最后两根至少一根 hist 为 NaN ⇒「红柱放大」不成立。"""
+        df = self._uptrend()
+        for win in (20, 25, 34):
+            hist = self._factor().multi_trend(
+                df.tail(win).reset_index(drop=True)
+            )["macd_hist"].to_numpy()
+            self.assertTrue(
+                np.isnan(hist[-1]) or np.isnan(hist[-2]), f"win={win} 不该拿到 MACD 分"
+            )
+
+    def test_macd_item_reachable_from_35_bars(self) -> None:
+        """35 / 40 / 60 根：最后两根 hist 都有值，比较得以成立。"""
+        df = self._uptrend()
+        for win in (35, 40, 60):
+            hist = self._factor().multi_trend(
+                df.tail(win).reset_index(drop=True)
+            )["macd_hist"].to_numpy()
+            self.assertFalse(
+                np.isnan(hist[-1]) or np.isnan(hist[-2]), f"win={win} 应能拿到 MACD 分"
+            )
+
+    def test_40_bars_scores_more_than_20_bars(self) -> None:
+        """放大窗口后趋势分恰好高出 MACD 那 3 分。"""
+        df = self._uptrend()
+        factor = self._factor()
+        s20: float = factor.score(df.tail(20).reset_index(drop=True))
+        s40: float = factor.score(df.tail(40).reset_index(drop=True))
+        self.assertGreater(s40, s20)
+        self.assertAlmostEqual(s40 - s20, 3.0, places=6)
+
+    def test_downtrend_scores_zero(self) -> None:
+        """下跌序列不得因窗口放大而拿到趋势分。"""
+        df = self._uptrend()
+        idx = np.arange(self.N)
+        down = df.copy()
+        down["close"] = 15.0 - 0.05 * idx - 0.002 * idx ** 2
+        down["high"] = down["close"] * 1.012
+        down["low"] = down["close"] * 0.988
+        down["price"] = down["close"]
+        self.assertEqual(
+            self._factor().score(down.tail(40).reset_index(drop=True)), 0.0
+        )
+
+    def test_sliced_index_does_not_shift_prev_high(self) -> None:
+        """索引非 0 起始（回测切片形态）时前高不得错位。
+
+        `prev_high` 原先是 `result_df[col] = stock_data['high'].rolling(...)`，
+        pandas 按索引对齐：切片索引 i..j 与 result_df 的 0..n-1 只重叠一段，
+        前高实际取到窗口前部的价格，判定随之失真且不报错。改为 `.to_numpy()`
+        后两种输入必须一致。
+        """
+        df = self._uptrend()
+        factor = self._factor()
+        for win in (40, 60):
+            base = df.tail(win).reset_index(drop=True)
+            sliced = df.tail(win)  # 索引非 0 起始
+            self.assertEqual(
+                factor.multi_trend(base)["prev_high"].to_numpy()[-1],
+                factor.multi_trend(sliced)["prev_high"].to_numpy()[-1],
+                f"win={win} 切片输入的前高发生错位",
+            )
+            self.assertAlmostEqual(
+                factor.multi_trend(sliced)["prev_high"].to_numpy()[-1],
+                float(sliced["high"].tail(7).max()),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

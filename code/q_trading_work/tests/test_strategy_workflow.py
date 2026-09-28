@@ -744,6 +744,101 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.assertEqual(state.initial_amount, 20000.0)
         self.assertEqual(self.wf._buy_block_reason(state, {}), "")
 
+    # ---- 2026-09-28：未配置时的默认值（不限制持仓 + 10 万初始资金） ----
+
+    def test_default_values_when_fields_missing(self) -> None:
+        """字段缺失/空串/非法 → 默认 max_stock_count=-1、initial_amount=100000。
+
+        改前默认是 4 / 0。0 在本项目语义里是「限制买入」，把它当默认等于让
+        未配置的策略静默不下单（`6a58d62b…` 0/0 即此类）。
+        """
+        for raw in (None, "", "abc"):
+            self.assertEqual(self.wf._parse_max_stock_count(raw), -1, f"raw={raw!r}")
+            self.assertEqual(self.wf._parse_initial_amount(raw), 100000.0, f"raw={raw!r}")
+
+    def test_explicit_zero_is_not_washed_by_default(self) -> None:
+        """显式 0 仍是「限制买入」，绝不能被默认值洗白。
+
+        这是本处最危险的一类回归：`raw or DEFAULT` 写下去不会报错，
+        只会让「禁止买入」的限制静默失效，策略突然开始下单。
+        """
+        for raw in (0, "0"):
+            self.assertEqual(self.wf._parse_max_stock_count(raw), 0, f"raw={raw!r}")
+            self.assertEqual(self.wf._parse_initial_amount(raw), 0.0, f"raw={raw!r}")
+
+        state = make_state(cash=0.0)
+        state.max_stock_count = self.wf._parse_max_stock_count(0)
+        self.assertIn("max_stock_count=0", self.wf._buy_block_reason(state, {}))
+
+    def test_load_user_strategy_missing_amount_fields_can_buy(self) -> None:
+        """端到端：服务端未返这两个字段的策略必须可下单（本次改动的诉求）。
+
+        `_buy_block_reason` 返回空串 = 允许买入；初始资金 10 万、持仓数不限制。
+        """
+        self.wf._strategy_api.list.return_value = [
+            {
+                "id": "s1",
+                "name": "强势反弹策略",
+                "class_path": "strategy.strong_rebound_strategy",
+                "class_name": "StrongReboundStrategy",
+            }
+        ]
+        self.wf._user_strategy_api.list_all.return_value = [
+            {"id": "us1", "strategy_id": "s1", "status": "running", "pool_id": ""}
+        ]
+        self.wf._user_strategy_api.get_latest_execution.return_value = {}
+
+        loaded = self.wf.load_strategies_from_db()
+
+        self.assertEqual(len(loaded), 1)
+        state = loaded[0]
+        self.assertEqual(state.initial_amount, 100000.0)
+        self.assertEqual(state.max_stock_count, -1)
+        # 字段缺失 ⇒ 未显式配置 ⇒ 允许用历史执行记录兜底
+        self.assertFalse(state.initial_amount_configured)
+        self.assertEqual(self.wf._buy_block_reason(state, {}), "")
+
+    # ---- 2026-09-28：选股日线窗口 40 根（让 MACD 分项参与打分） ----
+
+    def test_select_uses_40_day_window(self) -> None:
+        """选股按 40 根日线取数：talib.MACD 需 26+9−1=34 根才有值。"""
+        instance = MagicMock()
+        instance.strategy_name = "强趋势策略"
+        instance.before_trading.return_value = None
+        instance.select.return_value = []
+        state = make_state(instance=instance)
+        self.wf._strategy_instances = {"sid": instance}
+        self.wf._user_strategies = {"sid": [state]}
+        self.wf._stock_info_api.get_hot_industries.return_value = [{"name": "科技"}]
+        self.wf._stock_info_api.get_by_industry.return_value = [{"code": "600519"}]
+        self.wf._strategy_select_stock_api = MagicMock()
+        self.wf._save_runlog = MagicMock()
+        self.wf.xshg = MagicMock()
+        self.wf.xshg.is_session.return_value = True
+
+        self.wf.daily_before_trading()
+
+        instance.select.assert_called_once()
+        self.assertEqual(instance.select.call_args.kwargs["days"], 40)
+        self.assertEqual(
+            instance.select.call_args.kwargs["days"],
+            StrategyWorkflow.SELECT_KLINE_DAYS,
+        )
+
+    def test_select_window_matches_backtest_window(self) -> None:
+        """实盘选股窗口与回测窗口必须同值，且不低于 MACD 生效门槛。
+
+        两处漂移 ⇒ 同一策略在实盘与回测选出的股票集合分叉，
+        而两边各自的日志都「看起来正常」。
+        """
+        from backtest.backtest_engine import BacktestConfig
+
+        self.assertEqual(StrategyWorkflow.SELECT_KLINE_DAYS, 40)
+        self.assertEqual(BacktestConfig.signal_window, StrategyWorkflow.SELECT_KLINE_DAYS)
+        # 34 根出值（26+9−1）+ 1 根用于比较「红柱放大」= 35 根下限；
+        # 低于它 MultiTrendFactor 的 MACD 分项恒不成立（34 根时前一根仍是 NaN）
+        self.assertGreaterEqual(StrategyWorkflow.SELECT_KLINE_DAYS, 35)
+
     # ---- 订单创建与回滚 ----
 
     def test_create_buy_order_deducts_cash_and_marks_pending(self) -> None:

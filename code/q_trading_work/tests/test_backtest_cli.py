@@ -35,11 +35,26 @@ class TestBacktestCli(unittest.TestCase):
         self.assertEqual(args.strategy, "strong")
         self.assertEqual(args.capital, 100000.0)
         self.assertEqual(args.hold_days, 5)
-        self.assertEqual(args.signal_window, 20)
+        # 2026-09-28：日线窗口由 20 放大到 40，让 MultiTrendFactor 的 MACD 分项
+        # （talib.MACD 需 34 根出值，再要 1 根比较「红柱放大」⇒ 实际 35 根）
+        # 在回测链路里真正参与打分。
+        self.assertEqual(args.signal_window, 40)
         self.assertEqual(args.frequency, "daily")
         self.assertEqual(args.buy_slip, 0.2)
         self.assertEqual(args.fee_pct, 0.02)
         self.assertEqual(args.fee_low, 5.0)
+
+    def test_signal_window_default_matches_engine_config(self) -> None:
+        """CLI 默认窗口必须与 BacktestConfig.signal_window 同源。
+
+        两处一旦漂移，回测窗口与实盘选股窗口（SELECT_KLINE_DAYS）不一致，
+        同一策略在两条链路上的趋势分不可比，选出的股票集合会分叉。
+        """
+        from backtest.backtest_engine import BacktestConfig
+
+        args = cli.build_parser().parse_args(["--codes", "000001"])
+        self.assertEqual(args.signal_window, BacktestConfig.signal_window)
+        self.assertEqual(BacktestConfig.signal_window, 40)
 
     def test_resolve_strategy_aliases_and_module(self) -> None:
         from strategy.strong_rebound_strategy import StrongReboundStrategy

@@ -164,11 +164,12 @@ class UserStrategyCreateRequest(BaseModel):
     pool_id: str = Field(default="", description="关联股票池 ID")
     status: str = Field(default="stopped", description="策略状态: running(运行中) / stopped(已停止) / paused(已暂停)")
     initial_amount: float = Field(
-        default=0.0, description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）"
+        default=100000.0,
+        description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）。未配置时默认 10 万元",
     )
     total_profit: float = Field(default=0.0, description="总收益金额")
     max_stock_count: int = Field(
-        default=0, description="最大持仓数量；0 表示限制买入，-1 表示不限制"
+        default=-1, description="最大持仓数量；0 表示限制买入，-1 表示不限制（默认不限制）"
     )
     strategy_params: dict[str, Any] = Field(default_factory=dict, description="策略运行参数")
 
@@ -197,11 +198,12 @@ class UserStrategyItem(BaseModel):
     user_id: str = Field(default="", description="用户 ID")
     pool_id: str = Field(default="", description="关联股票池 ID")
     initial_amount: float = Field(
-        default=0.0, description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）"
+        default=100000.0,
+        description="初始金额；0 表示限制买入（不创建买单，卖出不受影响）。未配置时默认 10 万元",
     )
     total_profit: float = Field(default=0.0, description="总收益金额")
     max_stock_count: int = Field(
-        default=0, description="最大持仓数量；0 表示限制买入，-1 表示不限制"
+        default=-1, description="最大持仓数量；0 表示限制买入，-1 表示不限制（默认不限制）"
     )
     strategy_params: dict[str, Any] = Field(default_factory=dict, description="策略运行参数")
     update_time: str = Field(default="", description="status 最近一次变更的时间")

@@ -48,9 +48,9 @@ class UserStrategyDao:
         status: str = StrategyStatus.STOPPED.value,
         user_id: str = "",
         pool_id: str = "",
-        initial_amount: float = 0.0,
+        initial_amount: float = 100000.0,
         total_profit: float = 0.0,
-        max_stock_count: int = 0,
+        max_stock_count: int = -1,
         strategy_params: dict = {},
         update_time: str = "",
         create_time: str = "",
@@ -92,9 +92,17 @@ class UserStrategyDao:
         self.status = data.get("status", StrategyStatus.STOPPED.value)
         self.user_id = data.get("user_id", "")
         self.pool_id = data.get("pool_id", "")
-        self.initial_amount = float(data.get("initial_amount", 0.0) or 0.0)
+        # 字段缺失时才落默认值（10 万元 / -1 不限制，与 web_api/models.py 的
+        # UserStrategyCreateRequest / UserStrategyItem 默认值保持一致）。
+        # 显式 0 必须原样保留 —— 0 是「限制买入」的有效配置语义，
+        # 用 `or` 兜底会把它洗成默认值，让限制静默失效（不会报任何错）。
+        raw_initial: Any = data.get("initial_amount")
+        self.initial_amount = (
+            100000.0 if raw_initial is None else float(raw_initial or 0.0)
+        )
         self.total_profit = float(data.get("total_profit", 0.0) or 0.0)
-        self.max_stock_count = int(data.get("max_stock_count", 0) or 0)
+        raw_max: Any = data.get("max_stock_count")
+        self.max_stock_count = -1 if raw_max is None else int(raw_max or 0)
         self.strategy_params = data.get("strategy_params", {})
         self.update_time = str(data.get("update_time", ""))
         self.create_time = str(data.get("create_time", ""))
