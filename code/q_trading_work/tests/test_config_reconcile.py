@@ -623,6 +623,20 @@ class TestReconcileTriggers(unittest.TestCase):
         self.assertEqual(summary.get("error"), "list_all_failed")
         self.assertEqual(len(wf.get_all_strategies()), 1)
 
+    def test_reconcile_invalidates_star_threshold_cache(self) -> None:
+        """推送/下单星级门槛在用户偏好里，不在对账对象里，但要对同一个心跳生效。
+
+        通知器自己带 300 秒 TTL，不额外清理的话界面上改完门槛最多要等 5 分钟；
+        对账每 60 秒跑一次，顺手清缓存把它压到 1 分钟。
+        """
+        wf = make_workflow()
+        wf._strategy_api.list.return_value = [dict(STRONG_TEMPLATE)]
+        wf._user_strategy_api.list_all.return_value = []
+
+        wf.reconcile_user_strategies(reason="test")
+
+        wf._notifier.invalidate_preferences_cache.assert_called_once()
+
 
 class TestBaseStrategyParamReload(unittest.TestCase):
     """参数热更新的基线语义：二次 apply 不能回退成上一次的值。"""

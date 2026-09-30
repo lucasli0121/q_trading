@@ -75,6 +75,11 @@ class TestStrategyWorkflow(unittest.TestCase):
         self.wf._trade_manager = MagicMock()
         # 通知器隔离：避免测试真的走 HTTP 拉取用户偏好
         self.wf._notifier = MagicMock()
+        # 星级门槛替身必须给出**具体数值**：`_save_trade_signal` 会拿它的返回值
+        # 与信号星级比较后再决定是否创建订单，裸 MagicMock 会被 `float()` 读成
+        # 1.0（MagicMock 支持 __float__），于是恒 True 的门槛把所有信号都拦掉，
+        # 表现为「保存信号」的用例莫名其妙返回 False。0.0 = 不限。
+        self.wf._notifier.get_push_min_star.return_value = 0.0
 
     def _patch_load_positions(self, positions: dict) -> MagicMock:
         """把 `_load_positions` 替换为「返回持仓并写回 state.positions」的桩。

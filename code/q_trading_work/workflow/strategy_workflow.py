@@ -220,7 +220,6 @@ class StrategyWorkflow(BaseWorkflow):
         # ---- 配置对账（热更新）状态 ----
         # 同一时刻只允许一轮对账：MQTT 通知与定时轮询可能同时触发，而对账里
         # 「新建实例」和「订阅 MQTT topic」都不幂等，并发跑会重复订阅（行情翻倍）。
-        self._reconciling: bool = False
         self._reconcile_lock: threading.Lock = threading.Lock()
         self._last_reconcile_ts: float = 0.0  # 上一次对账完成时间（非交易时段节流用）
         # 每个 user_strategy 上一次补跑选股的时间，避免连续调参反复跑全池选股
@@ -1080,7 +1079,8 @@ class StrategyWorkflow(BaseWorkflow):
 
         覆盖四类变更：用户策略参数（热更新已实例）、股票池内容与池绑定（刷新
         `state.stock_pool` 并按需重订阅 MQTT）、用户策略的增删、执行相关字段
-        （持仓上限 / 初始资金 / 启停状态）。
+        （持仓上限 / 初始资金 / 启停状态）。顺带清理通知器的推送星级门槛缓存，
+        让「用户偏好」这一项配置也按同一个心跳生效（见 `_reconcile_once` 第 8 步）。
 
         并发保护用非阻塞锁：MQTT 通知与定时轮询可能同时到，而对账里「新建实例」
         和「订阅 topic」都不幂等，宁可跳过本轮（下一轮 60 秒后还会来）。
@@ -1177,6 +1177,15 @@ class StrategyWorkflow(BaseWorkflow):
 
         # 7) 没有任何策略再引用的股票池，退订其行情 topic
         self._prune_pool_subscriptions()
+
+        # 8) 推送/下单星级门槛也在用户偏好里，而偏好不在对账范围内。
+        #    对账是「界面改了配置要跟随」的唯一心跳，顺手让偏好缓存过期，
+        #    把「改了门槛最多等 300 秒（通知器的 TTL）」缩到「最多 60 秒」。
+        #    只是清缓存，下一次推送/下单才会重新拉，不产生周期性请求。
+        try:
+            self._notifier.invalidate_preferences_cache()
+        except Exception as exc:
+            self.logger.debug("清理推送星级门槛缓存失败: %s", exc)
 
         summary: dict[str, Any] = {
             "added": added,
@@ -1956,7 +1965,7 @@ class StrategyWorkflow(BaseWorkflow):
             if not self._is_signal_in_user_scope(state, code):
                 return
 
-            # 3. 记录交易信号（含信号风暴过滤，被抑制则跳过订单创建）
+            # 3. 记录交易信号（含信号风暴过滤与星级门槛，未通过则跳过订单创建）
             if not self._save_trade_signal(
                 state.strategy_id, state.user_strategy_id, code, extra,
                 strategy_name=state.strategy_name,
@@ -2075,7 +2084,7 @@ class StrategyWorkflow(BaseWorkflow):
             if not self._is_signal_in_user_scope(state, code):
                 return
 
-            # 记录交易信号（含信号风暴过滤，被抑制则跳过订单创建）
+            # 记录交易信号（含信号风暴过滤与星级门槛，未通过则跳过订单创建）
             if not self._save_trade_signal(
                 state.strategy_id, state.user_strategy_id, code, extra,
                 strategy_name=state.strategy_name,
@@ -2210,13 +2219,21 @@ class StrategyWorkflow(BaseWorkflow):
         `extra` 里的 `score` / `star` 会一并写入信号记录（服务端
         `TradeSignalCreateRequest` 已有这两个字段，此前本端一直没传，恒为 0）。
 
+        **星级门槛（2026-09-30）**：用户偏好 `push_buy_min_star` /
+        `push_sell_min_star` 决定「几星以上才算有效信号」（0 = 不限，比较含边界）。
+        未达门槛的信号只写库，不发 MQTT、不推送、不创建订单，并返回 False。
+        返回 False 的语义因此是「信号已写库但未通过过滤」——调用方据此跳过下单，
+        与信号风暴过滤共用同一条退出路径（理由都记 INFO，便于从日志反推
+        「有信号无订单」的原因）。
+
         :param strategy_id: 策略模板 ID
         :param user_strategy_id: 用户策略关联 ID
         :param code: 股票代码
         :param extra: handle_minute_bar 返回的详细信息（含 signal/current_price 等）
         :param strategy_name: 策略名称（来自 StrategyState，避免逐信号 HTTP 查询）
         :param user_strategy_name: 用户策略名称（来自 StrategyState，用于通知与载荷）
-        :return: True 表示信号已保存，False 表示信号被抑制/保存失败
+        :return: True 表示信号已保存且通过过滤（调用方可以下单）；
+            False 表示信号被抑制（风暴/星级）或保存失败，调用方不应创建订单
         """
         signal_type: str = extra.get("signal", "")
         price: float = float(extra.get("current_price", extra.get("price", 0)))
@@ -2231,6 +2248,13 @@ class StrategyWorkflow(BaseWorkflow):
             star: float = float(extra.get("star", 0.0) or 0.0)
         except (TypeError, ValueError):
             star = 0.0
+        # 推送/下单星级门槛：用户偏好 push_buy_min_star / push_sell_min_star
+        # （0 = 不限，比较含边界）。未达门槛的信号**仍然写库**——界面按星级筛
+        # 历史信号要靠它——但三个出口共用这一个判定：不发 MQTT 实时流、
+        # 不推送企业微信/微信、也不创建订单（返回 False 让调用方跳过下单）。
+        # 三处分别判一次必然分叉，所以这里只算一次往下传。
+        min_star: float = self._notifier.get_push_min_star(user_strategy_id, action)
+        star_passed: bool = TradeNotifier.star_passed(star, min_star)
         reason: str = extra.get("reason", "")
         if not isinstance(reason, str):
             # 防御（2026-09-15 线上 422 根因）：历史 bug 曾把 reason 写成单元素
@@ -2353,33 +2377,40 @@ class StrategyWorkflow(BaseWorkflow):
             )
 
             # 2. 通过 MQTT 发送交易信号通知（字段与服务端信号记录保持一致）
-            signal_data: dict[str, Any] = {
-                "strategy_id": strategy_id,
-                "user_strategy_id": user_strategy_id,
-                "strategy_name": strategy_name,
-                "user_strategy_name": user_strategy_name,
-                "stock_code": code,
-                "trade_price": price,
-                "action": action,
-                "profit_rate": round(profit_rate, 2),
-                "score": round(score, 2),
-                "star": round(star, 1),
-                "reason": reason,
-            }
-            mqtt_client = AppContext().mqtt_client
-            payload: str = json.dumps(signal_data, ensure_ascii=False)
-            publish_ok: bool = mqtt_client.publish(
-                MqttTopic.STOCK_TRADING_SIGNAL, payload
-            )
-            if publish_ok:
-                self.logger.info(
-                    "交易信号 MQTT 通知已发送: topic=%s, data=%s",
-                    MqttTopic.STOCK_TRADING_SIGNAL,
-                    signal_data,
+            if star_passed:
+                signal_data: dict[str, Any] = {
+                    "strategy_id": strategy_id,
+                    "user_strategy_id": user_strategy_id,
+                    "strategy_name": strategy_name,
+                    "user_strategy_name": user_strategy_name,
+                    "stock_code": code,
+                    "trade_price": price,
+                    "action": action,
+                    "profit_rate": round(profit_rate, 2),
+                    "score": round(score, 2),
+                    "star": round(star, 1),
+                    "reason": reason,
+                }
+                mqtt_client = AppContext().mqtt_client
+                payload: str = json.dumps(signal_data, ensure_ascii=False)
+                publish_ok: bool = mqtt_client.publish(
+                    MqttTopic.STOCK_TRADING_SIGNAL, payload
                 )
+                if publish_ok:
+                    self.logger.info(
+                        "交易信号 MQTT 通知已发送: topic=%s, data=%s",
+                        MqttTopic.STOCK_TRADING_SIGNAL,
+                        signal_data,
+                    )
+                else:
+                    self.logger.warning(
+                        "交易信号 MQTT 通知发送失败: code=%s, action=%s", code, action
+                    )
             else:
-                self.logger.warning(
-                    "交易信号 MQTT 通知发送失败: code=%s, action=%s", code, action
+                self.logger.info(
+                    "星级未达门槛，不发 MQTT、不推送、不下单（信号已写库）: "
+                    "action=%s, code=%s, star=%.1f, min_star=%.1f",
+                    action, code, star, min_star,
                 )
 
             # 3. 通过企业微信/微信发送交易信号推送通知
@@ -2388,6 +2419,8 @@ class StrategyWorkflow(BaseWorkflow):
             # 不再在这里手拼字符串 —— 股票名称、星级格式都属于展示层，
             # 且此处拼的文案无法覆盖「名称要查接口」这类需求。
             # 卖出传 profit_rate（买入传 None，不显示收益率段）。
+            # 门槛判定在通知器里再走一次（传已解析好的 min_star，不重复解析）：
+            # 直接调用 notify_signal 的其它入口也受同一套门槛约束。
             self._notifier.notify_signal(
                 action=action,
                 code=code,
@@ -2399,9 +2432,12 @@ class StrategyWorkflow(BaseWorkflow):
                 recipient=user_strategy_name,
                 user_strategy_id=user_strategy_id,
                 profit_rate=profit_rate if signal_type == "SELL" else None,
+                min_star=min_star,
             )
 
-            return True
+            # 未达门槛时返回 False —— 与信号风暴过滤同一语义：
+            # 调用方（_process_bar / _process_tick）据此跳过订单创建。
+            return star_passed
         except Exception as exc:
             self.logger.error("保存交易信号失败: %s", exc, exc_info=True)
             return False

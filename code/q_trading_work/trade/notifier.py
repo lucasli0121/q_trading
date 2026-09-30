@@ -32,6 +32,10 @@ class TradeNotifier:
     推送优先级：用户偏好 wx_push_url > 配置文件 enterprise_wechat_webhook_url。
     用户偏好中 enable_wx_push 为 False 时跳过企业微信推送。
 
+    推送/下单星级门槛（2026-09-30）：用户偏好里的 `push_buy_min_star` /
+    `push_sell_min_star` 决定「几星以上才推送」。未达门槛的信号由调用方
+    （`StrategyWorkflow._save_trade_signal`）只写库，不发 MQTT、不推送、不下单。
+
     使用方式:
         notifier = TradeNotifier(api_client=admin_client)
         notifier.notify("买入信号: code=000001", recipient="策略名", user_strategy_id="us1")
@@ -39,6 +43,15 @@ class TradeNotifier:
 
     # 用户偏好缓存 TTL（秒）。超过 TTL 后重新拉取，使前端修改推送配置能生效。
     PREFERENCES_TTL_SECONDS: float = 300.0
+
+    # 用户偏好中的推送星级门槛字段（0 = 不限）
+    PREF_KEY_BUY_MIN_STAR: str = "push_buy_min_star"
+    PREF_KEY_SELL_MIN_STAR: str = "push_sell_min_star"
+
+    # 交易方向。策略与信号记录里用的是中文动作名（不是 BUY/SELL），
+    # 门槛按方向取不同字段，所以这里必须用同一套字面量。
+    ACTION_BUY: str = "买入"
+    ACTION_SELL: str = "卖出"
 
     def __init__(
         self,
@@ -63,6 +76,14 @@ class TradeNotifier:
         # 进程重启前都不会生效；不同实例之间还会互相污染。
         # 结构：user_id -> (写入时间 monotonic, 偏好字典)
         self._preferences_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+        # 星级门槛缓存：user_strategy_id -> (写入时间, (买入门槛, 卖出门槛))。
+        # 门槛判定发生在**每条信号**上（分钟级、逐股），而解析它要走
+        # user_strategy → user_id → preference 两次 HTTP，不缓存的话每条信号
+        # 都要多打两次接口。同样必须是实例属性（见上面 P1-29 的教训）。
+        self._min_star_cache: dict[str, tuple[float, tuple[float, float]]] = {}
+        # user_strategy_id -> (写入时间, user_id)。只缓存解析成功的结果。
+        self._user_id_cache: dict[str, tuple[float, str]] = {}
 
         # 从配置文件读取 webhook 地址
         self._enterprise_wechat_webhook_url: str | None = self._load_webhook_url(
@@ -402,6 +423,154 @@ class TradeNotifier:
             self._preferences_cache[user_id] = (now, prefs)
         return dict(prefs)
 
+    # ---- 推送星级门槛 ----
+
+    @staticmethod
+    def parse_min_star(value: Any) -> float:
+        """把偏好里的最小星级解析成 float，非法值一律归到 0。
+
+        0 是「不限」的哨兵值（与服务端信号列表 `min_star` 的约定一致），
+        所以取不到值、非数值、NaN、负数都返回 0.0，而不是抛错或当成负门槛。
+
+        :param value: 偏好里的原始值（可能是 float/int/str/None）
+        :return: 非负门槛值，0 表示不限
+        """
+        try:
+            star: float = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+        if star != star:  # NaN：任何比较都不成立，必须显式挡掉
+            return 0.0
+        return star if star > 0 else 0.0
+
+    @staticmethod
+    def star_passed(star: float, min_star: float) -> bool:
+        """星级是否达到门槛（门槛 <= 0 表示不限）。
+
+        比较口径与服务端信号列表的 `min_star` 一致——**含边界**（`$gte`）：
+        门槛设 3 时，3 星算达标。注意 star 取不到值（0）时按不达标处理，
+        门槛 > 0 而信号没有星级，说明上游没打星，不能当成高星放过去。
+
+        :param star: 信号星级（0~5）
+        :param min_star: 最小星级门槛（0 = 不限）
+        :return: True 表示放行
+        """
+        limit: float = TradeNotifier.parse_min_star(min_star)
+        if limit <= 0:
+            return True
+        try:
+            current: float = float(star)
+        except (TypeError, ValueError):
+            return False
+        if current != current:  # NaN
+            return False
+        return current >= limit
+
+    def _resolve_user_id(self, user_strategy_id: str) -> str:
+        """由用户策略 ID 解析所属用户 ID（实例级缓存 + TTL）。
+
+        只缓存**解析成功**的结果：查不到时下次信号重试，否则一次网络抖动
+        会让门槛（连带下单判定的那部分）静默失效一整个 TTL。
+
+        :param user_strategy_id: 用户策略关联 ID
+        :return: 用户 ID，取不到返回空串
+        """
+        if not user_strategy_id:
+            return ""
+        import time
+
+        now: float = time.monotonic()
+        with self._cache_lock:
+            entry: tuple[float, str] | None = self._user_id_cache.get(user_strategy_id)
+        if entry is not None and (now - entry[0]) < self.PREFERENCES_TTL_SECONDS:
+            return entry[1]
+
+        user_id: str = ""
+        try:
+            us_api = self._get_user_strategy_api()
+            if us_api is not None:
+                us_data: dict[str, Any] = us_api.get(user_strategy_id)
+                if isinstance(us_data, dict):
+                    user_id = str(us_data.get("user_id", "") or "")
+        except Exception as exc:
+            self.logger.warning(
+                "查询用户策略 %s 所属用户失败，本轮按不限制门槛处理: %s",
+                user_strategy_id, exc,
+            )
+        if user_id:
+            with self._cache_lock:
+                self._user_id_cache[user_strategy_id] = (now, user_id)
+        return user_id
+
+    def _resolve_min_stars(self, user_strategy_id: str) -> tuple[float, float]:
+        """解析该用户策略的 (买入门槛, 卖出门槛)。
+
+        失败兜底是 **(0.0, 0.0) = 不限**：门槛同时决定推送与下单，读不到偏好时
+        按「不限」等于回到改动前的行为；若按「拦全部」兜底，一次接口异常就会
+        让整个实例停止下单。
+
+        :param user_strategy_id: 用户策略关联 ID
+        :return: (push_buy_min_star, push_sell_min_star)
+        """
+        if not user_strategy_id:
+            return 0.0, 0.0
+        import time
+
+        now: float = time.monotonic()
+        with self._cache_lock:
+            entry: tuple[float, tuple[float, float]] | None = self._min_star_cache.get(
+                user_strategy_id
+            )
+        if entry is not None and (now - entry[0]) < self.PREFERENCES_TTL_SECONDS:
+            return entry[1]
+
+        user_id: str = self._resolve_user_id(user_strategy_id)
+        if not user_id:
+            # 解析不到所属用户 → 不写缓存，下次信号重试（见 _resolve_user_id）
+            return 0.0, 0.0
+
+        prefs: dict[str, Any] = self._load_user_preferences(user_id)
+        pair: tuple[float, float] = (
+            self.parse_min_star(prefs.get(self.PREF_KEY_BUY_MIN_STAR)),
+            self.parse_min_star(prefs.get(self.PREF_KEY_SELL_MIN_STAR)),
+        )
+        with self._cache_lock:
+            self._min_star_cache[user_strategy_id] = (now, pair)
+        if pair != (0.0, 0.0):
+            self.logger.debug(
+                "用户策略 %s 推送星级门槛: 买入>=%.1f, 卖出>=%.1f",
+                user_strategy_id, pair[0], pair[1],
+            )
+        return pair
+
+    def get_push_min_star(self, user_strategy_id: str, action: str) -> float:
+        """取该用户策略在指定方向上的最小推送星级（0 = 不限）。
+
+        :param user_strategy_id: 用户策略关联 ID
+        :param action: 交易方向（买入/卖出，与信号记录里的 action 同值）
+        :return: 最小星级；未配置或取不到时返回 0.0（不限）
+        """
+        buy_star, sell_star = self._resolve_min_stars(user_strategy_id)
+        if str(action) == self.ACTION_SELL:
+            return sell_star
+        if str(action) == self.ACTION_BUY:
+            return buy_star
+        # 方向未知：按不限处理。策略只会给出买入/卖出两种 action，
+        # 落到这里说明上游数据异常 —— 此时拦下单的代价远大于放过。
+        return 0.0
+
+    def invalidate_preferences_cache(self) -> None:
+        """清空用户偏好与星级门槛缓存，让界面上刚改的门槛立即重新拉取。
+
+        偏好本身仍是 300 秒 TTL，只是把「下一次推送/下单要重新拉一次」提前。
+        `StrategyWorkflow` 的配置对账（60 秒一轮）会调用它，把界面上改门槛的
+        生效时间从最长 5 分钟缩到最长 1 分钟。
+        """
+        with self._cache_lock:
+            self._preferences_cache.clear()
+            self._user_id_cache.clear()
+            self._min_star_cache.clear()
+
     # ---- 公开接口 ----
 
     def notify(
@@ -454,11 +623,15 @@ class TradeNotifier:
         stock_name: str = "",
         recipient: str | None = None,
         user_strategy_id: str = "",
-    ) -> None:
+        min_star: float | None = None,
+    ) -> bool:
         """推送交易信号（文案格式见 `format_signal_message`）。
 
         信号推送在分钟级链路上同股反复触发，股票名称走 `_resolve_stock_name`
         的缓存，不会每条都打接口。
+
+        **星级门槛**：低于用户偏好门槛的信号直接跳过（不发送），返回 False。
+        调用方若已在别处解析过门槛，传 `min_star` 可省掉一次解析与两次 HTTP。
 
         :param action: 交易方向（买入/卖出）
         :param code: 股票代码
@@ -469,7 +642,22 @@ class TradeNotifier:
         :param stock_name: 股票名称，留空时按代码查询（结果缓存）
         :param recipient: 用户策略名称
         :param user_strategy_id: 用户策略关联 ID
+        :param min_star: 最小星级门槛，None 表示按用户偏好解析（0 = 不限）
+        :return: 是否真的发出了推送
         """
+        limit: float = (
+            self.get_push_min_star(user_strategy_id, action)
+            if min_star is None
+            else min_star
+        )
+        if not self.star_passed(star, limit):
+            self.logger.info(
+                "星级未达推送门槛，跳过信号推送: action=%s, code=%s, star=%s, "
+                "min_star=%s, user_strategy_id=%s",
+                action, code, star, limit, user_strategy_id,
+            )
+            return False
+
         self.notify(
             self.format_signal_message(
                 action=action,
@@ -483,6 +671,7 @@ class TradeNotifier:
             recipient=recipient,
             user_strategy_id=user_strategy_id,
         )
+        return True
 
     def notify_trade_result(
         self,
