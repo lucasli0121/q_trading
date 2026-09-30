@@ -12,6 +12,13 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 
 from app_context import AppContext
+from core.config_notify import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_UPDATE,
+    SCOPE_POOL,
+    notify_config_change,
+)
 from db.mongo.mongo_data_agent_pool_stocks_impl import MongoDataAgentPoolStocksImpl
 from db.mongo.mongo_stock_info_impl import MongoStockInfoImpl
 from db.mongo.mongo_stock_pool_impl import MongoStockPoolImpl
@@ -43,6 +50,7 @@ def create_pool(req: PoolCreateRequest, user_id: str = Depends(get_current_user)
     })
     if not ok:
         raise HTTPException(status_code=500, detail=f"创建股票池失败{pool_id if pool_id else ""}")
+    notify_config_change(SCOPE_POOL, ACTION_CREATE, str(pool_id) if pool_id else req.name)
     return ApiResponse(data=PoolInfo(
             id=str(pool_id) if pool_id else "",
             name=req.name,
@@ -85,6 +93,7 @@ def delete_pool(name: str, user_id: str = Depends(get_current_user)):
     # 从分配的资源库中移除这个股票池
     agent_impl = MongoDataAgentPoolStocksImpl()
     agent_impl.delete_data_agent_pool_stocks_by_pool_id(pool_id=pool_id)
+    notify_config_change(SCOPE_POOL, ACTION_DELETE, pool_id)
     return ApiResponse(data=name, message="删除成功")
 
 
@@ -151,6 +160,9 @@ def add_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depends(ge
     # 将股票池的股票分配给数据代理对象进行抓取和处理
     # 后台执行：全量重分配是长任务，不能在请求里同步跑
     AppContext().stock_fetch.submit_pool_stocks_distribution(pool_id=pool_id)
+    # 通知 q_trading_work：池内容变了，state.stock_pool 与当日选股结果都要跟着刷新。
+    # 只刷行情订阅不够 —— handle_bar 还会用旧 stock_pool 过滤，新入池的股票仍被挡掉。
+    notify_config_change(SCOPE_POOL, ACTION_UPDATE, pool_id)
     return ApiResponse(data=f"已添加 {len(stock_real_codes)} 只股票", message="添加成功")
 
 
@@ -182,6 +194,7 @@ def remove_stocks(name: str, req: PoolStockModifyRequest, user_id: str = Depends
     # 将股票池的股票分配给数据代理对象进行抓取和处理
     # 后台执行：全量重分配是长任务，不能在请求里同步跑
     AppContext().stock_fetch.submit_pool_stocks_distribution(pool_id=pool_id)
+    notify_config_change(SCOPE_POOL, ACTION_UPDATE, pool_id)
     return ApiResponse(data=f"已剔除 {len(stock_real_codes)} 只股票", message="剔除成功")
 
 

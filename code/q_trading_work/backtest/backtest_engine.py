@@ -95,6 +95,18 @@ class BacktestConfig:
     # 实时链路相反 —— 一次失败即记 warning + 透出 fetch_failed，不做重试阻塞。
     fetch_retries: int = 2
     fetch_retry_interval: float = 1.0
+    # 账户级回撤阈值（%）。None 表示取策略实例的 `RISK_MAX_DRAWDOWN_PCT`
+    # （默认 -10.0）；显式传值可覆盖（CLI `--max-drawdown`）。0 或正数表示关闭。
+    #
+    # 语义（2026-09-29 改）：账户已实现权益自峰值回撤达阈值时，**当日收盘卖出全部在持仓位**
+    # ——把回撤当作卖出条件，而不是冻结开新仓。原「熔断停手」实现在实测中被证伪：
+    # 权益按成本计价、只在卖出结算时变动，因此回撤是离散跳跃的，只要单笔亏损可能超过
+    # 阈值，「回撤 ≤ 阈值」在数学上就不成立；且熔断后不再交易、权益不再变动，回撤也无法
+    # 收窄，等于一次触发即永久停手（实测阈值 -5 与 -10 给出完全相同的结果）。
+    #
+    # 判定口径与汇总的 `max_drawdown_pct` 同源 —— 都基于 `_compute_equity_curve`
+    # 的「可用现金 + 持仓成本」权益。
+    max_drawdown_pct: float | None = None
 
 
 @dataclass
@@ -108,6 +120,9 @@ class TradeResult:
     buy_price: float  # 有效买入价（含滑点/手续费）
     sell_price: float  # 有效卖出价（含滑点/手续费）
     profit_pct: float  # 收益率（%）
+    # 原始买入价（不含滑点/手续费）。回撤重放需要按新的卖出日重新计算有效价与收益率，
+    # 而 `_calc_trade_result` 的入参是原始价，因此必须留一份原始值（见 _apply_drawdown_exit）。
+    buy_price_raw: float = 0.0
 
 
 @dataclass
@@ -161,6 +176,10 @@ class BacktestSummary:
     end_date: str = ""
     benchmark_code: str = ""
     trading_days: int = 0
+    # 账户级回撤触发出场的笔数（0 = 未启用或从未触发）。
+    # 与 `max_drawdown_pct` 的区别：后者是事后统计的最大回撤，前者是实际被回撤条件
+    # 提前卖出（未到期即平仓）的交易笔数。
+    drawdown_exit_trades: int = 0
 
 
 # ============================================================
@@ -704,8 +723,12 @@ class BacktestEngine:
         # code -> 全区间日K数据缓存，逐日定位当日信号
         daily_dfs: dict[str, pd.DataFrame] = {}
 
+        # 账户级回撤阈值：达阈值时当日收盘卖出在持仓位（不是冻结开新仓，见 _apply_drawdown_exit）
+        breaker_pct: float = self._resolve_breaker_pct(strategy)
+        trading_days: list[str] = self._iter_trading_days(strategy, start_date, end_date)
+
         # 逐日模拟：每天盘前 before_trading + select，再查询当日日K进行策略判断
-        for day in self._iter_trading_days(strategy, start_date, end_date):
+        for day in trading_days:
             # 1. 盘前准备
             try:
                 strategy.before_trading(trade_date=day, stock_codes=codes)
@@ -746,6 +769,12 @@ class BacktestEngine:
                 if trade is not None:
                     all_trades.append(trade)
 
+        # 账户级回撤约束：达阈值即卖出在持仓位。放在全部信号生成之后重放
+        # （不改建仓与到期卖出的规则，只把回撤触发日之前的仓位提前平掉）。
+        all_trades, exit_trades = self._apply_drawdown_exit(
+            all_trades, daily_dfs, breaker_pct, trading_days
+        )
+
         # 按买入日期排序
         all_trades.sort(key=lambda t: t.buy_date)
 
@@ -755,9 +784,144 @@ class BacktestEngine:
             benchmark_df=benchmark_df,
             strategy_name=strategy_name,
         )
+        summary.drawdown_exit_trades = exit_trades
 
         self._print_summary(summary)
         return all_trades, summary
+
+    # ---- 账户级回撤约束（达阈值 → 卖出，不冻结开新仓）----
+
+    def _resolve_breaker_pct(self, strategy: Any) -> float:
+        """解析账户级回撤阈值（%，负值有效；0 或正数表示关闭）。
+
+        优先级：`BacktestConfig.max_drawdown_pct`（CLI 显式指定）> 策略实例的
+        `RISK_MAX_DRAWDOWN_PCT`（策略参数，默认 -10.0）。
+
+        :param strategy: 策略实例
+        :return: 回撤阈值（%）
+        """
+        configured: float | None = self.config.max_drawdown_pct
+        if configured is None:
+            configured = float(getattr(strategy, "RISK_MAX_DRAWDOWN_PCT", 0.0) or 0.0)
+        return float(configured or 0.0)
+
+    def _drawdown_at(self, trades: list[TradeResult], day: str) -> float | None:
+        """计算 `day` 当日的账户已实现权益自峰值回撤（%）；无法判定时返回 None。
+
+        只统计 `sell_date <= day` 的交易，它们才是已结算的。口径与 `_compute_summary`
+        的权益曲线一致 —— `_compute_equity_curve` 把持仓按成本计价，未平仓交易在
+        `day` 时刻占用的资金对权益值没有贡献，因此这里与最终汇总的
+        `max_drawdown_pct` 同源。
+
+        :param trades: 已生成的交易记录
+        :param day: 当前交易日
+        :return: 回撤百分数（<= 0）；无已结算交易或峰值非正时返回 None
+        """
+        day_key: str = str(day)[:10]
+        closed: list[TradeResult] = [
+            t for t in trades if str(t.sell_date)[:10] <= day_key
+        ]
+        if not closed:
+            return None
+        curve: list[float] = self._compute_equity_curve(closed)
+        peak: float = max(curve)
+        if peak <= 0:
+            return None
+        return (curve[-1] - peak) / peak * 100
+
+    def _drawdown_breached(
+        self, trades: list[TradeResult], day: str, threshold_pct: float
+    ) -> bool:
+        """判定当日账户回撤是否已达阈值。
+
+        :param trades: 已生成的交易记录
+        :param day: 当前交易日
+        :param threshold_pct: 阈值（%），>= 0 表示关闭
+        :return: 是否已达阈值
+        """
+        if threshold_pct >= 0:
+            return False
+        drawdown_pct: float | None = self._drawdown_at(trades, day)
+        return drawdown_pct is not None and drawdown_pct <= threshold_pct
+
+    def _apply_drawdown_exit(
+        self,
+        trades: list[TradeResult],
+        daily_dfs: dict[str, pd.DataFrame],
+        threshold_pct: float,
+        trading_days: list[str],
+    ) -> tuple[list[TradeResult], int]:
+        """账户回撤达阈值时，把在持仓位改为当日收盘卖出。
+
+        语义（用户 2026-09-29 定）：回撤约束落在**卖出**侧，不冻结开新仓。
+        逐日推进，若某日账户已实现权益自峰值回撤已达 `threshold_pct`，则当日以
+        收盘价卖出全部处于持仓期（买入日 < 当日 < 原卖出日）的仓位，把它们的
+        卖出日提前到当日。
+
+        提前卖出会在当天一次性确认浮亏、改变权益路径，因此需要重放若干轮直到
+        不再产生新的提前卖出（一般 1~2 轮即收敛）。
+
+        只改「卖出日」，不改任何建仓规则与到期卖出价格：未触发回撤的仓位结果
+        与不启用该约束时完全一致。
+
+        :param trades: 逐日信号生成的交易记录（会被就地修改）
+        :param daily_dfs: code -> 全区间日K，用于取提前卖出日的收盘价
+        :param threshold_pct: 回撤阈值（%），>= 0 表示关闭
+        :param trading_days: 回测区间内的交易日（YYYY-MM-DD）
+        :return: (交易记录, 被回撤提前卖出的笔数)
+        """
+        if threshold_pct >= 0 or not trades:
+            return trades, 0
+
+        exited: set[int] = set()
+        max_rounds: int = 5
+        for _round in range(max_rounds):
+            changed: bool = False
+            for day in trading_days:
+                if not self._drawdown_breached(trades, day, threshold_pct):
+                    continue
+                hit: list[str] = []
+                for trade in trades:
+                    # 严格在持仓期内：买入当日不卖（当天开盘建仓），到期日按原规则卖
+                    if not (
+                        str(trade.buy_date)[:10]
+                        < day
+                        < str(trade.sell_date)[:10]
+                    ):
+                        continue
+                    df: pd.DataFrame | None = daily_dfs.get(trade.code)
+                    if df is None or df.empty:
+                        continue
+                    idx: int | None = self._find_date_index(df, day)
+                    if idx is None:
+                        continue
+                    close_raw: float = float(df.iloc[idx].get("close", 0) or 0)
+                    if close_raw <= 0 or trade.buy_price_raw <= 0:
+                        continue
+                    # 有效价含滑点与手续费，必须重算，不能按收盘价比例缩放
+                    result = self._calc_trade_result(
+                        buy_price=trade.buy_price_raw, sell_price=close_raw
+                    )
+                    trade.sell_date = day
+                    trade.sell_price = result["sell_price"]
+                    trade.profit_pct = result["profit_pct"]
+                    exited.add(id(trade))
+                    hit.append(trade.code)
+                if not hit:
+                    continue
+                changed = True
+                self.logger.info(
+                    "账户级回撤达阈值（%s，回撤 %.2f%% <= %.2f%%）："
+                    "当日收盘卖出 %d 笔在持仓位 %s",
+                    day,
+                    self._drawdown_at(trades, day) or 0.0,
+                    threshold_pct,
+                    len(hit),
+                    "、".join(hit),
+                )
+            if not changed:
+                break
+        return trades, len(exited)
 
     def _check_daily_signal_at(
         self,
@@ -810,6 +974,7 @@ class BacktestEngine:
             buy_price=result["buy_price"],
             sell_price=result["sell_price"],
             profit_pct=result["profit_pct"],
+            buy_price_raw=buy_price_raw,
         )
 
     def _run_minute_inner(
@@ -850,6 +1015,14 @@ class BacktestEngine:
 
         # 逐日模拟：每天盘前 before_trading + select，再查询当日分钟K线进行策略判断
         for day in self._iter_trading_days(strategy, start_date, end_date):
+            # 0. 注入账户当前回撤（账户级量，策略自己拿不到）——
+            #    与实盘 `StrategyWorkflow._process_bar` 一致。分钟频下策略的卖出判定
+            #    会据此计入 risk.drawdown_score 分值（达阈值即卖出，不冻结开新仓）。
+            if hasattr(strategy, "set_account_drawdown"):
+                strategy.set_account_drawdown(
+                    self._drawdown_at(all_trades, day) or 0.0
+                )
+
             # 1. 盘前准备
             try:
                 strategy.before_trading(trade_date=day, stock_codes=codes)
@@ -1587,6 +1760,8 @@ class BacktestEngine:
         print("-" * 60)
         print(f"  夏普比率: {summary.sharpe_ratio}")
         print(f"  最大回撤: {summary.max_drawdown_pct}%")
+        if summary.drawdown_exit_trades > 0:
+            print(f"  回撤提前卖出: {summary.drawdown_exit_trades} 笔")
         print("-" * 60)
         if summary.benchmark_code:
             print(f"  基准 ({summary.benchmark_code}):")

@@ -9,6 +9,13 @@ Description: 工作流微服务用户策略分配管理路由
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from core.config_notify import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_UPDATE,
+    SCOPE_ASSIGNMENT,
+    notify_config_change,
+)
 from db.mongo.mongo_workflow_service_user_strategy_impl import MongoWorkFlowServiceUserStrategyImpl
 from web_api.auth import require_admin
 from web_api.models import ApiResponse
@@ -48,6 +55,8 @@ def create_workflow_service_user_strategy(
     ok, record_id = impl.add(req.dict())
     if not ok or not record_id:
         raise HTTPException(status_code=500, detail="创建失败")
+    # 分配表决定每个 workflow 实例跑哪些用户策略，改了必须让本端重新对账
+    notify_config_change(SCOPE_ASSIGNMENT, ACTION_CREATE, req.service_name)
     return ApiResponse(
         data=WorkflowServiceUserStrategyItem(
             id=record_id,
@@ -146,6 +155,11 @@ def update_workflow_service_user_strategy(
     if not res or not records:
         raise HTTPException(status_code=404, detail="记录不存在")
     record = records[0]
+    notify_config_change(
+        SCOPE_ASSIGNMENT,
+        ACTION_UPDATE,
+        str(record.get("service_name", "") or ""),
+    )
     return ApiResponse(
         data=WorkflowServiceUserStrategyItem(
             id=str(record.get("_id", "")),
@@ -154,7 +168,6 @@ def update_workflow_service_user_strategy(
         ),
         message="更新成功",
     )
-
 
 @router.delete("/{id}", response_model=ApiResponse[str])
 def delete_workflow_service_user_strategy(
@@ -166,4 +179,5 @@ def delete_workflow_service_user_strategy(
     deleted = impl.delete(id)
     if not deleted:
         raise HTTPException(status_code=500, detail="删除失败")
+    notify_config_change(SCOPE_ASSIGNMENT, ACTION_DELETE, id)
     return ApiResponse(data=id, message="删除成功")

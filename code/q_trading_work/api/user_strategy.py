@@ -124,8 +124,9 @@ class UserStrategyApi:
         initial_amount: float | None = None,
         max_stock_count: int | None = None,
         total_profit: float | None = None,
+        strategy_params: dict[str, Any] | None = None,
     ) -> str:
-        """修改用户策略关联（状态、股票池、初始资金、最大持仓等）。
+        """修改用户策略关联（状态、股票池、初始资金、最大持仓、策略参数等）。
 
         支持的状态值: running(运行中) / stopped(已停止) / paused(已暂停)
 
@@ -137,6 +138,12 @@ class UserStrategyApi:
         :param max_stock_count: 最大持仓数量（可选，None 表示不修改）；
             **0 表示限制买入**，`-1` 表示不限制
         :param total_profit: 累计盈利（可选，None 表示不修改）
+        :param strategy_params: 策略运行参数（可选，None 表示不修改）。采用**纯值**结构
+            `{"match": {...}, "buy": {...}, "sell": {...}, "risk": {...}}`，
+            与 `cfg/strategy.yaml` 一致（`strategy.default_params` 才是 `{desc, value}` 包装）。
+            **注意非空时优先级高于策略模板的 default_params**（`BaseStrategy._apply_resolved_params`
+            是择一而非逐字段合并），因此这里漏掉某个字段时，该字段只能靠策略类属性兜底
+            —— 界面上看不到、也调不了。
         :return: 操作结果提示信息
         """
         body: dict[str, Any] = {}
@@ -150,6 +157,8 @@ class UserStrategyApi:
             body["max_stock_count"] = max_stock_count
         if total_profit is not None:
             body["total_profit"] = total_profit
+        if strategy_params is not None:
+            body["strategy_params"] = strategy_params
         result: Any = self._client.patch(
             f"/api/user_strategy/{user_strategy_id}", body
         )

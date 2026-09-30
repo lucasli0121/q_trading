@@ -34,9 +34,89 @@ swing_trading_strategy:
     # 日K阻力支撑位检测连续窗口数
     sr_window: 10
     sr_tolerance: 0.02
+    # ---- 趋势过滤（买入侧闸门）----
+    # 本策略做的是震荡市：下跌趋势里支撑位会被逐个跌穿。ADX 达门槛且 −DI > +DI
+    # 时判为下跌趋势，当天该股只做卖出不做买入（卖出与回撤止损不受影响）。
+    # 只认「明确的下跌趋势」，故必须同时满足 ADX 门槛 —— 否则震荡市里 DI 频繁
+    # 交叉会随机剔掉一半股票。ADX 周期：talib lookback = 2×该值。
+    trend_days_limit: 14
+    # ADX 强度门槛（< 该值时视为震荡，不做趋势过滤）
+    trend_adx_threshold: 25.0
+    # 趋势判定与枢轴点计算共用的日K取数根数（一次取数喂两个用途）
+    trend_kline_days: 40
   buy:
-    # 当天买入接近支撑位的误差（%）
+    # 分钟买入判定里布林带因子的窗口（BollSRFactor.timeperiod）
     buy_sr_window: 10
   sell:
-    # 当天卖出接近阻力位的误差（%）
+    # 分钟卖出判定里布林带因子的窗口（BollSRFactor.timeperiod）
     sell_sr_window: 10
+    # 自持仓最高点回撤阈值（%）：回撤超过此值时计入卖出分值
+    drawdown_pct: -6.0
+    # 触发回撤阈值时计入卖出判定的分值（10 分制，负值）。
+    # 与位置分「叠加」而非「平均」：-6.0 单独一条即可触发卖出（阈值是「< 0」）
+    drawdown_score: -6.0
+  risk:
+    # 账户级回撤阈值（%）：账户已实现权益自峰值回撤达此值时，在卖出判定中计入
+    # drawdown_score 分值（**不冻结开新仓**）；0 或正数表示关闭。
+    # 口径与成交量策略、BaseStrategy.RISK_MAX_DRAWDOWN_PCT 一致：策略拿不到账户
+    # 权益，回撤值由 workflow / 回测在调用策略前注入
+    max_drawdown_pct: -10.0
+    # 账户回撤达阈值时计入卖出判定的分值（10 分制，负值）
+    drawdown_score: -6.0
+
+volume_expansion_strategy:
+  match:
+    # 成交量因子窗口（因子内部下限 5）：日线取数窗口 40 根，留足均线/斜率所需历史
+    volume_days: 20
+    # 成交量方向：reversion=缩量看多（实测方向，当前默认：把放量当否决条件）；
+    # momentum=放量看多（因子原始语义）。正式回测（2026-06-01~09-30）momentum
+    # 12 笔 / −9.14%、reversion 265 笔 / +8.69%。见
+    # CODE_检查报告_2026-09-29_成交量策略回测结果.md
+    volume_mode: reversion
+    # reversion 模式下的「缩量」上限：成交量打分 <= 此值才允许买入。
+    # 默认 4.0 = 因子自身的 BUY 阈值，即「因子判 BUY/STRONG_BUY 的一律不买」
+    quiet_volume_score: 4.0
+    # 搭配因子：boll_sr / kline_sr / multi_trend / ma / vwap / adx
+    # 默认 boll_sr（布林带支撑/阻力位）—— 实测中唯一与成交量互补的因子族
+    # （正 IC + 与成交量负相关），趋势/动量类因子与成交量信息重复
+    partner_factor: boll_sr
+    # 搭配因子门槛（>=）：默认 0 表示「不在阻力区/未破支撑」
+    partner_min_score: 0.0
+    # 选股成交量打分门槛（10 分制，momentum 模式；= 因子的 BUY 阈值）
+    volume_score: 4.0
+    # 选股综合分门槛（10 分制）：综合分 = 5.0（两道门槛都通过）+ 最多 5.0（强度），
+    # 因此 5.0 等价于「只用两道门槛筛选」，调高才要求更强的量能/位置
+    min_score: 5.0
+  buy:
+    # 分钟数据最少条数；实际门槛取 max(本值, 成交量因子窗口, 搭配因子所需根数)
+    # （ADX 类搭配因子需要 2×period 根，不足时 talib 返回 NaN 会恒定给负分）
+    min_minutes: 20
+    # 分钟级成交量打分门槛（momentum 模式）
+    volume_score: 4.0
+    # 空 = 跟随 match.partner_factor
+    partner_factor: ""
+    # 空 = 跟随 match.volume_mode
+    volume_mode: ""
+    quiet_volume_score: 4.0
+    partner_min_score: 0.0
+    min_score: 5.0
+    # 成交量侧与搭配侧权重：成交量为主、搭配做确认
+    volume_weight: 0.6
+    partner_weight: 0.4
+  sell:
+    # 分钟数据最少条数；实际门槛同样取与因子窗口的较大值
+    min_minutes: 20
+    # 卖出分阈值：累计负分 <= 此值触发卖出
+    max_score: -6.0
+    # 自持仓最高点回撤阈值（%）
+    drawdown_pct: -6.0
+    # 均价（VWAP）窗口
+    vwap_minutes: 10
+  risk:
+    # 账户级回撤阈值（%）：账户已实现权益自峰值回撤达此值时，在卖出判定中计入
+    # drawdown_score 分值（**不冻结开新仓**，回撤超限只有整体降仓这一种效果）；
+    # 0 或正数表示关闭
+    max_drawdown_pct: -10.0
+    # 账户回撤达阈值时计入卖出判定的分值（10 分制，负值）；
+    # 默认与 sell.max_score 等值，即「账户回撤超阈值」单独一条即可触发卖出信号
+    drawdown_score: -6.0

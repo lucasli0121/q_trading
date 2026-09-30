@@ -56,6 +56,7 @@ STRATEGY_ALIASES: dict[str, tuple[str, str]] = {
     "strong": ("strategy.strong_rebound_strategy", "StrongReboundStrategy"),
     "rebound": ("strategy.strong_rebound_strategy", "StrongReboundStrategy"),
     "swing": ("strategy.swing_trading_strategy", "SwingTradingStrategy"),
+    "volume": ("strategy.volume_expansion_strategy", "VolumeExpansionStrategy"),
 }
 
 
@@ -115,6 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="行情取数重试间隔（秒）",
+    )
+    parser.add_argument(
+        "--max-drawdown",
+        type=float,
+        default=None,
+        help=(
+            "账户级回撤阈值（%%），负值有效，如 -10.0：账户已实现权益自峰值"
+            "回撤达该值时，当日收盘卖出全部在持仓位（不冻结开新仓）。"
+            "不传则取策略参数 RISK_MAX_DRAWDOWN_PCT，0 或正数表示关闭"
+        ),
     )
 
     cost = parser.add_argument_group("交易成本")
@@ -195,6 +206,7 @@ def build_backtest_config(args: argparse.Namespace) -> BacktestConfig:
         position_size_pct=args.position_size,
         fetch_retries=args.fetch_retries,
         fetch_retry_interval=args.fetch_retry_interval,
+        max_drawdown_pct=args.max_drawdown,
         trade_config=TradeCostConfig(
             buy_slippage=args.buy_slip,
             sell_slippage=args.sell_slip,

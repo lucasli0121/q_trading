@@ -5,19 +5,24 @@ LastEditors: liguoqiang
 LastEditTime: 2026-07-26
 Description: 波段交易策略，适合震荡行情
     低频依照支撑位和阻力位提供交易策略，日K线数据用于计算支撑位和阻力位，分钟线数据用于判断当天买入卖出条件。
-    选股条件：（is_match_strategy 适配）
-        1. 昨日股价>支撑位并在支撑位(3%的误差)
-        2. 昨日股价<任何一个阻力位
-        3. 如果有多个支撑价位，靠近任何一个即可
 
-    当天买入条件（全部满足）：
-        1. 今日股价接近当天任何一个支撑位上下(0.05%的误差)
-        2. 根据KlineSRFactor因子返回的分值判断
+    选股条件（is_match_strategy，回测链路走这里）：
+        0. 日线不构成下跌趋势（ADX 达门槛且 −DI > +DI 时不选）
+        1. 市盈率 / 利润增长率通过（金融业与非银金融豁免）
+        2. KlineSRFactor 打分 > 0
 
-    卖出条件（满足其一）：
-        1. 今日股价接近任何一个阻力位(0.05%的误差)
-        2. 跌停不卖出
-        3. 今日股价跌穿日行情的支撑位并且相比支撑位跌幅 > 2%
+    当天买入条件（_check_buy_conditions）：
+        1. 不在 9:40 前 / 13:10 前（过滤开盘干扰），不在涨跌停附近
+        2. (InDaySRFactor 枢轴点分 + BollSRFactor 布林带分) / 2 > 0
+        前置闸门：日线趋势向下的股票当天不做买入判定（2026-09-29 新增）
+
+    当天卖出条件（_check_sell_conditions）：
+        1. 位置分为负（同上两个因子等权平均），且不在涨跌停附近
+        2. 持仓回撤达 sell.drawdown_pct（默认 -6.0%）—— 计入卖出分值
+        3. 账户回撤达 risk.max_drawdown_pct（默认 -10.0%）—— 计入卖出分值
+
+    卖出判定**不受**趋势闸门影响：下跌趋势中的持仓恰恰要靠支撑位跌破与回撤
+    止损离场，把卖出一并关掉等于让持仓失去保护。
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from typing import Any
 import pandas as pd
 
 from app_context import AppContext
+from factor.adx_trend_factor import AdxTrendFactor
 from factor.kline_support_resistance import KlineSRFactor
 from factor.in_day_support_resistance import InDaySRFactor
 from factor.boll_support_resistance import BollSRFactor
@@ -59,15 +65,49 @@ class SwingTradingStrategy(BaseStrategy):
         "是用于网格交易模式，通过支撑价位和阻力价位来回交易，适合震荡行情"
     )
 
+    # 本策略重写了 `handle_minute_bar`，买入按全池行情自行判定（做 T 的信号覆盖率
+    # 是有意如此），不读当日选股结果 ⇒ 盘中改股票池后不需要补跑选股。
+    requires_daily_selection: bool = False
+
     # ---- 买入参数 ----
-    BUY_SR_WINDOW: int = 5  # 寻找局部极值点的窗口大小
+    # 以下默认值与 cfg/strategy.yaml[swing_trading_strategy] 保持一致：
+    # 无参数实例化走 yaml，两边分叉时「按源码默认值推断实际生效参数」会出错。
+    BUY_SR_WINDOW: int = 10  # 寻找局部极值点的窗口大小
 
     # ---- 卖出参数 ----
-    SELL_SR_WINDOW: int = 5  # 寻找局部极值点的窗口大小
+    SELL_SR_WINDOW: int = 10  # 寻找局部极值点的窗口大小
 
     # ---- 支撑/阻力位计算参数 ----
-    SR_WINDOW: int = 5  # 寻找局部极值点的窗口大小
+    SR_WINDOW: int = 10  # 寻找局部极值点的窗口大小
     SR_TOLERANCE: float = 0.02  # 相近价位聚类合并的容差
+
+    # ---- 趋势过滤参数（match）----
+    # 本策略的定位是震荡行情：下跌趋势里阻力与支撑会被逐个跌穿，「贴近支撑位」
+    # 不再等于「可买」（2026-09-29 用户要求）。因此在买入侧加一道日线趋势闸门：
+    # ADX 达强度门槛 且 −DI > +DI ⇒ 判为下跌趋势，当天该股只做卖出不做买入。
+    #
+    # 必须同时要求 ADX 达门槛：「+DI > −DI」在震荡市里频繁交叉，只看方向会把
+    # 一半的股票随机剔掉，反而违背「震荡市才用本策略」的定位。ADX 数据不足
+    # （次新股、停牌复牌）时其值为 NaN，比较恒为 False ⇒ 判不出下跌趋势 ⇒
+    # 不做过滤，这是有意的 fail-open（宁可多产信号，也不因数据缺口误禁用）。
+    TREND_DAYS_LIMIT: int = 14  # ADX 周期（趋势判定窗口）
+    TREND_ADX_THRESHOLD: float = 25.0  # ADX 强度门槛：达到才算「趋势确立」
+    TREND_KLINE_DAYS: int = 40  # 趋势判定所需日K根数（ADX lookback = 2×周期）
+
+    # ---- 卖出回撤参数（sell）----
+    # 自持仓最高点回撤达阈值时，把 `SELL_DRAWDOWN_SCORE` 直接叠加到卖出分上
+    # （不是与两个位置因子做平均）：止损要的是「果断退出」，一条回撤理由足够
+    # 单独触发卖出，不该被「枢轴点=0、布林带=0」的中间态稀释掉。
+    SELL_DRAWDOWN_PCT: float = -6.0  # 自持仓最高点回撤阈值（%）
+    SELL_DRAWDOWN_SCORE: float = -6.0  # 触发回撤阈值时计入的卖出分值（10 分制）
+
+    # ---- 风控参数（risk）----
+    # 账户级回撤阈值（%）：账户已实现权益自峰值回撤达此值时，在卖出判定中计入
+    # `drawdown_score` 分值（**不冻结开新仓**）；0 或正数表示关闭。
+    # 口径与成交量策略、`BaseStrategy.RISK_MAX_DRAWDOWN_PCT` 一致：策略自己拿不到
+    # 账户权益，回撤由 workflow / 回测在调用策略前注入（`set_account_drawdown`）。
+    RISK_MAX_DRAWDOWN_PCT: float = -10.0
+    SELL_RISK_DRAWDOWN_SCORE: float = -6.0
 
     def __init__(
         self,
@@ -88,6 +128,11 @@ class SwingTradingStrategy(BaseStrategy):
         同时必须继续往 `super().__init__()` 传，否则 `self.user_strategy_name`
         仍是空串，策略内所有以它为前缀的日志/原因文本会变成以逗号开头的空名字。
         """
+        # 必须在 `super().__init__()` **之前**建好：基类构造会回调子类的
+        # `apply_params()`，子类若在其中读到尚未赋值的实例属性就抛 AttributeError，
+        # 被 workflow 的 `except Exception` 兜住后表现为「整个用户策略静默不加载」
+        # （不建仓、不发信号、不卖，日志里只有一条 ERROR）。
+        self._downtrend_codes: set[str] = set()  # 日线趋势向下、当天跳过买入判定的股票
         # 必须调用基类初始化：设置 logger/factor_manager、加载策略参数并创建选股列表缓存字段
         super().__init__(
             user_strategy_id=user_strategy_id,
@@ -101,7 +146,7 @@ class SwingTradingStrategy(BaseStrategy):
         self._inday_sr_points: dict[str, pd.DataFrame] = {}  # 当天支撑位和阻力位缓存，key=code, value={"s1":xx,"s2":xx,"r1":xx,"r2":xx}
 
     def apply_params(self, params: dict[str, Any]) -> None:
-        """将参数字典映射到策略属性（扁平结构，key 与类属性名对应）。
+        """将参数字典映射到策略属性（结构：`{match: {...}, buy: {...}, sell: {...}, risk: {...}}`）。
 
         缺失的字段保留类属性默认值。
 
@@ -112,10 +157,35 @@ class SwingTradingStrategy(BaseStrategy):
         match_config: dict[str, Any] = params.get("match", {}) or {}
         buy_config: dict[str, Any] = params.get("buy", {}) or {}
         sell_config: dict[str, Any] = params.get("sell", {}) or {}
+        risk_config: dict[str, Any] = params.get("risk", {}) or {}
         self.BUY_SR_WINDOW = int(buy_config.get("buy_sr_window", self.BUY_SR_WINDOW))
         self.SELL_SR_WINDOW = int(sell_config.get("sell_sr_window", self.SELL_SR_WINDOW))
         self.SR_WINDOW = int(match_config.get("sr_window", self.SR_WINDOW))
         self.SR_TOLERANCE = float(match_config.get("sr_tolerance", self.SR_TOLERANCE))
+        # 趋势过滤（买入侧闸门）
+        self.TREND_DAYS_LIMIT = int(
+            match_config.get("trend_days_limit", self.TREND_DAYS_LIMIT)
+        )
+        self.TREND_ADX_THRESHOLD = float(
+            match_config.get("trend_adx_threshold", self.TREND_ADX_THRESHOLD)
+        )
+        self.TREND_KLINE_DAYS = int(
+            match_config.get("trend_kline_days", self.TREND_KLINE_DAYS)
+        )
+        # 卖出侧回撤
+        self.SELL_DRAWDOWN_PCT = float(
+            sell_config.get("drawdown_pct", self.SELL_DRAWDOWN_PCT)
+        )
+        self.SELL_DRAWDOWN_SCORE = float(
+            sell_config.get("drawdown_score", self.SELL_DRAWDOWN_SCORE)
+        )
+        # 账户级回撤（risk 节）；回撤值本身由 workflow / 回测每轮注入，这里只读配置
+        self.RISK_MAX_DRAWDOWN_PCT = float(
+            risk_config.get("max_drawdown_pct", self.RISK_MAX_DRAWDOWN_PCT)
+        )
+        self.SELL_RISK_DRAWDOWN_SCORE = float(
+            risk_config.get("drawdown_score", self.SELL_RISK_DRAWDOWN_SCORE)
+        )
 
     # ---- 基类抽象方法实现 ----
 
@@ -132,6 +202,16 @@ class SwingTradingStrategy(BaseStrategy):
         """判断历史日线数据是否满足策略买入信号（用于回测/选股）。
 
         stock_data 是历史行情，不含当天行情。
+
+        条件（全部满足）：
+            0. 日线不构成下跌趋势（ADX 达门槛且 −DI > +DI 时判为下跌，直接不选）
+            1. 市盈率/利润增长率通过（金融业与非银金融豁免）
+            2. KlineSRFactor 打分 > 0
+
+        条件 0 与盘中买入闸门（`handle_minute_bar` 读 `_downtrend_codes`）用同一个
+        `_is_downtrend`：选股链路（回测走的就是这里）与盘中链路若只在一侧过滤，
+        回测选出的股票集合会与实盘分叉，而两边日志都「看起来正常」。
+
         :param stock_data: 股票日线行情数据列表，每项含 close/open/high/low 等字段
         :return: (是否匹配, 详细信息字典)
         """
@@ -141,9 +221,24 @@ class SwingTradingStrategy(BaseStrategy):
         stock_df: pd.DataFrame = pd.DataFrame(stock_data)
         code: str = str(stock_df.iloc[0].get("code", ""))
 
-        # ---- 条件1：市盈率<300, 利润增长率>10%, 此项检查不包含：金融业和非银金融行业 ----
         if not code:
             return False, {"reason": "条件1不满足: 无法获取股票代码"}
+
+        # ---- 条件0：日线趋势向下不选（与盘中买入判定同一口径）----
+        # 放在市盈率查询之前：趋势是本地计算，PE 要打一次 HTTP，先过滤掉下跌趋势的
+        # 股票能省下这部分请求。
+        detail: dict[str, Any] = self._adx_detail(stock_df)
+        if self._is_downtrend(detail):
+            return False, {
+                "reason": (
+                    f"{self.strategy_name}, 日线趋势向下（ADX {float(detail.get('adx') or 0.0):.2f}"
+                    f" >= {self.TREND_ADX_THRESHOLD:.2f}"
+                    f"，-DI {float(detail.get('-DI') or 0.0):.2f}"
+                    f" > +DI {float(detail.get('+DI') or 0.0):.2f}），波段策略不参与"
+                )
+            }
+
+        # ---- 条件1：市盈率<300, 利润增长率>10%, 此项检查不包含：金融业和非银金融行业 ----
         match, reason = self._check_industry_pe(code)
         if not match:
             return False, reason
@@ -189,11 +284,19 @@ class SwingTradingStrategy(BaseStrategy):
 
         两条链路的信号集合因此**不可直接比较**，回测结果只代表「当日候选股 + 持仓」
         这一子集。卖出侧同理：实时链路恒传空持仓，未持仓股票也会走一遍卖出判定。
+
+        **趋势闸门**（2026-09-29 新增）：日线趋势向下的股票当天不产生**买入**信号
+        （`before_trading` 判定的 `_downtrend_codes`）；**卖出与风控判定照常执行**。
+        下跌趋势里支撑位会被逐个跌穿，贴着支撑位买入等于逆势接刀，而持仓此时
+        恰恰最需要靠支撑位跌破与回撤止损离场。
         """
         self._before_minute_route(code, stock_data)
-        # 如果昨日股价突破最大阻力位，今天则不进行买入，只判断卖出
+        # 两种情况下不做买入判定、只判断卖出：
+        # ① 日线趋势向下（见类属性的趋势过滤说明）；
+        # ② 昨日股价突破最大阻力位（原逻辑）。
+        downtrend: bool = code in self._downtrend_codes
         break_max = self._break_max_r.get(code, False)
-        if not break_max:
+        if not downtrend and not break_max:
             # 如果买入条件成立就直接返回
             match, extra = self._check_buy_conditions(code, stock_data)
             if match:
@@ -210,21 +313,100 @@ class SwingTradingStrategy(BaseStrategy):
         return
 
     def before_trading(self, trade_date: str, stock_codes: list[str], **kwargs: Any) -> None:
-        """
-        每天交易前的准备工作，清理分钟行情缓存。
-        此处做前一天的经典枢轴点计算（采用IndaySRFactor)，供当天交易使用。
+        """每天交易前的准备工作：清理缓存、算当天枢轴点位、判定日线趋势方向。
+
+        日K只取一次（`_trend_kline_days()` 根），同时喂给枢轴点计算与趋势判定：
+        两者需要的根数不同（枢轴点只要前一交易日那 1 根，趋势判定要 2×ADX 周期），
+        分两次取数会让盘前多打一轮 HTTP，且同一只股票在两条链路里可能拿到不同快照。
+
+        趋势向下的股票记进 `_downtrend_codes`，当天买入判定直接跳过（见
+        `handle_minute_bar`）；卖出与风控判定照常 —— 否则下跌趋势中的持仓会同时
+        失去支撑位卖出与回撤止损，而那正是最需要离场的时候。
         """
         #先调用父类进行每天的清理工作
         super().before_trading(trade_date, stock_codes, **kwargs)
         self._break_max_r.clear()
         self._inday_sr_points.clear()
+        self._downtrend_codes.clear()
         #计算买入点的支撑位和阻力位，供当天交易使用
         for code in stock_codes:
-            sr_df: pd.DataFrame = self._get_code_prev_sr_point(code, trade_date)
-            self._save_sr_points(code, sr_df)
+            klines: pd.DataFrame = self.load_his_daily_data(
+                code, trade_date, self._trend_kline_days()
+            )
+            self._save_sr_points(code, self._build_sr_points(code, trade_date, klines))
+            detail: dict[str, Any] = self._adx_detail(klines)
+            if self._is_downtrend(detail):
+                self._downtrend_codes.add(code)
+                # 必须记 INFO：`cfg/log.yaml` 的 info.log 是 INFO 级，这条是
+                # 「为什么这只股票今天没买入信号」的唯一解释，记 DEBUG 等于运维看不见
+                self.logger.info(
+                    "[%s] code=%s 日线趋势向下（ADX %.2f >= %.2f，-DI %.2f > +DI %.2f），"
+                    "当天跳过买入判定，卖出与风控照常",
+                    self.strategy_name, code,
+                    float(detail.get("adx") or 0.0), self.TREND_ADX_THRESHOLD,
+                    float(detail.get("-DI") or 0.0), float(detail.get("+DI") or 0.0),
+                )
 
-    def _get_code_prev_sr_point(self, code: str, trade_date: str) -> pd.DataFrame:
-        """计算当天（基于前一日日线）的经典枢轴支撑/阻力位。
+    def _trend_kline_days(self) -> int:
+        """趋势判定与枢轴点计算共用的日K取数根数。
+
+        ADX 的 lookback 是 `2×period`（talib 口径），少一根末值就是 NaN，
+        而 `NaN > 阈值` 恒为 False ⇒ 判不出下跌趋势 ⇒ 趋势闸门静默失效，
+        因此这里显式取够并留 1 根余量。
+        """
+        return max(
+            int(self.TREND_KLINE_DAYS),
+            2 * int(self.TREND_DAYS_LIMIT) + 1,
+            InDaySRFactor().days,
+        )
+
+    def _adx_detail(self, klines: pd.DataFrame) -> dict[str, Any]:
+        """日线 ADX 明细（方向 + 强度）；数据不足或计算异常时返回空字典。
+
+        返回空字典表示「判不出趋势」，调用方按「不构成下跌趋势」处理 ——
+        数据缺口不该被当成下跌信号把股票整个禁掉。
+
+        :param klines: 日线行情（含 high/low/close，按日期升序）
+        :return: 含 trend / level / adx / +DI / -DI 的字典；算不出来时为空字典
+        """
+        if klines is None or len(klines) < 2 * int(self.TREND_DAYS_LIMIT):
+            return {}
+        try:
+            return AdxTrendFactor(days=self.TREND_DAYS_LIMIT).adx_trend(
+                klines,
+                period=int(self.TREND_DAYS_LIMIT),
+                threshold=float(self.TREND_ADX_THRESHOLD),
+            )
+        except Exception as exc:
+            self.logger.warning("[%s] ADX 趋势计算失败: %s", self.strategy_name, exc)
+            return {}
+
+    def _is_downtrend(self, detail: dict[str, Any]) -> bool:
+        """是否构成「下跌趋势」：ADX 达强度门槛 且 −DI > +DI。
+
+        两个条件缺一不可：
+        - 只看 `−DI > +DI`：震荡市里 DI 频繁交叉，会随机剔掉一半股票，
+          与本策略「只在震荡市用」的定位相悖；
+        - 只看 `ADX > 门槛`：只说明「有趋势」（上涨趋势正是本策略想参与的突破行情）。
+
+        ADX / DI 为 NaN（数据不足）时比较恒为 False，判不出下跌趋势 ⇒ 不过滤。
+
+        :param detail: `_adx_detail` 的返回值（可为空字典）
+        :return: True 表示日线下跌趋势成立，当天跳过买入判定
+        """
+        adx: float = float(detail.get("adx") or 0.0)
+        if pd.isna(adx) or adx < float(self.TREND_ADX_THRESHOLD):
+            return False
+        plus_di: float = float(detail.get("+DI") or 0.0)
+        minus_di: float = float(detail.get("-DI") or 0.0)
+        if pd.isna(plus_di) or pd.isna(minus_di):
+            return False
+        return minus_di > plus_di
+
+    def _build_sr_points(
+        self, code: str, trade_date: str, klines: pd.DataFrame
+    ) -> pd.DataFrame:
+        """从日K取数结果构造「前一交易日」的枢轴点位表；拿不到点位返回空表。
 
         **返回值统一为 DataFrame**：`InDaySRFactor.calculate` 在日线数据不足
         （新股、停牌复牌、数据缺口）时返回的是浮点 `0.0` 而不是 DataFrame，
@@ -236,14 +418,14 @@ class SwingTradingStrategy(BaseStrategy):
 
         :param code: 股票代码
         :param trade_date: 交易日 YYYY-MM-DD
+        :param klines: `load_his_daily_data` 的取数结果（按日期升序）
         :return: 枢轴点位表；数据不足时返回空 DataFrame
         """
         inday_sr_factor = InDaySRFactor()  # 确保因子已注册
-        # 计算当天支撑位和阻力位，确保因子已注册
-        stock_df: pd.DataFrame = self.load_his_daily_data(
-            code, trade_date, inday_sr_factor.days
+        stock_df: pd.DataFrame = klines if klines is not None else pd.DataFrame()
+        sr_df: Any = (
+            inday_sr_factor.calculate(stock_df.tail(1)) if not stock_df.empty else 0.0
         )
-        sr_df: Any = inday_sr_factor.calculate(stock_df)
         if not isinstance(sr_df, pd.DataFrame):
             self.logger.warning(
                 "[%s] code=%s 日线数据不足（%s），无法计算当天支撑/阻力位，跳过",
@@ -251,6 +433,23 @@ class SwingTradingStrategy(BaseStrategy):
             )
             return pd.DataFrame()
         return sr_df
+
+    def _get_code_prev_sr_point(self, code: str, trade_date: str) -> pd.DataFrame:
+        """计算当天（基于前一日日线）的经典枢轴支撑/阻力位。
+
+        `_get_sr_points` 缓存未命中时的兜底路径。取数根数用 `_trend_kline_days()`
+        与 `before_trading` 对齐：两者取到的「最后一根」必须是同一个交易日
+        （`load_his_daily_data` 的 end 恒为前一交易日），否则盘前算的枢轴点与
+        盘中兜底算的会来自不同快照，点位随调用路径漂移。
+
+        :param code: 股票代码
+        :param trade_date: 交易日 YYYY-MM-DD
+        :return: 枢轴点位表；数据不足时返回空 DataFrame
+        """
+        klines: pd.DataFrame = self.load_his_daily_data(
+            code, trade_date, self._trend_kline_days()
+        )
+        return self._build_sr_points(code, trade_date, klines)
     
     def _sr_points_key(self, code: str) -> str:
         """当天支撑/阻力位缓存 key。
@@ -400,12 +599,15 @@ class SwingTradingStrategy(BaseStrategy):
     def _check_sell_conditions(
         self, code: str, position: dict[str, Any], stock_data: dict[str, Any],
     ) -> tuple[bool, dict[str, Any]]:
-        """检查卖出条件是否满足（满足其一即触发）。
+        """检查卖出条件是否满足。
 
-        卖出条件：
-        1. InDaySRFactor 因子返回的分值 < 0.0，卖出
-        2. 跌停不卖出
-        3. 布林带辅助
+        卖出分 = 位置分 + 两条回撤分项（回撤分项只在触发时叠加）：
+            1. 位置分：(枢轴点分 + 布林带分) / 2，为负（< 0.0）时触发
+            2. 持仓回撤：自持仓最高点回撤超过 `SELL_DRAWDOWN_PCT` 时计入
+               `SELL_DRAWDOWN_SCORE`（10 分制负值，默认 -6.0，单独一条即可触发）
+            3. 账户回撤：账户权益自峰值回撤达 `RISK_MAX_DRAWDOWN_PCT` 时计入
+               `SELL_RISK_DRAWDOWN_SCORE`
+        前置闸门：涨跌停附近不卖出（封板时挂单没有意义）。
 
         :param code: 股票代码
         :param position: 持仓信息，含 cost_price / buy_time / quantity 等字段
@@ -414,11 +616,17 @@ class SwingTradingStrategy(BaseStrategy):
         """
         cost_price: float = float(position.get("cost_price", 0))
         extra: dict[str, Any] = {"code": code, "cost_price": cost_price}
+        # 有持仓取真实买入日；实时链路恒传空持仓（设计约定 D-1），退化为
+        # 「最近 2 个交易日」—— 与成交量策略同口径（见基类 `_sell_baseline_buy_time`）
+        buy_time: str = self._sell_baseline_buy_time(
+            position, str(stock_data.get("create_time", ""))
+        )
 
         try:
             current_price: float = float(stock_data.get("price", 0))
             create_time: str = str(stock_data.get("create_time", ""))
             preclose: float = float(stock_data.get("preclose", 0))
+            day_high: float = float(stock_data.get("high", 0))
 
             if current_price <= 0:
                 return False, {
@@ -473,16 +681,56 @@ class SwingTradingStrategy(BaseStrategy):
             inday_score: float = inday_sr_factor.score_with_sr(sr_df, stock_df)  # 计算当天支撑位和阻力位
             boll_sr_factor = BollSRFactor(timeperiod=self.SELL_SR_WINDOW)  # 确保因子已注册
             boll_score: float = boll_sr_factor.score(stock_df)  # 计算布林带支撑位和阻力位
+            # 位置分：枢轴点与布林带等权平均。文案里的「平均分值」就是它，保持原样。
             avg_score: float = (inday_score + boll_score) / 2
-            star: float = -1.0 * avg_score / 2
-            if avg_score < 0:
-                extra["signal"] = "SELL"
-                extra["reason"] = (
-                    f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f},平均分值:{avg_score:.2f}"
+
+            # ---- 回撤止损：独立负分项，直接叠加在位置分上（不做平均）----
+            # 止损要的是「果断退出」：一条回撤理由（-6.0）就应足够单独触发卖出，
+            # 不该被「枢轴点=0、布林带=0」的中间态稀释掉。未触发回撤时
+            # final_score 恒等于 avg_score，卖出行为与加回撤前完全一致。
+            final_score: float = avg_score
+            dd_parts: list[str] = []
+            highest_price: float = self._resolve_highest_price(
+                code, buy_time, create_time, day_high, cost_price
+            )
+            if highest_price > 0:
+                drawdown: float = (current_price - highest_price) / highest_price * 100
+                extra["highest_price"] = round(highest_price, 2)
+                extra["drawdown"] = round(drawdown, 2)
+                if drawdown < self.SELL_DRAWDOWN_PCT:
+                    final_score += self.SELL_DRAWDOWN_SCORE
+                    dd_parts.append(
+                        f"持仓回撤{drawdown:.2f}%(最高{highest_price:.2f}→"
+                        f"{current_price:.2f}，阈值{self.SELL_DRAWDOWN_PCT:.2f}%，"
+                        f"扣{self.SELL_DRAWDOWN_SCORE:.2f}分)"
+                    )
+            # 账户级回撤：账户权益自峰值回撤达阈值时分值入账（阈值 0/正数表示关闭）。
+            # 这是账户级条件，对被检查的每只股票都成立（回撤超限时整体降仓）；
+            # 回撤值由 workflow / 回测在调用策略前注入（见基类 `set_account_drawdown`）。
+            account_dd: float = float(self.account_drawdown_pct or 0.0)
+            extra["account_drawdown"] = round(account_dd, 2)
+            risk_score: float = self._risk_drawdown_score()
+            if risk_score < 0:
+                final_score += risk_score
+                dd_parts.append(
+                    f"账户回撤{account_dd:.2f}%(阈值{self.RISK_MAX_DRAWDOWN_PCT:.2f}%，"
+                    f"扣{risk_score:.2f}分)"
                 )
+
+            if final_score < 0:
+                extra["signal"] = "SELL"
+                reason: str = (
+                    f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f},"
+                    f"平均分值:{avg_score:.2f}"
+                )
+                # 回撤段只在触发时追加：未触发时逐字保持原有文案，避免下游按固定
+                # 格式对账时被多出来的字段打乱（分隔符照用户样例，不统一改写）。
+                if dd_parts:
+                    reason += "，" + "；".join(dd_parts)
+                extra["reason"] = reason
                 extra["current_price"] = round(current_price, 2)
-                extra["score"] = round(avg_score, 2)
-                extra["star"] = round(star, 1)
+                extra["score"] = round(final_score, 2)
+                extra["star"] = round(-1.0 * final_score / 2, 1)
                 extra["create_time"] = create_time
                 return True, extra
 

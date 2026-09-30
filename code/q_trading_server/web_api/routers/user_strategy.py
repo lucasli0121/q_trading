@@ -12,6 +12,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app_context import AppContext
+from core.config_notify import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_UPDATE,
+    SCOPE_USER_STRATEGY,
+    notify_config_change,
+)
 from db.mongo.mongo_runlog_impl import MongoRunLogImpl
 from db.mongo.mongo_strategy_execution_impl import MongoStrategyExecutionImpl
 from db.mongo.mongo_user_strategy_impl import MongoUserStrategyImpl
@@ -102,6 +109,8 @@ def create_user_strategy(
     if error or not ok or not record_id:
         raise HTTPException(status_code=500, detail="创建用户策略失败")
     AppContext().stock_fetch.submit_user_strategy_distribution()
+    # 通知 q_trading_work 重新对账：新策略要建实例并纳入行情派发
+    notify_config_change(SCOPE_USER_STRATEGY, ACTION_CREATE, record_id or "")
     return ApiResponse(
         data=UserStrategyItem(
             id=record_id or "",
@@ -132,6 +141,8 @@ def delete_user_strategy(id: str, user_info: tuple[str, int] = Depends(get_curre
         raise HTTPException(status_code=500, detail="删除失败")
     workflow_user_strategy_impl = MongoWorkFlowServiceUserStrategyImpl()
     workflow_user_strategy_impl.delete_by_user_strategy_id(id)
+    # 通知 q_trading_work 重新对账：已删除的策略要停止派发并移出运行表
+    notify_config_change(SCOPE_USER_STRATEGY, ACTION_DELETE, id)
     return ApiResponse(data=id, message="删除成功")
 
 
@@ -165,6 +176,9 @@ def update_user_strategy(
         raise HTTPException(status_code=409, detail="已存在同名策略，请更换名称")
     if not ok:
         raise HTTPException(status_code=500, detail="更新失败")
+    # 通知 q_trading_work 重新对账：这里可能改了 strategy_params / pool_id / status，
+    # 三者都只在实例化时读一次，不通知就永远不生效（要重启进程）
+    notify_config_change(SCOPE_USER_STRATEGY, ACTION_UPDATE, id)
     return ApiResponse(data=id, message="更新成功")
 
 

@@ -46,6 +46,11 @@ class MqttTopic:
     # 所有股票相关 topic 通配（订阅用）
     STOCK_ALL: str = "q_share/stock/#"
 
+    # 配置变更通知 topic：web 端改了用户策略参数/股票池/分配关系后由服务端发布。
+    # 本端只在启动时读一次用户策略配置，订阅这条消息才知道要重新对账，
+    # 否则界面上的改动要重启进程才生效。
+    CONFIG_CHANGE: str = "q_share/config_change"
+
     # 交易信号发送topic
     STOCK_TRADING_SIGNAL = "q_share/trading_signal"
 

@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
-from api.client import ApiClient
+from api.client import ApiClient, is_not_found
 from api.pool import PoolApi
 from api.stock_info import StockInfoApi
 from api.strategy import StrategyApi
@@ -93,6 +93,11 @@ class StrategyState:
     blacklist_codes: set[str] = field(default_factory=set)  # 用户黑名单股票代码（策略信号/选股时过滤）
     # 是否已提示过「该用户策略尚无执行记录」（仅用于日志去重，见 _load_positions）
     no_execution_record_noted: bool = False
+    # 账户权益峰值（初始资金 + 已实现盈利的历史最高值），用于账户级回撤判定。
+    # 进程重启后由历史执行记录重建（见 _load_execution_data）。
+    peak_asset: float = 0.0
+    # 账户回撤是否已按 WARNING 记过一次日志（避免逐笔重复告警；回撤回到阈值内复位）
+    drawdown_breaker_noted: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)  # 线程安全锁，保护并发访问
 
 
@@ -136,6 +141,19 @@ class StrategyWorkflow(BaseWorkflow):
     #  `_load_assigned_user_strategy_ids`）
     SERVICE_ASSIGN_RETRIES: int = 3
     SERVICE_ASSIGN_RETRY_INTERVAL_SECONDS: float = 2.0
+
+    # ---- 配置对账（热更新）----
+    # 这些配置原先只在进程启动时读一次，界面上改了参数或股票池要重启才生效。
+    # 触发有两条：服务端写库后 publish 的变更通知（即时），以及下面的定时轮询
+    # （兜底：漏发通知、进程启动早于服务端、MQTT 掉线重连期间）。
+    RECONCILE_INTERVAL_SECONDS: int = 60  # 交易时段的对账周期
+    RECONCILE_INTERVAL_OFFHOURS_SECONDS: int = 300  # 非交易时段放长，省 HTTP
+    # 盘中改池/改参数后补跑当日选股的最小间隔（秒）。
+    # 补跑要对全池取日 K，是这里最贵的一步；用户连续调几次参数时不能每次都跑。
+    SELECTION_REFRESH_MIN_INTERVAL_SECONDS: float = 300.0
+    # 热门行业代码的缓存时间（秒）。补跑选股要用它拼候选集，查一次要按行业逐个
+    # 取股票列表，属于批量 HTTP，不能每次补跑都重查。
+    HOT_INDUSTRY_CACHE_TTL_SECONDS: float = 1800.0
 
     def __init__(self, pool_size: int | None = None) -> None:
         """初始化策略工作流。
@@ -199,6 +217,16 @@ class StrategyWorkflow(BaseWorkflow):
         self._stock_info_api: StockInfoApi = StockInfoApi(self._admin_client)
         self._scheduler: Any = None
         self._service_name: str = ""  # 当前 workflow 微服务名称
+        # ---- 配置对账（热更新）状态 ----
+        # 同一时刻只允许一轮对账：MQTT 通知与定时轮询可能同时触发，而对账里
+        # 「新建实例」和「订阅 MQTT topic」都不幂等，并发跑会重复订阅（行情翻倍）。
+        self._reconciling: bool = False
+        self._reconcile_lock: threading.Lock = threading.Lock()
+        self._last_reconcile_ts: float = 0.0  # 上一次对账完成时间（非交易时段节流用）
+        # 每个 user_strategy 上一次补跑选股的时间，避免连续调参反复跑全池选股
+        self._selection_refresh_ts: dict[str, float] = {}
+        # 热门行业代码缓存（补跑选股用）：(时间戳, 代码列表)
+        self._hot_industry_cache: tuple[float, list[str]] | None = None
         # 初始化上交所交易日历（用于判断交易日），从 2020-01-01 开始
         self.xshg = xcals.get_calendar("XSHG", start="2020-01-01")  # 上交所交易日历，用于判断交易日
 
@@ -426,6 +454,95 @@ class StrategyWorkflow(BaseWorkflow):
         )
         return max(available, 0.0)
 
+    # ---- 账户级回撤（卖出分值的来源）----
+
+    def _account_asset(self, state: StrategyState) -> float:
+        """当前账户权益（初始资金 + 已实现盈利）。
+
+        与 `_calc_available_cash` 的「总资产」以及回测
+        `BacktestEngine._compute_equity_curve` 同源：都是**已实现口径**，
+        不含持仓浮动盈亏 —— 因此熔断判定与回测汇总的最大回撤可直接对照。
+        """
+        return float(state.initial_amount or 0) + float(state.current_profit or 0)
+
+    def _update_peak_asset(self, state: StrategyState) -> None:
+        """刷新账户权益峰值（幂等，只增不减）。"""
+        asset: float = self._account_asset(state)
+        if asset > state.peak_asset:
+            state.peak_asset = asset
+
+    def _restore_peak_asset(self, state: StrategyState) -> None:
+        """从历史执行记录重建账户权益峰值，再与当前权益取大。
+
+        执行记录里没有 total_asset 字段，「权益」= `initial_amount + current_profit`。
+        重建失败不阻塞策略：退化为以当前权益为峰值，熔断从此刻起算（宁可晚触发，
+        不可因取数故障把策略卡死）。
+
+        :param state: 用户策略运行时状态
+        """
+        if not state.user_strategy_id:
+            self._update_peak_asset(state)
+            return
+        try:
+            history: list[dict[str, Any]] = self._user_strategy_api.get_execution(
+                state.user_strategy_id
+            )
+        except Exception as exc:
+            if is_not_found(exc):
+                # 尚无执行记录 = 新策略的正常状态（404 表示无数据），不是故障
+                self._update_peak_asset(state)
+                return
+            self.logger.warning(
+                "[%s] 重建账户权益峰值失败（熔断以当前权益为峰值起算）: %s",
+                state.strategy_name, exc,
+            )
+            self._update_peak_asset(state)
+            return
+        for rec in history or []:
+            asset: float = float(rec.get("initial_amount", 0) or 0) + float(
+                rec.get("current_profit", 0) or 0
+            )
+            if asset > state.peak_asset:
+                state.peak_asset = asset
+        self._update_peak_asset(state)
+
+    def _refresh_account_drawdown(self, state: StrategyState) -> float:
+        """计算账户当前回撤（%）并注入策略实例，供其卖出判定使用。
+
+        语义（2026-09-29 用户定）：回撤达阈值时**计入卖出分值**
+        （`BaseStrategy.SELL_RISK_DRAWDOWN_SCORE`），**不冻结开新仓** ——
+        因此本方法不再返回阻断原因，只负责把回撤喂给策略，由策略的
+        `_check_sell_conditions` 决定是否据此卖出。
+        阈值取策略实例的 `RISK_MAX_DRAWDOWN_PCT`（%，负值有效；>= 0 表示关闭），
+        回撤计算式与回测 `BacktestEngine._drawdown_at` 一致。
+
+        :param state: 用户策略运行时状态
+        :return: 账户当前回撤（%，<= 0；无峰值或未绑定时为 0.0）
+        """
+        instance: BaseStrategy | None = state.instance
+        if instance is None:
+            return 0.0
+        peak: float = float(state.peak_asset or 0)
+        drawdown_pct: float = 0.0
+        if peak > 0:
+            drawdown_pct = (self._account_asset(state) - peak) / peak * 100
+        instance.set_account_drawdown(drawdown_pct)
+
+        threshold: float = float(getattr(instance, "RISK_MAX_DRAWDOWN_PCT", 0.0) or 0.0)
+        if threshold < 0 and drawdown_pct <= threshold:
+            if not state.drawdown_breaker_noted:
+                state.drawdown_breaker_noted = True
+                self.logger.warning(
+                    "[%s] 账户回撤 %.2f%% 已达阈值 %.2f%%：卖出判定计入 %.2f 分"
+                    "（不冻结开新仓）",
+                    state.strategy_name, drawdown_pct, threshold,
+                    float(getattr(instance, "SELL_RISK_DRAWDOWN_SCORE", 0.0) or 0.0),
+                )
+        else:
+            # 回撤回到阈值内 → 复位告警标记，下次触发能再记一次 WARNING
+            state.drawdown_breaker_noted = False
+        return drawdown_pct
+
     def _load_execution_data(self, state: StrategyState) -> None:
         """加载策略执行数据，填充初始资金、持仓和剩余资金。
 
@@ -447,8 +564,9 @@ class StrategyWorkflow(BaseWorkflow):
                 "加载策略执行数据失败（回退本地资金口径）%s: %s",
                 state.strategy_name, exc,
             )
-            # 即使 API 异常，也确保 available_cash 被初始化
+            # 即使 API 异常，也确保 available_cash 被初始化（并建立权益峰值基线）
             state.available_cash = self._calc_available_cash(state)
+            self._update_peak_asset(state)
             return
         if not exec_data:
             # 无执行数据时（新策略），仍需要初始化 available_cash
@@ -457,6 +575,7 @@ class StrategyWorkflow(BaseWorkflow):
                 state.strategy_name,
             )
             state.available_cash = self._calc_available_cash(state)
+            self._update_peak_asset(state)
             return
         # initial_amount 以用户策略配置为真源（已在 state 初始化时设置），
         # 执行数据中的值只在「配置里没有该字段」时兜底。
@@ -483,6 +602,9 @@ class StrategyWorkflow(BaseWorkflow):
             state.available_cash = float(exec_data.get("remaining_cash", 0) or 0)
         else:
             state.available_cash = self._calc_available_cash(state)
+        # 峰值必须在这里重建：进程重启后 state 里没有历史，若以「当前权益」为峰值
+        # 起步，回撤会被系统性低估，熔断等于失效。
+        self._restore_peak_asset(state)
 
     def _load_blacklist_for_state(self, state: StrategyState) -> None:
         """加载用户黑名单股票代码到 state.blacklist_codes。
@@ -819,106 +941,630 @@ class StrategyWorkflow(BaseWorkflow):
 
         for us_item in user_strategies:
             user_strategy_id: str = str(us_item.get("id") or us_item.get("_id") or "")
-            user_strategy_name: str = us_item.get("name", "")
-            us_sid: str = str(us_item.get("strategy_id", ""))
-            if not us_sid or not user_strategy_id:
+            if not user_strategy_id:
                 continue
             # 按 service 分配的 user_strategy_id 列表过滤
             if assigned_ids and user_strategy_id not in assigned_ids:
                 continue
-
-            # 获取策略模板元数据
-            template: dict[str, Any] | None = self._strategy_templates.get(us_sid)
-            if template is None:
-                self.logger.warning(
-                    "用户策略 %s 关联的 strategy_id=%s 无对应模板，跳过",
-                    user_strategy_id, us_sid,
-                )
-                continue
-
-            # 为当前用户策略实例化独立策略实例，并传入 user_strategy_id 及参数
-            instance = self._build_strategy_instance(
-                template,
-                user_strategy_id=user_strategy_id,
-                user_strategy_name=user_strategy_name,
-                user_strategy_params=us_item.get("strategy_params"),
-            )
-            if instance is None:
-                self.logger.warning(
-                    "用户策略 %s 实例化策略 %s 失败，跳过",
-                    user_strategy_id, us_sid,
-                )
-                continue
-            # 保留该策略模板的代表实例（供模板级选股使用）
-            with self._registry_lock:
-                if us_sid not in self._strategy_instances:
-                    self._strategy_instances[us_sid] = instance
-
-            pool_id: str = str(us_item.get("pool_id", ""))
-            db_status: str = str(us_item.get("status", "stopped"))
-            # 从 UserStrategyDao 读取初始资金和最大持仓数
-            # P0-6 + 2026-09-24 语义确认：`max_stock_count=0` 与 `initial_amount=0`
-            # 都表示**限制买入**（不允许新建持仓或加仓），`-1` 才是不限制持仓数量。
-            # 2026-09-28：字段缺失/非法时的默认值改为「不限制持仓 + 10 万初始资金」
-            # （与服务端默认值一致），不再回退 4 / 0。
-            max_stocks: int = self._parse_max_stock_count(us_item.get("max_stock_count"))
-            raw_initial: Any = us_item.get("initial_amount")
-            initial_amt: float = self._parse_initial_amount(raw_initial)
-            # 「显式配置 0」与「字段缺失」必须区分：0 是限制买入的有效语义，
-            # 不能被历史执行记录里的值覆盖（见 _load_execution_data）。
-            # 空字符串等同于未配置，与服务端写入行为对齐。
-            initial_configured: bool = raw_initial not in (None, "")
-
-            state = StrategyState(
-                strategy_id=us_sid,
-                user_strategy_id=user_strategy_id,
-                strategy_name=instance.strategy_name,
-                class_path=instance.__class__.__module__,
-                class_name=instance.__class__.__name__,
-                user_strategy_name=user_strategy_name,
-                instance=instance,
-                pool_id=pool_id,
-                status=db_status if db_status in ("running", "stopped", "paused") else "stopped",
-                initial_amount=initial_amt,
-                initial_amount_configured=initial_configured,
-                max_stock_count=max_stocks,
-            )
-
-            # 配置级限制买入在加载期就提示一次：这类策略会持续产出信号但永不创建订单，
-            # 只在「跳过买入」那一刻记 INFO 的话，运维得先翻到那条行情才看得出来。
-            if max_stocks == 0 or initial_amt <= 0:
-                self.logger.info(
-                    "[%s] 该策略配置为限制买入（max_stock_count=%d, initial_amount=%.2f，"
-                    "均以 0 表示限制买入），不会创建买单；卖出不受影响",
-                    instance.strategy_name, max_stocks, initial_amt,
-                )
-
-            # 解析股票池
-            if pool_id:
-                self.update_strategy_stock_pool(state, pool_id)
-
-            # 加载执行数据（同步持仓、执行中的 initial_amount 等）
-            self._load_execution_data(state)
-            # 加载用户黑名单（信号/选股时过滤）
-            self._load_blacklist_for_state(state)
-
-            # 按 strategy_id 分组
-            with self._registry_lock:
-                if us_sid not in self._user_strategies:
-                    self._user_strategies[us_sid] = []
-                self._user_strategies[us_sid].append(state)
-            loaded.append(state)
-
-            self.logger.info(
-                "用户策略加载: name=%s, user_strategy_id=%s, strategy_id=%s",
-                state.strategy_name, user_strategy_id, us_sid,
-            )
+            state: StrategyState | None = self._create_state_from_user_strategy(us_item)
+            if state is not None:
+                loaded.append(state)
 
         self.logger.info(
             "共加载 %d 个用户策略配置（%d 个策略模板）",
             len(loaded), len(self._user_strategies),
         )
         return loaded
+
+    def _create_state_from_user_strategy(
+        self, us_item: dict[str, Any]
+    ) -> StrategyState | None:
+        """由一条用户策略记录构建 StrategyState 并注册进运行表。
+
+        **启动加载与运行中对账共用这一条路径**。两处各写一份的话，「实例化传哪些
+        参数」「哪些字段取自服务端」「要不要加载持仓和黑名单」这些细节迟早分叉，
+        而分叉的表现是「重启后才生效」「热更新后的参数与启动时不一致」这类只有
+        对比两份日志才看得出来的问题。
+
+        :param us_item: /api/user_strategy/all 返回的一条记录
+        :return: 构建成功的 StrategyState；模板缺失或实例化失败时返回 None
+        """
+        user_strategy_id: str = str(us_item.get("id") or us_item.get("_id") or "")
+        user_strategy_name: str = us_item.get("name", "")
+        us_sid: str = str(us_item.get("strategy_id", ""))
+        if not us_sid or not user_strategy_id:
+            return None
+
+        # 获取策略模板元数据
+        template: dict[str, Any] | None = self._strategy_templates.get(us_sid)
+        if template is None:
+            self.logger.warning(
+                "用户策略 %s 关联的 strategy_id=%s 无对应模板，跳过",
+                user_strategy_id, us_sid,
+            )
+            return None
+
+        # 为当前用户策略实例化独立策略实例，并传入 user_strategy_id 及参数
+        instance = self._build_strategy_instance(
+            template,
+            user_strategy_id=user_strategy_id,
+            user_strategy_name=user_strategy_name,
+            user_strategy_params=us_item.get("strategy_params"),
+        )
+        if instance is None:
+            self.logger.warning(
+                "用户策略 %s 实例化策略 %s 失败，跳过",
+                user_strategy_id, us_sid,
+            )
+            return None
+        # 保留该策略模板的代表实例（供模板级选股使用）
+        with self._registry_lock:
+            if us_sid not in self._strategy_instances:
+                self._strategy_instances[us_sid] = instance
+
+        pool_id: str = str(us_item.get("pool_id", ""))
+        db_status: str = str(us_item.get("status", "stopped"))
+        # 从 UserStrategyDao 读取初始资金和最大持仓数
+        # P0-6 + 2026-09-24 语义确认：`max_stock_count=0` 与 `initial_amount=0`
+        # 都表示**限制买入**（不允许新建持仓或加仓），`-1` 才是不限制持仓数量。
+        # 2026-09-28：字段缺失/非法时的默认值改为「不限制持仓 + 10 万初始资金」
+        # （与服务端默认值一致），不再回退 4 / 0。
+        max_stocks: int = self._parse_max_stock_count(us_item.get("max_stock_count"))
+        raw_initial: Any = us_item.get("initial_amount")
+        initial_amt: float = self._parse_initial_amount(raw_initial)
+        # 「显式配置 0」与「字段缺失」必须区分：0 是限制买入的有效语义，
+        # 不能被历史执行记录里的值覆盖（见 _load_execution_data）。
+        # 空字符串等同于未配置，与服务端写入行为对齐。
+        initial_configured: bool = raw_initial not in (None, "")
+
+        state = StrategyState(
+            strategy_id=us_sid,
+            user_strategy_id=user_strategy_id,
+            strategy_name=instance.strategy_name,
+            class_path=instance.__class__.__module__,
+            class_name=instance.__class__.__name__,
+            user_strategy_name=user_strategy_name,
+            instance=instance,
+            pool_id=pool_id,
+            status=db_status if db_status in ("running", "stopped", "paused") else "stopped",
+            initial_amount=initial_amt,
+            initial_amount_configured=initial_configured,
+            max_stock_count=max_stocks,
+        )
+
+        # 配置级限制买入在加载期就提示一次：这类策略会持续产出信号但永不创建订单，
+        # 只在「跳过买入」那一刻记 INFO 的话，运维得先翻到那条行情才看得出来。
+        if max_stocks == 0 or initial_amt <= 0:
+            self.logger.info(
+                "[%s] 该策略配置为限制买入（max_stock_count=%d, initial_amount=%.2f，"
+                "均以 0 表示限制买入），不会创建买单；卖出不受影响",
+                instance.strategy_name, max_stocks, initial_amt,
+            )
+
+        # 解析股票池
+        if pool_id:
+            self.update_strategy_stock_pool(state, pool_id)
+
+        # 加载执行数据（同步持仓、执行中的 initial_amount 等）
+        self._load_execution_data(state)
+        # 加载用户黑名单（信号/选股时过滤）
+        self._load_blacklist_for_state(state)
+
+        # 按 strategy_id 分组
+        with self._registry_lock:
+            if us_sid not in self._user_strategies:
+                self._user_strategies[us_sid] = []
+            self._user_strategies[us_sid].append(state)
+
+        self.logger.info(
+            "用户策略加载: name=%s, user_strategy_id=%s, strategy_id=%s",
+            state.strategy_name, user_strategy_id, us_sid,
+        )
+        return state
+
+    # ---- 配置对账（热更新）----
+
+    def on_config_change(self, payload: Any) -> None:
+        """配置变更钩子：收到服务端通知即对账一次。
+
+        载荷只用于日志 —— 判断「该同步什么」靠重新读服务端当前状态，不靠消息里的
+        scope/action。这样即使某个写入点漏发通知、或字段名对不上，后果只是延迟到
+        下一次定时轮询，不会漏同步。
+
+        :param payload: 解析后的消息体
+        """
+        self.reconcile_user_strategies(reason="mqtt")
+
+    def reconcile_user_strategies(self, reason: str = "manual") -> dict[str, Any]:
+        """与服务端对账用户策略配置，把变更增量应用到运行中的实例。
+
+        覆盖四类变更：用户策略参数（热更新已实例）、股票池内容与池绑定（刷新
+        `state.stock_pool` 并按需重订阅 MQTT）、用户策略的增删、执行相关字段
+        （持仓上限 / 初始资金 / 启停状态）。
+
+        并发保护用非阻塞锁：MQTT 通知与定时轮询可能同时到，而对账里「新建实例」
+        和「订阅 topic」都不幂等，宁可跳过本轮（下一轮 60 秒后还会来）。
+
+        :param reason: 触发来源（mqtt / scheduler / manual），只用于日志
+        :return: 变更摘要，供测试与排查使用
+        """
+        if not self._reconcile_lock.acquire(blocking=False):
+            self.logger.info("已有对账在进行中，跳过本次触发（reason=%s）", reason)
+            return {"skipped": "busy"}
+        try:
+            summary: dict[str, Any] = self._reconcile_once(reason)
+            summary["reason"] = reason
+            return summary
+        except Exception as exc:
+            self.logger.error("配置对账异常（reason=%s）: %s", reason, exc, exc_info=True)
+            return {"reason": reason, "error": str(exc)}
+        finally:
+            self._last_reconcile_ts = time.time()
+            self._reconcile_lock.release()
+
+    def _reconcile_once(self, reason: str) -> dict[str, Any]:
+        """对账主体：拉服务端状态 → 逐项 diff → 增量应用。"""
+        # 1) 策略模板（新建策略要实例化，模板默认参数变化也要能被检测到）
+        self._refresh_strategy_templates()
+
+        # 2) 本实例负责的 user_strategy_ids
+        assigned_ids, assign_ok = self._fetch_assigned_ids()
+        if not assign_ok:
+            self.logger.warning(
+                "对账：分配关系查询失败，本轮只做已有策略的字段热更新，"
+                "不新增也不删除（fail-closed：宁可不跑，也不能多实例同时下单）"
+            )
+
+        # 3) 用户策略全量
+        try:
+            user_strategies: list[dict[str, Any]] = self._user_strategy_api.list_all()
+        except Exception as exc:
+            self.logger.warning("对账：拉取用户策略失败，本轮跳过: %s", exc)
+            return {"error": "list_all_failed"}
+        if user_strategies is None:
+            user_strategies = []
+
+        desired: dict[str, dict[str, Any]] = {}
+        for item in user_strategies:
+            if not isinstance(item, dict):
+                continue
+            usid: str = str(item.get("id") or item.get("_id") or "")
+            if not usid:
+                continue
+            # 分配查询成功时按分配过滤；失败时保留全部（只用于更新，见下方闸门）
+            if assign_ok and self._service_name and usid not in assigned_ids:
+                continue
+            desired[usid] = item
+
+        current: dict[str, StrategyState] = self.get_all_strategies()
+
+        added: list[str] = []
+        removed: list[str] = []
+        updated: list[str] = []
+        selection_refreshed: list[str] = []
+
+        # 4) 新增（分配查询失败时不新增）
+        if assign_ok:
+            for usid, item in desired.items():
+                if usid in current:
+                    continue
+                state: StrategyState | None = self._create_state_from_user_strategy(item)
+                if state is None:
+                    continue
+                added.append(usid)
+                if state.pool_id:
+                    self.subscribe_pool(state.pool_id)
+
+        # 5) 删除（同样受 assign_ok 保护）
+        if assign_ok:
+            for usid, state in current.items():
+                if usid in desired:
+                    continue
+                self._drop_state(state)
+                removed.append(usid)
+
+        # 6) 更新已存在的策略
+        for usid, state in current.items():
+            item = desired.get(usid)
+            if item is None:
+                continue
+            changed, selection_affected = self._sync_state_from_us_item(state, item)
+            if not changed:
+                continue
+            updated.append(usid)
+            if selection_affected and self._maybe_refresh_selection(state, reason):
+                selection_refreshed.append(usid)
+
+        # 7) 没有任何策略再引用的股票池，退订其行情 topic
+        self._prune_pool_subscriptions()
+
+        summary: dict[str, Any] = {
+            "added": added,
+            "removed": removed,
+            "updated": updated,
+            "selection_refreshed": selection_refreshed,
+            "assign_ok": assign_ok,
+        }
+        if added or removed or updated:
+            self.logger.info(
+                "配置对账完成（reason=%s）: 新增 %d, 移除 %d, 更新 %d（补跑选股 %d）: %s",
+                reason, len(added), len(removed), len(updated),
+                len(selection_refreshed), summary,
+            )
+        else:
+            self.logger.debug("配置对账完成（reason=%s）: 无变更", reason)
+        return summary
+
+    def _refresh_strategy_templates(self) -> None:
+        """刷新策略模板缓存。
+
+        只做「增」和「改」，不做「删」：还在运行的 state 引用着旧模板条目，
+        删掉只会让后续判断（如模板默认参数）无从下手，而模板被删后服务端
+        也不会再把它分配给任何用户策略。
+        """
+        try:
+            db_strategies: list[dict[str, Any]] = self._strategy_api.list()
+        except Exception as exc:
+            self.logger.warning("对账：拉取策略模板失败，沿用本地缓存: %s", exc)
+            return
+        if not db_strategies:
+            return
+        fresh: dict[str, dict[str, Any]] = {}
+        for s in db_strategies:
+            if not isinstance(s, dict):
+                continue
+            sid: str = str(s.get("id") or s.get("_id") or "")
+            if sid:
+                fresh[sid] = s
+        if fresh:
+            self._strategy_templates.update(fresh)
+
+    def _fetch_assigned_ids(self) -> tuple[set[str], bool]:
+        """查询分配给本实例的 user_strategy_ids。
+
+        与 `_load_assigned_user_strategy_ids` 的差别只在返回值：这里必须区分
+        **「查询失败」与「确实没有分配」** —— 前者的正确反应是什么都不动，后者要把
+        本地多余的策略移除。启动路径上两者都走「空转」，所以那边不需要这个区分。
+
+        :return: (分配集合, 查询结果是否可信)。`service_name` 为空（兼容模式）时
+            返回 `(set(), True)`：兼容模式的语义就是「加载全部」，不按分配过滤。
+        """
+        if not self._service_name:
+            return set(), True
+        got_response: bool = False
+        runners: list[tuple[str, Any]] = [
+            (
+                "/service/{name}",
+                lambda: self._workflow_service_api.list_by_service(self._service_name),
+            ),
+            (
+                "/list?service_name=",
+                lambda: self._workflow_service_api.list(service_name=self._service_name),
+            ),
+        ]
+        for label, fetch in runners:
+            try:
+                records: list[dict[str, Any]] = fetch()
+                # 无异常即视为「服务端给了答复」：哪怕是空列表，也是「没分配给本实例」
+                got_response = True
+                ids: set[str] = self._collect_user_strategy_ids(records)
+                if ids:
+                    return ids, True
+            except Exception as exc:
+                self.logger.warning("对账：查询分配关系 %s 失败: %s", label, exc)
+        return set(), got_response
+
+    def _drop_state(self, state: StrategyState) -> None:
+        """把一条用户策略从运行表移除（服务端已删除或已改分配给别的实例）。"""
+        sid: str = state.strategy_id
+        usid: str = state.user_strategy_id
+        with self._registry_lock:
+            states: list[StrategyState] | None = self._user_strategies.get(sid)
+            if states:
+                self._user_strategies[sid] = [
+                    s for s in states if s.user_strategy_id != usid
+                ]
+                if not self._user_strategies[sid]:
+                    del self._user_strategies[sid]
+                    self._strategy_instances.pop(sid, None)
+        # 清掉该用户的缓存快照：策略删了又建（同名同 ID 复用）时，旧选股/打分
+        # 结果会让新策略第一天就命中过期数据
+        try:
+            self._cache.clear_user(usid)
+        except Exception as exc:
+            self.logger.debug("清理已删除策略 %s 的缓存失败: %s", usid, exc)
+        self.logger.info(
+            "配置对账：用户策略已移除 name=%s, user_strategy_id=%s",
+            state.user_strategy_name or state.strategy_name, usid,
+        )
+
+    def _sync_state_from_us_item(
+        self, state: StrategyState, item: dict[str, Any]
+    ) -> tuple[bool, bool]:
+        """把服务端记录的最新字段应用到本地 state。
+
+        :param state: 本地运行时状态
+        :param item: /api/user_strategy/all 里的对应记录
+        :return: (是否有任何字段变化, 变化是否会影响「当日选股结果」)
+        """
+        changed: list[str] = []
+        selection_affected: bool = False
+
+        # 1) 用户策略名（交易信号推送的 recipient 用它）
+        new_name: str = str(item.get("name", "") or "")
+        if new_name and new_name != state.user_strategy_name:
+            changed.append(f"name:{state.user_strategy_name}->{new_name}")
+            state.user_strategy_name = new_name
+            if state.instance is not None:
+                state.instance.user_strategy_name = new_name
+
+        # 2) 启停状态。工作流未运行时不接管：on_stop 会把本地状态改成 paused 但
+        #    不写服务端，此时若按服务端值改回去，界面显示运行中、实际已停。
+        new_status: str = str(item.get("status", "") or "")
+        if (
+            self._running
+            and new_status in ("running", "stopped", "paused")
+            and new_status != state.status
+        ):
+            changed.append(f"status:{state.status}->{new_status}")
+            state.status = new_status
+            # 由停到跑：当日选股是启动时就该有的输入，但热启动时可能压根没选过
+            if new_status == "running":
+                selection_affected = True
+
+        # 3) 持仓上限
+        new_max: int = self._parse_max_stock_count(item.get("max_stock_count"))
+        if new_max != state.max_stock_count:
+            changed.append(f"max_stock_count:{state.max_stock_count}->{new_max}")
+            state.max_stock_count = new_max
+
+        # 4) 初始资金。`initial_amount_configured` 表示「界面上显式配了值（0 也算）」，
+        #    它决定 `_load_execution_data` 能否用执行记录里的金额覆盖本配置。
+        raw_initial: Any = item.get("initial_amount")
+        new_initial: float = self._parse_initial_amount(raw_initial)
+        new_configured: bool = raw_initial not in (None, "")
+        if new_configured != state.initial_amount_configured or (
+            new_configured and new_initial != state.initial_amount
+        ):
+            changed.append(
+                f"initial_amount:{state.initial_amount}->{new_initial}"
+                f"(configured={new_configured})"
+            )
+            state.initial_amount = new_initial
+            state.initial_amount_configured = new_configured
+            state.available_cash = self._calc_available_cash(state)
+
+        # 5) 策略参数（用户策略参数 / 模板默认参数）
+        if self._sync_params_if_changed(state, item):
+            changed.append("strategy_params")
+            selection_affected = True
+
+        # 6) 股票池绑定与池内容
+        pool_changed = self._sync_pool_if_changed(state, item)
+        if pool_changed:
+            changed.append("stock_pool")
+            selection_affected = True
+
+        if changed:
+            self.logger.info(
+                "[%s] 配置热更新 user_strategy_id=%s: %s",
+                state.user_strategy_name or state.strategy_name,
+                state.user_strategy_id, ", ".join(changed),
+            )
+        return bool(changed), selection_affected
+
+    def _sync_params_if_changed(
+        self, state: StrategyState, item: dict[str, Any]
+    ) -> bool:
+        """参数有变化时热更新策略实例；返回是否发生了更新。
+
+        判断「有没有变」用**解析后的结果**而不是原始字典：`strategy_params` 的
+        三级回退是「择一」，界面上清空用户参数会让生效值整体落到模板默认值上，
+        此时原始字典变了、生效参数却没变（或反过来），只有比最终参数才对得上。
+        """
+        instance: BaseStrategy | None = state.instance
+        if instance is None:
+            return False
+
+        template: dict[str, Any] = self._strategy_templates.get(state.strategy_id, {})
+        default_params: Any = template.get("default_params")
+        user_params: Any = item.get("strategy_params")
+        if user_params is None:
+            user_params = {}
+
+        new_params: dict[str, Any] = self._resolve_params_for_compare(
+            instance, user_params, default_params
+        )
+        if new_params == (instance.strategy_params or {}):
+            return False
+
+        self.logger.info(
+            "[%s] 检测到策略参数变化，热更新 user_strategy_id=%s: %s -> %s",
+            state.user_strategy_name or state.strategy_name,
+            state.user_strategy_id, instance.strategy_params, new_params,
+        )
+        try:
+            instance.reload_params(user_params, default_params)
+        except Exception as exc:
+            self.logger.error(
+                "[%s] 热更新策略参数失败: %s",
+                state.user_strategy_name or state.strategy_name, exc, exc_info=True,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _resolve_params_for_compare(
+        instance: BaseStrategy, user_params: Any, default_params: Any
+    ) -> dict[str, Any]:
+        """按 `_apply_resolved_params` 的同一套优先级算出「生效参数」。
+
+        与 `BaseStrategy._apply_resolved_params` 的选择顺序保持一致：用户策略
+        参数非空 → 模板默认参数非空 → cfg/strategy.yaml。这里只做预演（不写实例），
+        用于判断参数是否真的需要重载。
+        """
+        raw: Any = None
+        if isinstance(user_params, dict) and user_params:
+            raw = user_params
+        elif isinstance(default_params, dict) and default_params:
+            raw = default_params
+        else:
+            try:
+                raw = instance._load_yaml_params()
+            except Exception:
+                raw = {}
+        try:
+            normalized: Any = BaseStrategy._normalize_params(raw)
+        except Exception:
+            normalized = raw
+        return normalized if isinstance(normalized, dict) else {}
+
+    def _sync_pool_if_changed(self, state: StrategyState, item: dict[str, Any]) -> bool:
+        """同步股票池绑定与池内股票；返回是否有变化。
+
+        两种情况都要处理：
+
+        - **换了池**（pool_id 变化）：旧池的行情会被 `handle_bar` 里的
+          `topic_pool_id != state.pool_id` 挡掉，新池又没订阅过，必须重订阅；
+        - **同一个池里增删了股票**：池内容原先只在盘前定时任务里刷新一次，
+          盘中加进去的股票收不到行情（`topic_stock_code not in state.stock_pool`）。
+        """
+        new_pool_id: str = str(item.get("pool_id", "") or "")
+        if new_pool_id == state.pool_id:
+            if not state.pool_id:
+                return False
+            before: list[str] = list(state.stock_pool)
+            self._reload_stock_pool(state)
+            if before == state.stock_pool:
+                return False
+            before_set: set[str] = set(before)
+            now_set: set[str] = set(state.stock_pool)
+            self.logger.info(
+                "[%s] 股票池内容变化: 新增 %s, 移除 %s",
+                state.user_strategy_name or state.strategy_name,
+                sorted(now_set - before_set), sorted(before_set - now_set),
+            )
+            return True
+
+        old_pool_id: str = state.pool_id
+        state.pool_id = new_pool_id
+        if new_pool_id:
+            self.subscribe_pool(new_pool_id)
+            self.update_strategy_stock_pool(state, new_pool_id)
+        else:
+            state.stock_pool = []
+            self.logger.info(
+                "[%s] 已解除股票池绑定，股票列表清空",
+                state.user_strategy_name or state.strategy_name,
+            )
+        self.logger.info(
+            "[%s] 股票池绑定变化: %s -> %s",
+            state.user_strategy_name or state.strategy_name, old_pool_id, new_pool_id,
+        )
+        return True
+
+    def _prune_pool_subscriptions(self) -> None:
+        """退订已无任何策略引用的股票池行情。
+
+        用户换池后旧池不会再产生有效行情（`handle_bar` 按 pool_id 过滤），
+        继续订阅只是白白多收一路消息。
+        """
+        active: set[str] = {
+            s.pool_id for s in self.get_all_strategies().values() if s.pool_id
+        }
+        for pool_id in self.pool_ids:
+            if pool_id not in active:
+                self.unsubscribe_pool(pool_id)
+
+    def _maybe_refresh_selection(self, state: StrategyState, reason: str) -> bool:
+        """配置变更后补跑当日选股（仅盘中、仅依赖选股的策略）。
+
+        为什么需要：策略的买入判定读的是「当日选股结果」（基类
+        `handle_minute_bar` 里 `code in select_stocks`）。盘中往池里加了股票、
+        或把策略从停止改成运行，当日选股结果还是变更前那一份，那只股票要等到
+        第二天盘前才会被选进来 —— 表现就是「池子加了票，当天一直不买」。
+
+        三条限制：只在交易时段跑（其余时间下一次盘前任务会重选）、只对
+        `requires_daily_selection` 的策略跑（补跑要全池取日 K，最贵的一步）、
+        同一策略 `SELECTION_REFRESH_MIN_INTERVAL_SECONDS` 内不重复跑。
+
+        :param state: 目标策略状态
+        :param reason: 触发来源，用于日志
+        :return: 是否真的执行了补跑
+        """
+        if state.instance is None or state.status != "running":
+            return False
+        if not getattr(state.instance, "requires_daily_selection", True):
+            self.logger.info(
+                "[%s] 该策略不依赖当日选股，跳过补跑 (reason=%s)",
+                state.user_strategy_name or state.strategy_name, reason,
+            )
+            return False
+        if not self._is_trading_hours():
+            return False
+        now: float = time.time()
+        last: float = self._selection_refresh_ts.get(state.user_strategy_id, 0.0)
+        if now - last < self.SELECTION_REFRESH_MIN_INTERVAL_SECONDS:
+            self.logger.info(
+                "[%s] 距上次补跑选股不足 %.0f 秒，本次跳过 (reason=%s)",
+                state.user_strategy_name or state.strategy_name,
+                self.SELECTION_REFRESH_MIN_INTERVAL_SECONDS, reason,
+            )
+            return False
+        trade_date: str = datetime.now().strftime("%Y-%m-%d")
+        if not self.xshg.is_session(trade_date):
+            return False
+        self._selection_refresh_ts[state.user_strategy_id] = now
+        self.logger.info(
+            "[%s] 配置变更后补跑当日选股 (user_strategy_id=%s, reason=%s)",
+            state.user_strategy_name or state.strategy_name,
+            state.user_strategy_id, reason,
+        )
+        # reset_cache=False：不清当日分钟缓存与区间最高价 —— 那是行情数据，
+        # 与配置无关，清掉等于让当天的量能/VWAP/回撤判定缺数据。
+        self._run_daily_selection_for_state(
+            state, self._hot_industry_codes(), trade_date, reset_cache=False
+        )
+        return True
+
+    def _hot_industry_codes(self) -> list[str]:
+        """带缓存的热门行业代码（补跑选股用）。"""
+        cache: tuple[float, list[str]] | None = self._hot_industry_cache
+        if (
+            cache is not None
+            and time.time() - cache[0] < self.HOT_INDUSTRY_CACHE_TTL_SECONDS
+        ):
+            return cache[1]
+        codes: list[str] = self._collect_hot_industry_codes()
+        self._hot_industry_cache = (time.time(), codes)
+        return codes
+
+    def _is_trading_hours(self, now: datetime | None = None) -> bool:
+        """当前是否处于 A 股连续竞价时段（含集合竞价，9:15–15:05）。
+
+        :param now: 用于测试注入的时间，默认取当前时间
+        :return: 是否在交易时段（非交易日一律 False）
+        """
+        moment: datetime = now or datetime.now()
+        if not self.xshg.is_session(moment.strftime("%Y-%m-%d")):
+            return False
+        minutes: int = moment.hour * 60 + moment.minute
+        return (9 * 60 + 15) <= minutes <= (15 * 60 + 5)
+
+    def _reconcile_job(self) -> None:
+        """定时对账任务（兜底通道）。
+
+        非交易时段按更长的间隔跑：那时候行情没有变化，对账只用于「第二天开盘前
+        把界面上的改动带上」，没必要每分钟发一轮 HTTP。
+        """
+        interval: int = (
+            self.RECONCILE_INTERVAL_SECONDS
+            if self._is_trading_hours()
+            else self.RECONCILE_INTERVAL_OFFHOURS_SECONDS
+        )
+        if time.time() - self._last_reconcile_ts < interval:
+            return
+        self.reconcile_user_strategies(reason="scheduler")
 
     # ---- 策略管理（兼容旧接口） ----
 
@@ -1281,6 +1927,11 @@ class StrategyWorkflow(BaseWorkflow):
         if instance is None:
             return
         try:
+
+            # 0. 注入账户当前回撤：策略卖出判定里有一条「账户回撤达阈值」分项
+            #    （risk.drawdown_score）。回撤是账户级量，策略只看得到单只股票的行情，
+            #    必须在这里算好喂进去；未启用时值为 0，不影响原有卖出行为。
+            self._refresh_account_drawdown(state)
 
             # 1. 调用策略的 handle_minute_bar 获取信号
             # 设计约定：此处有意传空持仓 {} —— 实时链路以「尽可能产出买卖信号」为目标，
@@ -2157,6 +2808,10 @@ class StrategyWorkflow(BaseWorkflow):
         3. `max_stock_count > 0` 且持仓数已达上限 → 已达上限
         4. 其余 → 允许（`max_stock_count < 0` 时不限制持仓数量）
 
+        账户级回撤**不在**本方法的判定范围内（2026-09-29 语义变更）：回撤达阈值时的
+        动作是「卖出判定加分」（见 `_check_sell_conditions` 的 `risk.drawdown_score`），
+        不是拦截买入。回撤值由 `_refresh_account_drawdown` 在调用策略前注入。
+
         判定必须放在 `_process_bar` / `_process_tick` 的买入分支里，与其它跳过原因
         一样记 INFO —— `cfg/log.yaml` 的 info.log 是 INFO 级，记 DEBUG 等于运维看不见。
 
@@ -2200,6 +2855,7 @@ class StrategyWorkflow(BaseWorkflow):
         订单又要先读到持仓才创建 ⇒ 新策略永远下不了第一单，永远 404。
         """
         if not force_refresh and state.positions:
+            self._update_peak_asset(state)
             return dict(state.positions)
         if not state.user_strategy_id:
             # 无 user_strategy_id 说明该 state 未绑定用户策略，视为无持仓
@@ -2233,6 +2889,9 @@ class StrategyWorkflow(BaseWorkflow):
                 state.available_cash = float(exec_data.get("remaining_cash", 0) or 0)
             else:
                 state.available_cash = self._calc_available_cash(state)
+            # 每笔订单成交后都会 force_refresh 到这里，顺势刷新权益峰值，
+            # 保证账户回撤判定用的是最新权益（不是启动时的旧值）
+            self._update_peak_asset(state)
             return positions
         except Exception as exc:
             # 只有真实取数故障才会走到这里（超时 / 5xx / 连接失败）；
@@ -2263,9 +2922,10 @@ class StrategyWorkflow(BaseWorkflow):
     # ---- 定时器 ----
 
     def _setup_scheduler(self) -> None:
-        """设置定时器，每个交易日盘前运行 daily_before_trading。"""
+        """设置定时器：每个交易日盘前运行 daily_before_trading + 配置对账轮询。"""
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger
+        from apscheduler.triggers.interval import IntervalTrigger
 
         hour: int = 8
         minute: int = 0
@@ -2289,6 +2949,23 @@ class StrategyWorkflow(BaseWorkflow):
             misfire_grace_time=300,
         )
         self.logger.info("定时器已设置: 每个交易日 %02d:%02d 运行盘前筛选", hour, minute)
+
+        # 配置对账轮询（兜底）：主通道是服务端的变更通知，这里覆盖
+        # 「通知漏发 / MQTT 掉线重连期间 / 进程晚于服务端启动」这几种情况。
+        # 间隔按秒固定注册，交易时段与其它时段用不同周期在 _reconcile_job 里判断。
+        self._scheduler.add_job(
+            self._reconcile_job,
+            IntervalTrigger(seconds=self.RECONCILE_INTERVAL_SECONDS),
+            id="reconcile_config",
+            name="配置对账（热更新）",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=30,
+        )
+        self.logger.info(
+            "定时器已设置: 每 %d 秒对账一次（非交易时段 %d 秒）",
+            self.RECONCILE_INTERVAL_SECONDS, self.RECONCILE_INTERVAL_OFFHOURS_SECONDS,
+        )
 
     def daily_before_trading(self) -> None:
         """每日盘前定时任务（按用户策略逐个执行）。
@@ -2351,12 +3028,17 @@ class StrategyWorkflow(BaseWorkflow):
         state: StrategyState,
         industry_codes: list[str],
         trade_date: str,
+        reset_cache: bool = True,
     ) -> None:
         """对单个**用户策略**执行盘前筛选并保存结果。
 
         :param state: 用户策略运行时状态（含独立策略实例、股票池、黑名单）
         :param industry_codes: 热门行业股票代码（所有用户共用）
         :param trade_date: 交易日 YYYY-MM-DD
+        :param reset_cache: 是否先调 `before_trading` 清该用户的缓存。
+            盘前任务传 True（新的一天要清干净）；盘中因配置变更补跑时必须传
+            **False** —— 那会清掉当日的选股/打分快照与持仓最高价，等于把今天
+            已经跑过的行情作废。
         """
         instance: BaseStrategy | None = state.instance
         if instance is None:
@@ -2369,14 +3051,15 @@ class StrategyWorkflow(BaseWorkflow):
         pool_codes: list[str] = list(dict.fromkeys(state.stock_pool))
 
         # 2. before_trading：清理该策略实例的缓存（用该用户自己的股票池）
-        try:
-            instance.before_trading(trade_date=trade_date, stock_codes=pool_codes)
-        except Exception as exc:
-            self.logger.error(
-                "[%s] before_trading 异常 (user_strategy_id=%s): %s",
-                sname, usid, exc, exc_info=True,
-            )
-        self.logger.info("[%s] before_trading 完成 (user_strategy_id=%s)", sname, usid)
+        if reset_cache:
+            try:
+                instance.before_trading(trade_date=trade_date, stock_codes=pool_codes)
+            except Exception as exc:
+                self.logger.error(
+                    "[%s] before_trading 异常 (user_strategy_id=%s): %s",
+                    sname, usid, exc, exc_info=True,
+                )
+            self.logger.info("[%s] before_trading 完成 (user_strategy_id=%s)", sname, usid)
 
         # 3. 合并股票池 + 热门行业
         combined: list[str] = list(dict.fromkeys(pool_codes + industry_codes))

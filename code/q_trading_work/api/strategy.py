@@ -49,6 +49,7 @@ class StrategyApi:
         description: str = "",
         class_path: str = "",
         class_name: str = "",
+        default_params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """创建策略模板（全局定义，由管理员或系统初始化时调用）。
 
@@ -57,9 +58,13 @@ class StrategyApi:
         :param description: 描述（可选）
         :param class_path: 策略类路径（可选）
         :param class_name: 策略类名（可选）
+        :param default_params: 策略默认参数（可选）。结构为
+            `{"match": {...}, "buy": {...}, "sell": {...}}`，字段值可用
+            `{"desc": ..., "value": ...}` 包装；读取侧由
+            `BaseStrategy._normalize_params` 统一解包为纯值。
         :return: 包含 strategy_id 的字典
         """
-        body: dict[str, str] = {
+        body: dict[str, Any] = {
             "name": name,
             "strategy_type": strategy_type,
         }
@@ -69,8 +74,33 @@ class StrategyApi:
             body["class_path"] = class_path
         if class_name:
             body["class_name"] = class_name
+        if default_params:
+            body["default_params"] = default_params
         result: Any = self._client.post("/api/strategy/create", body)
         return dict(result)
+
+    def update(
+        self,
+        strategy_id: str,
+        default_params: dict[str, Any] | None = None,
+        description: str | None = None,
+    ) -> str:
+        """按 ID 更新策略模板（仅管理员，只更新传入的字段）。
+
+        :param strategy_id: 策略模板 ID（StrategyDao._id）
+        :param default_params: 新的默认参数（可选）
+        :param description: 新的描述（可选）
+        :return: 操作结果提示信息
+        """
+        body: dict[str, Any] = {}
+        if default_params is not None:
+            body["default_params"] = default_params
+        if description is not None:
+            body["description"] = description
+        if not body:
+            raise ValueError("没有需要更新的字段")
+        result: Any = self._client.patch(f"/api/strategy/{strategy_id}", body)
+        return str(result)
 
     def delete(self, name: str) -> str:
         """删除策略模板。

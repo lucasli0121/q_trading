@@ -7,20 +7,53 @@ from factor.base_factor import BaseFactor
 from factor.factor_utils import FactorUtils
 
 class InDaySRFactor(BaseFactor):
+    """一天日内交易中判断阻力和支撑位，用于做 T 操作。
+
+    枢轴点 `pivot = (H + L + C) / 3` 用**前一交易日**的日线计算（经典枢轴点），
+    档位按昨日振幅 `D = H − L` 的比例对称展开：
+
+        r1/r2/r3 = pivot + R1_RATIO/R2_RATIO/R3_RATIO · D
+        s1/s2/s3 = pivot − R1_RATIO/R2_RATIO/R3_RATIO · D
+
+    价格 >= pivot 时看阻力侧（负分，超买），否则看支撑侧（正分，超卖），
+    两侧都用同一套倍数，与「档位数对称」的语义一致。
+
+    为什么不用经典 `r1 = 2P − L` / `r2 = P + D` / `r3 = P + 2D`：
+
+    1. `r1/s1 = 2P−L / 2P−H` 的档距会随昨日收盘位置漂移在 `D/3 ~ 2D/3` 之间，
+       同样的「贴不贴近支撑位」在不同收盘位置下判据不同；
+    2. `r3 = P + 2D` 实测近乎死档。2026-06-01~09-28 的 8 只股票 / 596 根日K
+       实测（`_probe_pivot2.py`）：档位命中的采样点里 ±10 只占 0.7%/1.3%，
+       而 64.3% 的采样点落在 0 分档 —— 档位表形同虚设，与布林带因子等权平均后
+       本因子的实际影响接近于零。换成 1/3、2/3、1 倍 D 后 0 分占比降到 45.4%，
+       三档分别约占 16%/8%/6%。
+
+    **档位的可达性上界**：价格落在昨日区间 `[L, H]` 内时，
+    `|price − pivot| <= 2D/3`（`P−L = (D+C−L)/3 ∈ [D/3, 2D/3]`，`H−P` 同理），
+    因此 `R3_RATIO = 1.0` 的第三档必然要求价格**突破昨日高低点**才能触及。
+    若把倍数调大到 `m > 2/3`，第二档也会变成「破位档」，0 分档占比会回升
+    （实测 0.40/0.80/1.20 组仍有 52.4%）—— 这是本次取 1/3、2/3、1 的原因。
     """
-    一天日内交易中判断阻力和支撑位
-    用于做T操作
-    """
+
     factor_name: str = "InDaySRFactor"
+
+    # 档位倍数（相对昨日振幅 D），必须满足 0 < R1_RATIO < R2_RATIO < R3_RATIO，
+    # 且 R2_RATIO <= 2/3 才能保证「价格不突破昨日区间时可触及」（见类 docstring）
+    R1_RATIO: float = 0.33
+    R2_RATIO: float = 0.66
+    R3_RATIO: float = 1.00
 
     def __init__(self, days: int = 1, shift_day: int = 0) -> None:
         self.days: int = days
         self.shift_day: int = shift_day
 
     def pivot_points(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        经典枢轴点计算法
-        df需包含: high, low, close
+        """计算经典枢轴点与按振幅比例展开的支撑/阻力档位。
+
+        df 需包含 high, low, close。
+
+        :param df: 日线行情（含 high/low/close）；`shift_day=0` 时取最后一行为基准日
+        :return: 含 pivot / r1..r3 / s1..s3 的点位表，index 与入参一致
         """
         # 使用前一日数据，显式转为 float 以兼容 pylance 类型检查
         prev_high: "pd.Series[float]" = df["high"].shift(self.shift_day).astype(float)
@@ -29,16 +62,16 @@ class InDaySRFactor(BaseFactor):
 
         # 枢轴点
         pivot: "pd.Series[float]" = (prev_high + prev_low + prev_close) / 3.0
+        # 昨日振幅：档位距离的标尺（一字板 / 无成交时为 0）
+        day_range: "pd.Series[float]" = prev_high - prev_low
 
-        # 阻力位
-        r1: "pd.Series[float]" = 2.0 * pivot - prev_low
-        r2: "pd.Series[float]" = pivot + (prev_high - prev_low)
-        r3: "pd.Series[float]" = pivot + 2.0 * (prev_high - prev_low)
-
-        # 支撑位
-        s1: "pd.Series[float]" = 2.0 * pivot - prev_high
-        s2: "pd.Series[float]" = pivot - (prev_high - prev_low)
-        s3: "pd.Series[float]" = pivot - 2.0 * (prev_high - prev_low)
+        # 阻力位与支撑位：以枢轴点为基准、按振幅倍数对称展开
+        r1: "pd.Series[float]" = pivot + self.R1_RATIO * day_range
+        r2: "pd.Series[float]" = pivot + self.R2_RATIO * day_range
+        r3: "pd.Series[float]" = pivot + self.R3_RATIO * day_range
+        s1: "pd.Series[float]" = pivot - self.R1_RATIO * day_range
+        s2: "pd.Series[float]" = pivot - self.R2_RATIO * day_range
+        s3: "pd.Series[float]" = pivot - self.R3_RATIO * day_range
 
         return pd.DataFrame({
             "pivot": pivot,
@@ -97,6 +130,13 @@ class InDaySRFactor(BaseFactor):
             return 0.0
         # 价格异常（0/负数/NaN）时不做多：否则 `price <= s3` 会假成立给出 +10
         if price <= 0 or pd.isna(price):
+            return 0.0
+        # 昨日无波动（一字板、停牌后无成交、数据缺失导致 H=L）：D=0 时三档与枢轴点
+        # 完全重合，`price >= r3`（等价于 price >= pivot）恒成立 ⇒ 恒判 −10「极度超买」，
+        # 涨停一字板会被当成卖点。此时区间不含任何信息，直接返回 0。
+        # 用 `r1 <= s1` 而不是新增一列振幅：旧格式的 Redis 缓存里没有振幅列，
+        # 读不到会退化成恒 0 分（比原问题更难排查）。
+        if r1 <= s1:
             return 0.0
         if price >= p: # 行情向上
             if r3 > 0 and price >= r3: # 超出最大阻力位，可以卖出

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from abc import ABC
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable
@@ -56,8 +57,14 @@ class BaseWorkflow(ABC):
         # 保存 MQTT 回调引用，用于取消订阅
         self._bar_callback: Callable[[str, str], None] = self._on_bar_message
         self._tick_callback: Callable[[str, str], None] = self._on_tick_message
+        self._config_callback: Callable[[str, str], None] = self._on_config_message
+        # 配置变更处理专用执行器（单线程），与行情线程池隔离
+        self._config_executor: ThreadPoolExecutor | None = None
         # 工作流关联的股票池 ID 集合，用于 pool 级 MQTT 订阅
         self._pool_ids: set[str] = set()
+        # 池订阅会随配置对账动态增删（用户换池），必须在锁里改：
+        # 订阅回调/对账线程可能与 _unsubscribe_mqtt 的遍历同时发生。
+        self._pool_lock: threading.Lock = threading.Lock()
 
     # ---- 线程池 ----
 
@@ -80,6 +87,26 @@ class BaseWorkflow(ABC):
         :return: Future 对象
         """
         return self.executor.submit(fn, *args, **kwargs)
+
+    @property
+    def config_executor(self) -> ThreadPoolExecutor:
+        """配置变更处理的专用线程池（单线程，懒初始化）。
+
+        与行情线程池（`executor`）分开，原因有两条：
+
+        1. 配置对账要发若干次 HTTP（拉分配表 / 用户策略 / 模板 / 股票池），
+           放进只有 4 个 worker 的行情池会与信号判定抢线程，表现为信号延迟；
+        2. 单线程天然把多次变更串行化。并发对账会重复建策略实例、重复订阅
+           MQTT topic，而这两件事都不幂等（多订阅一次就多收一份行情）。
+
+        :return: 单线程执行器
+        """
+        if self._config_executor is None:
+            self._config_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=f"wf-cfg-{self.__class__.__name__}",
+            )
+        return self._config_executor
 
     # ---- MQTT 消息解析与分发 ----
 
@@ -159,6 +186,33 @@ class BaseWorkflow(ABC):
                 "handle_tick 异常, topic=%s, error=%s", topic, exc, exc_info=True
             )
 
+    def _on_config_message(self, topic: str, payload: str) -> None:
+        """配置变更 MQTT 回调入口。
+
+        与行情回调不同，这里**不检查 `self._running`**：订阅完成到
+        `_running=True` 之间有一个很短的窗口，而配置变更本身是低频事件
+        （用户点一次保存才有一条），宁可多对账一次也不要漏掉。
+
+        实际处理投到单线程的 `config_executor`，既不阻塞 MQTT 网络循环，
+        也不与行情任务抢线程。
+
+        :param topic: MQTT topic
+        :param payload: 消息体（JSON 字符串）
+        """
+        parsed: Any = self._parse_payload(payload)
+        self.logger.info("收到配置变更通知: topic=%s payload=%s", topic, parsed)
+        self.config_executor.submit(self._handle_config_safe, parsed)
+
+    def _handle_config_safe(self, payload: Any) -> None:
+        """带异常保护的 on_config_change 包装器。
+
+        :param payload: 解析后的消息体
+        """
+        try:
+            self.on_config_change(payload)
+        except Exception as exc:
+            self.logger.error("on_config_change 异常: %s", exc, exc_info=True)
+
     # ---- 子类可重写的回调 ----
 
     def handle_bar(self, topic: str, payload: Any) -> None:
@@ -180,6 +234,21 @@ class BaseWorkflow(ABC):
         self.logger.debug(
             "[%s] handle_tick(topic=%s)", self.__class__.__name__, topic
         )
+
+    def on_config_change(self, payload: Any) -> None:
+        """配置变更钩子，子类可重写。
+
+        默认什么都不做。实现约定：
+
+        - **幂等**：同一条变更可能重复到达（服务端重发、轮询兜底也会走同一路径），
+          重复执行不能造成副作用累积；
+        - **不假设 payload 字段存在**：它只用于日志，判断「该同步什么」应当靠
+          重新读取服务端当前状态，而不是靠消息里的字段；
+        - 在本方法的单线程执行器里同步跑完即可，不需要自己再起线程。
+
+        :param payload: 解析后的消息体（dict / 原样字符串）
+        """
+        self.logger.debug("[%s] 收到配置变更消息: %s", self.__class__.__name__, payload)
 
     # ---- 子类可重写的初始化钩子 ----
 
@@ -208,16 +277,8 @@ class BaseWorkflow(ABC):
 
         if self._pool_ids:
             # Pool 级订阅：对每个 pool_id 订阅独立的实时行情和分钟行情 topic
-            for pool_id in self._pool_ids:
-                # 实时行情通配: q_share/stock/real_time/{pool_id}/#（RabbitMQ 用 . 分隔，股票代码含 . 会导致段数多于1）
-                real_topic: str = MqttTopic.stock_real_time_pool_code(pool_id, "#")
-                mqtt_client.subscribe(real_topic, self._tick_callback)
-                self.logger.info("已订阅实时行情: %s", real_topic)
-
-                # 分钟行情通配: q_share/stock/minute/{pool_id}/#（RabbitMQ 用 . 分隔，股票代码含 . 会导致段数多于1）
-                minute_topic: str = MqttTopic.stock_minute_pool_code(pool_id, "#")
-                mqtt_client.subscribe(minute_topic, self._bar_callback)
-                self.logger.info("已订阅分钟行情: %s", minute_topic)
+            for pool_id in self.pool_ids:
+                self.subscribe_pool(pool_id)
         else:
             # 兼容模式：全局 topic 订阅
             mqtt_client.subscribe(MqttTopic.STOCK_MINUTE_ALL, self._bar_callback)
@@ -226,14 +287,90 @@ class BaseWorkflow(ABC):
             mqtt_client.subscribe(MqttTopic.STOCK_REAL_TIME_ALL, self._tick_callback)
             self.logger.info("已订阅实时行情: %s", MqttTopic.STOCK_REAL_TIME_ALL)
 
+        # 配置变更通知与行情订阅无关，两种订阅模式下都要订阅：
+        # 策略参数、股票池内容、池绑定、启停状态、分配关系都只在进程启动时读过一次，
+        # 没有这条消息就要等重启才生效。
+        mqtt_client.subscribe(MqttTopic.CONFIG_CHANGE, self._config_callback)
+        self.logger.info("已订阅配置变更通知: %s", MqttTopic.CONFIG_CHANGE)
+
         return True
+
+    # ---- pool 级行情订阅（运行中可增删）----
+
+    @property
+    def pool_ids(self) -> list[str]:
+        """当前已订阅的股票池 ID 快照。
+
+        返回副本而不是原集合：调用方（含取消订阅的遍历）持有一个稳定的列表，
+        期间由对账线程增删池不会引发「迭代中集合被修改」。
+        """
+        with self._pool_lock:
+            return list(self._pool_ids)
+
+    def subscribe_pool(self, pool_id: str) -> bool:
+        """订阅某个股票池的实时 + 分钟行情 topic，并登记到 `_pool_ids`。
+
+        幂等：同一个 pool_id 重复调用只订阅一次。重复订阅的后果是同一根行情
+        收到两次回调（策略侧会算两遍并推两条信号），因此这里必须挡住。
+
+        :param pool_id: 股票池 ID
+        :return: 是否完成订阅（已订阅或订阅成功均为 True）
+        """
+        if not pool_id:
+            return False
+        with self._pool_lock:
+            if pool_id in self._pool_ids:
+                return True
+            self._pool_ids.add(pool_id)
+
+        mqtt_client = AppContext().mqtt_client
+        try:
+            if not getattr(mqtt_client, "is_connected", False) and not mqtt_client.connect():
+                # 登记已经加上：MQTT 恢复后重新订阅由 _subscribe_mqtt 统一处理，
+                # 这里回滚登记，避免「集合里有、实际没订阅」的静默不一致。
+                with self._pool_lock:
+                    self._pool_ids.discard(pool_id)
+                self.logger.error("MQTT 未连接，无法订阅股票池 %s 的行情", pool_id)
+                return False
+            # 实时行情通配: q_share/stock/real_time/{pool_id}/#（RabbitMQ 用 . 分隔，股票代码含 . 会导致段数多于1）
+            real_topic: str = MqttTopic.stock_real_time_pool_code(pool_id, "#")
+            mqtt_client.subscribe(real_topic, self._tick_callback)
+            # 分钟行情通配: q_share/stock/minute/{pool_id}/#
+            minute_topic: str = MqttTopic.stock_minute_pool_code(pool_id, "#")
+            mqtt_client.subscribe(minute_topic, self._bar_callback)
+            self.logger.info("已订阅股票池行情: pool_id=%s", pool_id)
+            return True
+        except Exception as exc:
+            with self._pool_lock:
+                self._pool_ids.discard(pool_id)
+            self.logger.error("订阅股票池 %s 行情异常: %s", pool_id, exc, exc_info=True)
+            return False
+
+    def unsubscribe_pool(self, pool_id: str) -> None:
+        """取消某个股票池的行情订阅，并从 `_pool_ids` 移除。
+
+        :param pool_id: 股票池 ID
+        """
+        if not pool_id:
+            return
+        with self._pool_lock:
+            if pool_id not in self._pool_ids:
+                return
+            self._pool_ids.discard(pool_id)
+        mqtt_client = AppContext().mqtt_client
+        try:
+            mqtt_client.unsubscribe(MqttTopic.stock_real_time_pool_code(pool_id, "#"))
+            mqtt_client.unsubscribe(MqttTopic.stock_minute_pool_code(pool_id, "#"))
+            self.logger.info("已退订股票池行情: pool_id=%s", pool_id)
+        except Exception as exc:
+            self.logger.warning("退订股票池 %s 行情异常: %s", pool_id, exc)
 
     def _unsubscribe_mqtt(self) -> None:
         """取消 MQTT 订阅。"""
         mqtt_client = AppContext().mqtt_client
         try:
             if self._pool_ids:
-                for pool_id in self._pool_ids:
+                for pool_id in self.pool_ids:
                     mqtt_client.unsubscribe(
                         MqttTopic.stock_real_time_pool_code(pool_id, "#")
                     )
@@ -243,6 +380,7 @@ class BaseWorkflow(ABC):
             else:
                 mqtt_client.unsubscribe(MqttTopic.STOCK_MINUTE_ALL)
                 mqtt_client.unsubscribe(MqttTopic.STOCK_REAL_TIME_ALL)
+            mqtt_client.unsubscribe(MqttTopic.CONFIG_CHANGE)
             self.logger.info("已取消 MQTT 订阅")
         except Exception as exc:
             self.logger.warning("取消 MQTT 订阅异常: %s", exc)
@@ -311,6 +449,13 @@ class BaseWorkflow(ABC):
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
             self.logger.info("线程池已关闭")
+
+        # 配置对账线程排在 _unsubscribe_mqtt 之后、这里之前，wait=True 会把
+        # 正在跑的那一轮对账等完（最多几秒），避免退出时留下半同步的状态。
+        if self._config_executor is not None:
+            self._config_executor.shutdown(wait=True, cancel_futures=True)
+            self._config_executor = None
+            self.logger.info("配置变更处理线程池已关闭")
 
         self.logger.info("[%s] 工作流已停止", self.__class__.__name__)
 

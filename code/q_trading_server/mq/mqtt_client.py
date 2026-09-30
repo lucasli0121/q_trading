@@ -45,6 +45,11 @@ class MqttTopic:
     # 所有股票相关 topic 通配（订阅用）
     STOCK_ALL: str = "q_share/stock/#"
 
+    # 配置变更通知 topic：web 端改了用户策略/股票池/分配关系后通知 q_trading_work。
+    # q_trading_work 只在启动时读一次用户策略配置，没有这条消息就不知道要重新对账，
+    # 表现为「界面改了参数或股票池，跑着的实例不跟随」。
+    CONFIG_CHANGE: str = "q_share/config_change"
+
     @staticmethod
     def stock_real_time_code(code: str) -> str:
         """获取单只股票实时行情 topic

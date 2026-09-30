@@ -57,10 +57,13 @@ class StrongReboundStrategy(BaseStrategy):
     REBOUND_DAY_SCORE: float = 10.0  # 最近反弹阈值（%）
 
     # 买入参数
+    # 以下默认值与 cfg/strategy.yaml[strong_rebound_strategy] 保持一致。
+    # 无参数实例化（回测 CLI）走的是 yaml，两边不一致时「按源码默认值推断实际
+    # 生效参数」会得出错误结论。
     # 连续交易日
-    BUY_CONSECUTIVE_MINUTES: int = 5  # 连续分钟数（买入点1）
-    BUY_TREND_MINUTES_LIMIT: int = 7 # 分钟交易趋势限制
-    BUY_MIN_SCORE: float = 4.0 # 买入的最小分数（10 分制）
+    BUY_CONSECUTIVE_MINUTES: int = 10  # 连续分钟数（买入点1）
+    BUY_TREND_MINUTES_LIMIT: int = 10  # 分钟交易趋势限制
+    BUY_MIN_SCORE: float = 6.0  # 买入的最小分数（10 分制）
 
     # 当天买入综合分的权重：**成交量为主、趋势为辅**，两者均为 0~1 归一化后加权，
     # 再乘 10 得到与「10 分制」一致的刻度（上限 = (0.7 + 0.3) × 10 = 10）。
@@ -73,11 +76,11 @@ class StrongReboundStrategy(BaseStrategy):
     # 连续放量 2.0 + 斜率 1.5 + 价涨量增 2.0 = 5.5）
     BUY_VOLUME_MAX_SCORE: float = 5.5
 
-    # 卖出参数
-    SELL_TREND_MINUTES_LIMIT: int = 7 # 卖出交易分钟趋势限制
-    SELL_DRAWDOWN_PCT: float = -8.0  # 回撤阈值（%）
-    SELL_VWAP_LIMIT: int = 7 # vwap 均价的分钟数
-    SELL_MAX_SCORE: float = -15.0 # 卖出的最大分数
+    # 卖出参数（默认值同样与 cfg/strategy.yaml 对齐）
+    SELL_TREND_MINUTES_LIMIT: int = 10  # 卖出交易分钟趋势限制
+    SELL_DRAWDOWN_PCT: float = -6.0  # 回撤阈值（%）
+    SELL_VWAP_LIMIT: int = 10  # vwap 均价的分钟数
+    SELL_MAX_SCORE: float = -8.0  # 卖出的最大分数
 
     def __init__(
         self,

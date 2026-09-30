@@ -63,6 +63,35 @@ class BaseStrategy(ABC):
     # 重试间隔（秒）；<=0 表示立即重试
     FETCH_RETRY_INTERVAL: float = 1.0
 
+    # 账户级回撤阈值（%）：账户（已实现）权益自峰值回撤达到此值时，**在卖出判定中计入
+    # `SELL_RISK_DRAWDOWN_SCORE` 分值**（把回撤当作一条卖出理由），不冻结开新仓。
+    # 0 或正数表示关闭。
+    # 权益口径 = 初始资金 + 已实现盈利，与 `TradeManager._refresh_execution_metrics`
+    # 和 `BacktestEngine` 的权益曲线同源（见 workflow/strategy_workflow.py::_account_asset）。
+    # 基类默认 0.0（关闭）：是否启用由各策略自己的参数决定，避免悄悄改变已有策略行为。
+    #
+    # 语义沿革（2026-09-29）：原实现是「回撤超阈值即停止开新仓」（账户级熔断）。实测发现
+    # 回撤是离散跳跃的（持仓按成本计价，权益只在卖出结算时变动），只要单笔亏损可能超过
+    # 阈值，「回撤 ≤ 阈值」在数学上就不成立；而且熔断后不再交易、权益不再变动，回撤也
+    # 无法收窄，等于一次触发即永久停手。用户据此改为「把回撤当作卖出判断分值」。
+    RISK_MAX_DRAWDOWN_PCT: float = 0.0
+
+    # 账户回撤达到 `RISK_MAX_DRAWDOWN_PCT` 时，计入卖出判定的分值（10 分制，取负）。
+    # 只有策略自己的 `_check_sell_conditions` 主动调用 `_risk_drawdown_score()` 才生效 ——
+    # 基类不做隐式拦截，避免悄悄改变已有策略的卖出行为。
+    SELL_RISK_DRAWDOWN_SCORE: float = -6.0
+
+    # 买入是否依赖「当日选股结果」。
+    #
+    # 基类 `handle_minute_bar` / `handle_tick_bar` 用 `_load_select_stocks()` 决定
+    # 是否走买入分支（选中的票才查买入条件），所以默认为 True。重写了
+    # `handle_minute_bar` 且不读选股结果的策略（如波段策略，做 T 的信号要覆盖全池）
+    # 必须显式置 False。
+    #
+    # 用途只有一个：盘中配置变更（改了股票池/参数）后，workflow 靠它判断要不要
+    # 补跑一次当日选股。补跑要对全池取日 K，成本高，对不依赖选股的策略跑等于白跑。
+    requires_daily_selection: bool = True
+
     # select 结果里的 reason_code 取值：用于把「取数失败」与「正常不满足条件」区分开
     REASON_MATCHED: str = "matched"
     REASON_NOT_MATCHED: str = "not_matched"
@@ -104,6 +133,10 @@ class BaseStrategy(ABC):
         # 全局缓存单例：当日行情（由 workflow 单点写入）、策略打分、选股结果。
         # 原来由本类维护的行情/评分缓存已迁出，见 core/user_strategy_cache.py。
         self._cache: UserStrategyCache = UserStrategyCache()
+        # 账户当前回撤（%，负值），由 workflow / 回测在调用策略前注入（见 set_account_drawdown）。
+        # 必须在 `_apply_resolved_params` 之前建好：基类构造会回调子类 `apply_params`，
+        # 子类若在其中读到本属性，晚赋值就会 AttributeError（见「实例化契约」的失效方式）。
+        self.account_drawdown_pct: float = 0.0
         self.xshg = xcals.get_calendar("XSHG", start="2020-01-01")  # 上交所交易日历，用于判断交易日
         # 先加载策略参数再注册因子，保证 init_factors 使用加载后的参数：
         # 优先级 user_strategy.strategy_params > strategy.default_params > cfg/strategy.yaml
@@ -113,6 +146,32 @@ class BaseStrategy(ABC):
         else:
             self.load_strategy_params()
         self.init_factors()
+
+    # ---- 账户回撤（卖出分值来源）----
+
+    def set_account_drawdown(self, drawdown_pct: float) -> None:
+        """注入账户当前回撤（%，负值），由 workflow / 回测在调用策略前设置。
+
+        策略本身拿不到账户权益（它只看到单只股票的行情），因此账户级回撤只能由
+        外部（`StrategyWorkflow` / `BacktestEngine`）算好注入。未注入时保持 0.0，
+        即「无回撤」，`_risk_drawdown_score()` 恒返回 0.0，不改变原有卖出行为。
+
+        :param drawdown_pct: 账户权益自峰值的回撤（%），0 表示无回撤或未启用
+        """
+        self.account_drawdown_pct = float(drawdown_pct or 0.0)
+
+    def _risk_drawdown_score(self) -> float:
+        """账户回撤触发的卖出分值（10 分制，负值）；未触发返回 0.0。
+
+        触发条件是「阈值已配置（负值）」且「账户当前回撤 <= 阈值」。
+        阈值取 `RISK_MAX_DRAWDOWN_PCT`，回撤取 `set_account_drawdown` 注入的值。
+        """
+        threshold: float = float(self.RISK_MAX_DRAWDOWN_PCT or 0.0)
+        if threshold >= 0:
+            return 0.0
+        if float(self.account_drawdown_pct or 0.0) <= threshold:
+            return float(self.SELL_RISK_DRAWDOWN_SCORE)
+        return 0.0
 
     # ---- 策略参数加载 ----
 
@@ -207,11 +266,71 @@ class BaseStrategy(ABC):
 
         self.strategy_params = params if isinstance(params, dict) else {}
         self.param_source = source
-        self.apply_params(self.strategy_params)
+        self._apply_params_with_restore(self.strategy_params)
         self.logger.info(
             "[%s] 策略参数加载完成: source=%s, params=%s",
             self.strategy_name, source, self.strategy_params,
         )
+
+    def _apply_params_with_restore(self, params: dict[str, Any]) -> None:
+        """调用子类 `apply_params`，并先还原上一轮被写入的属性。
+
+        子类 `apply_params` 的回填写法是 `params.get(key, self.KEY)`。第一次调用
+        时 `self.KEY` 读的是类属性，但赋值之后 `self.KEY` 变成实例属性；第二次调用
+        （参数热更新）就回填成**上一次的值**而不是类默认值 —— 用户在界面上删掉某个
+        参数（期望恢复默认）会静默失效，参数只增不减。
+
+        这里在每轮 apply 之前，把上一轮写进来的属性还原成「上一轮 apply 之前的
+        样子」（通常是删掉，让类属性重新可见），使每轮 apply 都以类默认值为基准。
+
+        按「上一轮 diff 出来的键」而不是按类属性全集还原：类属性里混着
+        `strategy_id`、`user_strategy_id` 这类**构造参数**，按全集删除会破坏实例状态。
+
+        :param params: 已解包为纯值的参数字典
+        """
+        previous: dict[str, tuple[bool, Any]] = (
+            getattr(self, "_param_overrides", None) or {}
+        )
+        for name, (existed, old_value) in previous.items():
+            if existed:
+                self.__dict__[name] = old_value
+            else:
+                self.__dict__.pop(name, None)
+
+        before_keys: set[str] = set(self.__dict__)
+        self.apply_params(params)
+        # apply_params 写入的新键即「参数属性」，记录足够还原它们的信息
+        self._param_overrides = {
+            name: (False, None) for name in self.__dict__ if name not in before_keys
+        }
+
+    def reload_params(
+        self,
+        user_strategy_params: dict[str, Any] | None = None,
+        default_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """按最新配置重新解析并应用策略参数（参数热更新入口）。
+
+        与构造期走同一条 `_apply_resolved_params`，保证「启动时加载」与「运行中
+        重载」不会出现两套解析规则（包括「用户策略参数非空时整体忽略模板默认值」
+        这个择一语义）。加载后重新调用 `init_factors`，因为子类可能按参数决定注册
+        哪些因子。
+
+        **只换参数，不动实例的其它运行状态** —— 分钟缓存、区间最高价、账户回撤
+        峰值、持仓都保留。这是与「重建实例」的关键差别：重建会把当日缓存清空，
+        盘中换参数等于当天已经跑过的行情全部作废。
+
+        :param user_strategy_params: 用户策略 strategy_params（None/空表示回落到下一级）
+        :param default_params: 策略模板 default_params
+        :return: 应用后的参数字典
+        """
+        self._apply_resolved_params(user_strategy_params, default_params)
+        self.init_factors()
+        # 打分缓存 key 是 score:{usid}:{code}:{action}:{day}，不含参数，同一天内
+        # 换参数后旧参数算出的分仍会命中缓存（只在部分股票上表现为「改了没生效」）。
+        # 这里清该用户的打分缓存（内存 + Redis），分钟行情与区间最高价保留。
+        self._cache.clear_user_scores(self.user_strategy_id)
+        return self.strategy_params
 
     @staticmethod
     def _normalize_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -931,6 +1050,78 @@ class BaseStrategy(ABC):
                 self.strategy_name, self.user_strategy_id, exc_info=True,
             )
             return set()
+
+    # ---- 卖出侧通用基准（持仓最高价 / 回撤口径）----
+
+    def _sell_baseline_buy_time(
+        self, position: dict[str, Any], create_time: str
+    ) -> str:
+        """卖出侧「持仓期间最高价」区间的起始日。
+
+        有持仓时取真实买入日 `position["buy_time"]`；实时链路恒传空持仓
+        （设计约定 D-1），此时回退到「最近 2 个交易日」—— 与其它策略同口径，
+        避免同一份行情在不同策略里算出不同的回撤基准。
+
+        回退时用 `create_time`（行情时间）而不是 `datetime.now()` 推算交易日：
+        回放/回测里行情时间是历史值，用当前时间会推错基准日。
+
+        :param position: 持仓信息（实时链路恒为空字典）
+        :param create_time: 当前行情时间，空串时退回最近交易日
+        :return: 区间起始日（原样返回 buy_time，或回退得到的日期字符串）
+        """
+        buy_time: str = str(position.get("buy_time", "") or "")
+        if buy_time:
+            return buy_time
+        today_str: str = self.get_recent_trading_day()
+        if create_time and len(create_time) > 10:
+            today_str = create_time
+        return self.get_previous_trading_day(today_str=today_str, days=2)
+
+    def _resolve_highest_price(
+        self, code: str, buy_time: str, today_str: str, day_high: float, cost_price: float
+    ) -> float:
+        """持仓期间最高价：日K区间最高价与当日最高价取大。
+
+        查询区间为 `[buy_time, today_str]`，结果按
+        `hprice:{code}:{buy_date}:{day}` 缓存（TTL 6 小时），未命中才回源服务端。
+        `buy_time` 由 `_sell_baseline_buy_time` 给出（有持仓为真实买入日，
+        空持仓退化为最近 2 个交易日）。
+
+        查询失败或区间无数据时回退到 `max(当日最高价, 成本价)`，此时回撤口径
+        退化为日内回撤（判定仍然可用，只是区间更短）。
+
+        本方法原为 `VolumeExpansionStrategy` 私有实现，2026-09-29 上移到基类供
+        波段策略复用 —— 两处各写一份时，查询区间与缓存 key 一旦漂移，
+        同一持仓在两个策略里会得到不同的回撤数字，而两边日志都「看起来正常」。
+
+        :param code: 股票代码
+        :param buy_time: 买入基准日（YYYY-MM-DD 或带时间）
+        :param today_str: 当前行情时间，作为区间结束日
+        :param day_high: 当日最高价
+        :param cost_price: 持仓成本价（无持仓时为 0）
+        :return: 持仓期间最高价；完全取不到数据时为 max(day_high, cost_price)
+        """
+        if not buy_time:
+            return max(day_high, cost_price)
+        buy_date: str = buy_time[:10]
+        cache_day: str = UserStrategyCache.day_of(today_str)
+        cached: float = self._cache.get_highest_price(code, buy_date, cache_day)
+        if cached > 0:
+            return max(cached, day_high)
+        try:
+            klines: list[dict[str, Any]] = AppContext().market_api.get_day_kline(
+                code=code, start=buy_date, end=today_str,
+            )
+            if klines:
+                db_highest: float = max(float(k.get("high", 0) or 0) for k in klines)
+                if db_highest > 0:
+                    self._cache.save_highest_price(code, buy_date, cache_day, db_highest)
+                    return max(db_highest, day_high)
+        except Exception as exc:
+            self.logger.warning(
+                "[%s] 查询持仓最高价失败(%s): %s", self.user_strategy_name, code, exc
+            )
+        return max(day_high, cost_price)
 
     def _match_pe_profit(self, code: str, pe_limit: float, profit_grow: float) -> tuple[bool, dict[str, Any]]:
         score: float = 0.0

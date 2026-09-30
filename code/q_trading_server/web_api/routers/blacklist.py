@@ -11,6 +11,11 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from core.config_notify import (
+    ACTION_UPDATE,
+    SCOPE_BLACKLIST,
+    notify_config_change,
+)
 from db.mongo.mongo_blacklist_impl import MongoBlacklistImpl
 from db.mongo.mongo_stock_info_impl import MongoStockInfoImpl
 from web_api.auth import get_current_user
@@ -76,6 +81,8 @@ def add_blacklist(
     ok = impl.batch_add_to_blacklist(records)
     if not ok:
         raise HTTPException(status_code=500, detail="添加黑名单失败")
+    # 黑名单既过滤信号推送也过滤股票池，改了要让 q_trading_work 刷新
+    notify_config_change(SCOPE_BLACKLIST, ACTION_UPDATE, user_id)
     return ApiResponse(data=f"已添加 {len(stock_real_codes)} 只股票到黑名单", message="添加成功")
 
 
@@ -90,6 +97,7 @@ def remove_blacklist(
     ok = impl.batch_remove_from_blacklist(user_id, stock_real_codes)
     if not ok:
         raise HTTPException(status_code=500, detail="移除黑名单失败")
+    notify_config_change(SCOPE_BLACKLIST, ACTION_UPDATE, user_id)
     return ApiResponse(data=f"已移除 {len(stock_real_codes)} 只股票", message="移除成功")
 
 

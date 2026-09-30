@@ -10,6 +10,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from core.config_notify import (
+    ACTION_DELETE,
+    ACTION_UPDATE,
+    SCOPE_STRATEGY,
+    notify_config_change,
+)
 from db.mongo.mongo_backtest_impl import MongoBacktestImpl
 from db.mongo.mongo_strategy_impl import MongoStrategyImpl
 from web_api.auth import get_current_user, require_admin
@@ -53,6 +59,7 @@ def delete_strategy(name: str, user_id: str = Depends(require_admin)):
     deleted = impl.delete_strategy(name)
     if not deleted:
         raise HTTPException(status_code=500, detail="删除失败")
+    notify_config_change(SCOPE_STRATEGY, ACTION_DELETE, name)
     return ApiResponse(data=name, message="删除成功")
 
 
@@ -86,6 +93,9 @@ def update_strategy(
     ok = impl.update_strategy(id, update_data)
     if not ok:
         raise HTTPException(status_code=500, detail="更新失败")
+    # 模板 default_params 是策略参数的二级来源（用户策略 strategy_params 为空时用它），
+    # 改了要让 q_trading_work 刷新模板缓存并重新解析参数
+    notify_config_change(SCOPE_STRATEGY, ACTION_UPDATE, id)
     return ApiResponse(data=id, message="更新成功")
 
 

@@ -503,6 +503,44 @@ class UserStrategyCache(metaclass=Singleton):
             for key in [k for k in self._select_snapshot if k[0] == user_strategy_id]:
                 self._select_snapshot.pop(key, None)
 
+    def clear_user_scores(self, user_strategy_id: str) -> None:
+        """清理某用户策略的打分缓存（内存快照 + Redis key）。
+
+        用于**参数热更新**。打分缓存 key 是
+        `score:{usid}:{code}:{action}:{day}`，**不含参数**，所以同一天内改了
+        策略参数后，旧参数算出的分仍会命中缓存 —— 表现为「参数改了但判定没变」，
+        且只在部分股票上出现（命中缓存的那些）。
+
+        `clear_user` 不删 Redis key 是有道理的：它的调用场景是盘前跨天清理，
+        那时的 key 属于新的一天、本来就不存在。这里必须两边一起清。
+
+        分钟行情与区间最高价**不动**：它们是行情数据，与参数无关，清掉等于让
+        当天的量能/VWAP/回撤判定全部缺数据。
+
+        :param user_strategy_id: 用户策略 ID
+        """
+        if not user_strategy_id:
+            return
+        with self._lock:
+            stale: list[tuple[str, str, str, str]] = [
+                k for k in self._score_snapshot if k[0] == user_strategy_id
+            ]
+            for key in stale:
+                self._score_snapshot.pop(key, None)
+        if not stale:
+            return
+        # Redis 删除放在锁外：网络调用不持锁（与 save_score / get_score 同一约定）
+        if not self._redis_ready():
+            return
+        try:
+            redis_exec: Any = self._redis()
+            for _, code, action, day in stale:
+                redis_exec.delete_key(
+                    self.score_key(user_strategy_id, code, action, day)
+                )
+        except Exception as exc:
+            self.logger.debug("清理打分 Redis key 失败: %s", exc)
+
     def reset_redis_failure(self) -> None:
         """重置 Redis 失败标记（新的一天重新尝试 Redis）。"""
         with self._lock:
