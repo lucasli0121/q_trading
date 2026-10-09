@@ -11,11 +11,12 @@ handlers:
 
   info_file_handler:
     class: logging.handlers.TimedRotatingFileHandler
-    # 2026-10-09：原为 INFO。注意 logging 是**两道闸门**，顺序固定：
+    # logging 是两道闸门，顺序固定：
     #   ① logger.isEnabledFor(level) —— 由 logger 自身及其**祖先**的 effective level 决定
     #   ② handler.level —— 记录走到 handler 这一层要不要写出去
-    # 第 ① 道不过，LogRecord 根本不产生，handler 配成什么都没用。root 是 INFO，
-    # 所以只把这里改成 DEBUG 看不到任何 DEBUG 行，必须与下面 loggers.workflow 一起改。
+    # 第 ① 道不过，LogRecord 根本不产生，handler 配成什么都没用。
+    # 所以这里配 DEBUG 只是「不设上限」，真正决定每条日志出不出的，是下面
+    # loggers 段与 root 的级别 —— 只改这里看不到任何 DEBUG 行。
     level: DEBUG
     when: 'D'
     formatter: simpler
@@ -29,20 +30,47 @@ handlers:
     formatter: simpler
     filename: log/errors.log
     encoding: utf8
+
 loggers:
   my_module:
     level: ERROR
     handlers: [console, error_file_handler]
-  # 配置热更新的业务日志（「配置对账完成…无变更」「收到配置变更消息」等）是 DEBUG 级别，
-  # root 是 INFO ⇒ 默认一条都看不到。这里只给 workflow 包放行，不动 root
-  # （root 改成 DEBUG 会让 httpx / pymongo / apscheduler 的 DEBUG 一起刷屏）。
-  # propagate=false 是必须的：不冒泡到 root，否则同一行会被 root 的 handlers 再输出一遍。
-  # ⚠️ 排查完建议改回 INFO 或删掉这一段：`code=%s 未触发信号`（strategy_workflow 第
-  #    2101 行）是**逐笔**打点，实时行情下会把 info.log 迅速刷大。
+
+  # ── 业务日志放行 ────────────────────────────────────────────────────────
+  # 想看的业务 DEBUG（「配置对账完成…无变更」「收到配置变更消息」等）都在这个包里。
+  # **不要为了方便而把 root 改成 DEBUG** —— 那会把 httpx / httpcore / pymongo /
+  # apscheduler 的 DEBUG 一起灌进 info.log。实测（稳态一轮对账 = 12 次 HTTP）：
+  #     只放行本包 → 13 行/轮
+  #     root=DEBUG → 144 行/轮（其中 120 行是 httpcore.http11 的报文级细节
+  #                  send_request_headers.started 之类），11 倍
+  # propagate=false 必须加：否则记录还会冒泡到 root 的 handlers 再输出一遍。
+  # handlers 必须列全三个：propagate=false 之后不再借用 root 的 handler 列表，
+  # 少列 error_file_handler 的话 ERROR 就进不了 errors.log。
+  # ⚠️ 排查完建议把本段改回 INFO 或直接删掉：本包多处 DEBUG（strategy_workflow
+  #    约 1981 / 2102 行的 `code=%s 未触发信号`）在**逐笔**链路上打点，实时行情下
+  #    会把 info.log 迅速刷大。
   workflow:
     level: DEBUG
     handlers: [console, info_file_handler, error_file_handler]
     propagate: false
+
+  # ── 第三方库降噪（防御性，root=INFO 时冗余）─────────────────────────────
+  # 留着是为了防止有人把 root 临时调成 DEBUG 时被刷屏：实测能把 144 行/轮压到
+  # 24 行/轮。httpx 与 apscheduler 故意不在此列 —— httpx 每个请求一条 INFO
+  # （HTTP Request: GET … 200 OK）是有用的请求流水；apscheduler 的
+  # Running job / executed successfully 是判断对账有没有在跑的主要依据。
+  # 若想看更细的 HTTP 请求日志，放行 api 包即可（每个请求一行，比 httpcore 干净）：
+  #   api:
+  #     level: DEBUG
+  #     handlers: [console, info_file_handler, error_file_handler]
+  #     propagate: false
+  httpcore:
+    level: WARNING
+  urllib3:
+    level: WARNING
+  pymongo:
+    level: WARNING
+
 root:
   level: INFO
   handlers: [console, info_file_handler, error_file_handler]
