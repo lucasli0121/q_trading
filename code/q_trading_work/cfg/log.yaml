@@ -11,7 +11,12 @@ handlers:
 
   info_file_handler:
     class: logging.handlers.TimedRotatingFileHandler
-    level: INFO
+    # 2026-10-09：原为 INFO。注意 logging 是**两道闸门**，顺序固定：
+    #   ① logger.isEnabledFor(level) —— 由 logger 自身及其**祖先**的 effective level 决定
+    #   ② handler.level —— 记录走到 handler 这一层要不要写出去
+    # 第 ① 道不过，LogRecord 根本不产生，handler 配成什么都没用。root 是 INFO，
+    # 所以只把这里改成 DEBUG 看不到任何 DEBUG 行，必须与下面 loggers.workflow 一起改。
+    level: DEBUG
     when: 'D'
     formatter: simpler
     filename: log/info.log
@@ -28,6 +33,16 @@ loggers:
   my_module:
     level: ERROR
     handlers: [console, error_file_handler]
+  # 配置热更新的业务日志（「配置对账完成…无变更」「收到配置变更消息」等）是 DEBUG 级别，
+  # root 是 INFO ⇒ 默认一条都看不到。这里只给 workflow 包放行，不动 root
+  # （root 改成 DEBUG 会让 httpx / pymongo / apscheduler 的 DEBUG 一起刷屏）。
+  # propagate=false 是必须的：不冒泡到 root，否则同一行会被 root 的 handlers 再输出一遍。
+  # ⚠️ 排查完建议改回 INFO 或删掉这一段：`code=%s 未触发信号`（strategy_workflow 第
+  #    2101 行）是**逐笔**打点，实时行情下会把 info.log 迅速刷大。
+  workflow:
+    level: DEBUG
+    handlers: [console, info_file_handler, error_file_handler]
+    propagate: false
 root:
   level: INFO
   handlers: [console, info_file_handler, error_file_handler]
