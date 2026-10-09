@@ -148,6 +148,10 @@ class StrategyWorkflow(BaseWorkflow):
     # （兜底：漏发通知、进程启动早于服务端、MQTT 掉线重连期间）。
     RECONCILE_INTERVAL_SECONDS: int = 60  # 交易时段的对账周期
     RECONCILE_INTERVAL_OFFHOURS_SECONDS: int = 300  # 非交易时段放长，省 HTTP
+    # 节流阈值相对周期留出的余量比例（见 `_reconcile_job`）。
+    # 必须 < 1：时间戳记在单轮对账**结束**时刻，若阈值等于周期，
+    # 下一轮触发时"距上次"恒为「周期 − 单轮耗时」，永远差那零点几秒。
+    RECONCILE_THROTTLE_RATIO: float = 0.9
     # 盘中改池/改参数后补跑当日选股的最小间隔（秒）。
     # 补跑要对全池取日 K，是这里最贵的一步；用户连续调几次参数时不能每次都跑。
     SELECTION_REFRESH_MIN_INTERVAL_SECONDS: float = 300.0
@@ -1565,13 +1569,32 @@ class StrategyWorkflow(BaseWorkflow):
 
         非交易时段按更长的间隔跑：那时候行情没有变化，对账只用于「第二天开盘前
         把界面上的改动带上」，没必要每分钟发一轮 HTTP。
+
+        节流阈值取周期的 `RECONCILE_THROTTLE_RATIO`（0.9）倍，**不能取满**：
+        `_last_reconcile_ts` 记在 `reconcile_user_strategies` 的 finally 里，即
+        单轮对账的**结束**时刻，而单轮要跑 0.3~0.4 秒（3 次基础 HTTP，行情好的
+        时候更久）。阈值取满 60 秒时，下一轮触发距离上次结束恰好是
+        `60 − 0.4 = 59.6 < 60`，于是稳定 return —— 实际变成"一轮跑一轮跳"，
+        周期翻倍到 120 秒（非交易时段 600 秒），而 apscheduler 两轮都报
+        executed successfully，光看调度器日志看不出被跳过。留 10% 余量后，
+        只要单轮耗时不超过周期的 10%（6 秒）就能每轮都跑。
         """
-        interval: int = (
+        interval: float = (
             self.RECONCILE_INTERVAL_SECONDS
             if self._is_trading_hours()
             else self.RECONCILE_INTERVAL_OFFHOURS_SECONDS
         )
-        if time.time() - self._last_reconcile_ts < interval:
+        elapsed: float = time.time() - self._last_reconcile_ts
+        throttled_at: float = interval * self.RECONCILE_THROTTLE_RATIO
+        if elapsed < throttled_at:
+            # 用 INFO 而不是 DEBUG：root logger 是 INFO，DEBUG 记录压根不产生
+            # （console handler 虽是 DEBUG，但被 root 的级别拦在前面），
+            # 被跳过就只剩 apscheduler 那条耗时 0ms 的 executed 可反推。
+            # 正常情况每轮都跑，这条只在单轮耗时超过周期 10% 时才会出现。
+            self.logger.info(
+                "配置对账跳过（距上次结束 %.1fs，不足节流阈值 %.1fs）",
+                elapsed, throttled_at,
+            )
             return
         self.reconcile_user_strategies(reason="scheduler")
 

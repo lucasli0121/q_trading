@@ -611,6 +611,51 @@ class TestReconcileTriggers(unittest.TestCase):
 
         wf.reconcile_user_strategies.assert_called_once_with(reason="scheduler")
 
+    def test_scheduler_not_skipped_when_one_round_takes_a_while(self) -> None:
+        """守卫：节流阈值不能取满周期，否则稳定「一轮跑一轮跳」。
+
+        时间戳记在单轮对账**结束**时刻，所以下一轮触发时「距上次」恒为
+        「周期 − 单轮耗时」。阈值取满 60 秒时这一轮会被判为未到间隔而跳过：
+        实测 09:51–09:58 的耗时严格交替（365ms / 1ms / 335ms / 0ms / …），
+        实际周期翻倍到 120 秒，而 apscheduler 两轮都报 executed successfully，
+        光看调度器日志看不出被跳过。
+        """
+        import time
+
+        wf = make_workflow()
+        wf.reconcile_user_strategies = MagicMock(return_value={})  # type: ignore[method-assign]
+        wf._is_trading_hours = MagicMock(return_value=True)  # type: ignore[method-assign]
+        # 上一轮 0.4 秒前才结束（单轮对账的实测量级）
+        wf._last_reconcile_ts = time.time() - (wf.RECONCILE_INTERVAL_SECONDS - 0.4)
+
+        wf._reconcile_job()
+
+        wf.reconcile_user_strategies.assert_called_once_with(reason="scheduler")
+
+    def test_throttle_ratio_leaves_margin(self) -> None:
+        """余量必须 < 1，且要显著大于单轮对账耗时，否则余量形同虚设。"""
+        wf = make_workflow()
+        self.assertLess(wf.RECONCILE_THROTTLE_RATIO, 1.0)
+        # 单轮实测 0.3~0.4 秒，占 60 秒周期的 0.7% 以下
+        self.assertGreaterEqual(
+            wf.RECONCILE_INTERVAL_SECONDS * (1 - wf.RECONCILE_THROTTLE_RATIO), 1.0
+        )
+
+    def test_throttled_round_is_logged(self) -> None:
+        """被节流跳过时要留痕：旧实现直接 return，日志里与「跑了但无变更」同形。"""
+        import time
+
+        wf = make_workflow()
+        wf.reconcile_user_strategies = MagicMock(return_value={})  # type: ignore[method-assign]
+        wf._is_trading_hours = MagicMock(return_value=True)  # type: ignore[method-assign]
+        wf._last_reconcile_ts = time.time()
+
+        with self.assertLogs(wf.logger.name, level="INFO") as cm:
+            wf._reconcile_job()
+
+        wf.reconcile_user_strategies.assert_not_called()
+        self.assertTrue(any("配置对账跳过" in line for line in cm.output))
+
     def test_reconcile_api_failure_keeps_local_state(self) -> None:
         """拉用户策略失败时不动本地运行表。"""
         wf = make_workflow()
