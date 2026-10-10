@@ -60,7 +60,11 @@ class BaseWorkflow(ABC):
         self._config_callback: Callable[[str, str], None] = self._on_config_message
         # 配置变更处理专用执行器（单线程），与行情线程池隔离
         self._config_executor: ThreadPoolExecutor | None = None
-        # 工作流关联的股票池 ID 集合，用于 pool 级 MQTT 订阅
+        # 已**真正订阅**成功的股票池 ID 集合。
+        # 语义只有这一个：成员 = 该池的 real_time/minute topic 已经 subscribe 过。
+        # 启动前「打算订阅哪些池」由 `_collect_startup_pool_ids()` 提供，不要往这里预填
+        # —— `subscribe_pool` 用「在集合里」判断是否已订阅并短路返回，预填等于
+        # 「登记了但一条都没订阅」，行情全丢且不报错（2026-10-10 实测）。
         self._pool_ids: set[str] = set()
         # 池订阅会随配置对账动态增删（用户换池），必须在锁里改：
         # 订阅回调/对账线程可能与 _unsubscribe_mqtt 的遍历同时发生。
@@ -262,11 +266,24 @@ class BaseWorkflow(ABC):
 
     # ---- 生命周期 ----
 
+    def _collect_startup_pool_ids(self) -> list[str]:
+        """返回启动时需要订阅的股票池 ID，子类可重写。
+
+        与 `_pool_ids` 的区别是**意图**与**事实**：这里回答「要订阅哪些」，
+        `_pool_ids` 记录「已经订阅了哪些」。两者混用一个集合会让
+        `subscribe_pool` 的幂等短路把「只登记未订阅」当成「已订阅」，
+        结果是启动后一条池级行情都收不到，且日志里全无异常。
+
+        :return: 待订阅的 pool_id 列表（可为空，表示走全局通配的兼容模式）
+        """
+        return []
+
     def _subscribe_mqtt(self) -> bool:
         """订阅 MQTT 分钟行情和实时行情 topic。
 
-        当 _pool_ids 非空时，按 pool_id 订阅 pool 级 topic；
-        否则订阅全局通配 topic（兼容模式）。
+        启动时要订阅的池由 `_collect_startup_pool_ids()` 给出（非空时逐个
+        `subscribe_pool`，由其登记到 `_pool_ids`）；为空则订阅全局通配 topic
+        （兼容模式）。
 
         :return: 订阅是否成功
         """
@@ -275,9 +292,10 @@ class BaseWorkflow(ABC):
             self.logger.error("MQTT 未连接，无法订阅行情")
             return False
 
-        if self._pool_ids:
+        startup_pool_ids: list[str] = self._collect_startup_pool_ids()
+        if startup_pool_ids:
             # Pool 级订阅：对每个 pool_id 订阅独立的实时行情和分钟行情 topic
-            for pool_id in self.pool_ids:
+            for pool_id in startup_pool_ids:
                 self.subscribe_pool(pool_id)
         else:
             # 兼容模式：全局 topic 订阅

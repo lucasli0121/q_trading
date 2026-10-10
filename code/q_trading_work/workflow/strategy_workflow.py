@@ -368,7 +368,9 @@ class StrategyWorkflow(BaseWorkflow):
 
         1. 从配置文件读取 service_name
         2. 调用 load_strategies_from_db() 加载策略模板和用户策略
-        3. 收集所有 pool_id 到 self._pool_ids，供基类 pool 级 MQTT 订阅
+
+        **不在这里写 `_pool_ids`**：那是由 `_collect_startup_pool_ids()` 交给
+        基类订阅后回填的「已订阅」登记表（见 BaseWorkflow._pool_ids 注释）。
         """
         # 步骤1：读取 service_name
         self._service_name = tools.load_service_name()
@@ -381,19 +383,22 @@ class StrategyWorkflow(BaseWorkflow):
         loaded: list[StrategyState] = self.load_strategies_from_db()
         self.logger.info("共加载 %d 个用户策略配置", len(loaded))
 
-        # 步骤3：收集 pool_ids
-        self._pool_ids = set()
+    def _collect_startup_pool_ids(self) -> list[str]:
+        """收集启动时需要订阅的股票池 ID（供基类 pool 级 MQTT 订阅）。
+
+        :return: 去重后的 pool_id 列表；为空表示没有策略绑定股票池，走全局通配订阅
+        """
+        pool_ids: set[str] = set()
         for states in self._user_strategies.values():
             for state in states:
                 if state.pool_id:
-                    self._pool_ids.add(state.pool_id)
+                    pool_ids.add(state.pool_id)
 
-        if self._pool_ids:
-            self.logger.info(
-                "收集到 %d 个 pool_id: %s", len(self._pool_ids), self._pool_ids
-            )
+        if pool_ids:
+            self.logger.info("收集到 %d 个 pool_id: %s", len(pool_ids), pool_ids)
         else:
             self.logger.warning("未收集到任何 pool_id，将使用全局 MQTT 订阅")
+        return sorted(pool_ids)
 
     # ---- 策略加载 ----
 
