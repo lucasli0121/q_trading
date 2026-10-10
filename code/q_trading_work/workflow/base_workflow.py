@@ -65,7 +65,7 @@ class BaseWorkflow(ABC):
         # 启动前「打算订阅哪些池」由 `_collect_startup_pool_ids()` 提供，不要往这里预填
         # —— `subscribe_pool` 用「在集合里」判断是否已订阅并短路返回，预填等于
         # 「登记了但一条都没订阅」，行情全丢且不报错（2026-10-10 实测）。
-        self._pool_ids: set[str] = set()
+        self._subscribed_pool_ids: set[str] = set()
         # 池订阅会随配置对账动态增删（用户换池），必须在锁里改：
         # 订阅回调/对账线程可能与 _unsubscribe_mqtt 的遍历同时发生。
         self._pool_lock: threading.Lock = threading.Lock()
@@ -259,7 +259,7 @@ class BaseWorkflow(ABC):
     def _init_workflow(self) -> None:
         """在 MQTT 订阅前调用的初始化钩子，子类可重写。
 
-        用于加载配置、策略实例和用户策略配置，收集 pool_ids 等。
+        用于加载配置、策略实例和用户策略配置等。
         在 start() 中于 _subscribe_mqtt() 之前调用。
         """
         pass
@@ -269,8 +269,8 @@ class BaseWorkflow(ABC):
     def _collect_startup_pool_ids(self) -> list[str]:
         """返回启动时需要订阅的股票池 ID，子类可重写。
 
-        与 `_pool_ids` 的区别是**意图**与**事实**：这里回答「要订阅哪些」，
-        `_pool_ids` 记录「已经订阅了哪些」。两者混用一个集合会让
+        与 `_subscribed_pool_ids` 的区别是**意图**与**事实**：这里回答「要订阅哪些」，
+        `_subscribed_pool_ids` 记录「已经订阅了哪些」。两者混用一个集合会让
         `subscribe_pool` 的幂等短路把「只登记未订阅」当成「已订阅」，
         结果是启动后一条池级行情都收不到，且日志里全无异常。
 
@@ -282,7 +282,7 @@ class BaseWorkflow(ABC):
         """订阅 MQTT 分钟行情和实时行情 topic。
 
         启动时要订阅的池由 `_collect_startup_pool_ids()` 给出（非空时逐个
-        `subscribe_pool`，由其登记到 `_pool_ids`）；为空则订阅全局通配 topic
+        `subscribe_pool`，由其登记到 `_subscribed_pool_ids`）；为空则订阅全局通配 topic
         （兼容模式）。
 
         :return: 订阅是否成功
@@ -316,17 +316,17 @@ class BaseWorkflow(ABC):
     # ---- pool 级行情订阅（运行中可增删）----
 
     @property
-    def pool_ids(self) -> list[str]:
+    def subscribed_pool_ids(self) -> list[str]:
         """当前已订阅的股票池 ID 快照。
 
         返回副本而不是原集合：调用方（含取消订阅的遍历）持有一个稳定的列表，
         期间由对账线程增删池不会引发「迭代中集合被修改」。
         """
         with self._pool_lock:
-            return list(self._pool_ids)
+            return list(self._subscribed_pool_ids)
 
     def subscribe_pool(self, pool_id: str) -> bool:
-        """订阅某个股票池的实时 + 分钟行情 topic，并登记到 `_pool_ids`。
+        """订阅某个股票池的实时 + 分钟行情 topic，并登记到 `_subscribed_pool_ids`。
 
         幂等：同一个 pool_id 重复调用只订阅一次。重复订阅的后果是同一根行情
         收到两次回调（策略侧会算两遍并推两条信号），因此这里必须挡住。
@@ -337,9 +337,9 @@ class BaseWorkflow(ABC):
         if not pool_id:
             return False
         with self._pool_lock:
-            if pool_id in self._pool_ids:
+            if pool_id in self._subscribed_pool_ids:
                 return True
-            self._pool_ids.add(pool_id)
+            self._subscribed_pool_ids.add(pool_id)
 
         mqtt_client = AppContext().mqtt_client
         try:
@@ -347,7 +347,7 @@ class BaseWorkflow(ABC):
                 # 登记已经加上：MQTT 恢复后重新订阅由 _subscribe_mqtt 统一处理，
                 # 这里回滚登记，避免「集合里有、实际没订阅」的静默不一致。
                 with self._pool_lock:
-                    self._pool_ids.discard(pool_id)
+                    self._subscribed_pool_ids.discard(pool_id)
                 self.logger.error("MQTT 未连接，无法订阅股票池 %s 的行情", pool_id)
                 return False
             # 实时行情通配: q_share/stock/real_time/{pool_id}/#（RabbitMQ 用 . 分隔，股票代码含 . 会导致段数多于1）
@@ -360,21 +360,21 @@ class BaseWorkflow(ABC):
             return True
         except Exception as exc:
             with self._pool_lock:
-                self._pool_ids.discard(pool_id)
+                self._subscribed_pool_ids.discard(pool_id)
             self.logger.error("订阅股票池 %s 行情异常: %s", pool_id, exc, exc_info=True)
             return False
 
     def unsubscribe_pool(self, pool_id: str) -> None:
-        """取消某个股票池的行情订阅，并从 `_pool_ids` 移除。
+        """取消某个股票池的行情订阅，并从 `_subscribed_pool_ids` 移除。
 
         :param pool_id: 股票池 ID
         """
         if not pool_id:
             return
         with self._pool_lock:
-            if pool_id not in self._pool_ids:
+            if pool_id not in self._subscribed_pool_ids:
                 return
-            self._pool_ids.discard(pool_id)
+            self._subscribed_pool_ids.discard(pool_id)
         mqtt_client = AppContext().mqtt_client
         try:
             mqtt_client.unsubscribe(MqttTopic.stock_real_time_pool_code(pool_id, "#"))
@@ -387,8 +387,8 @@ class BaseWorkflow(ABC):
         """取消 MQTT 订阅。"""
         mqtt_client = AppContext().mqtt_client
         try:
-            if self._pool_ids:
-                for pool_id in self.pool_ids:
+            if self._subscribed_pool_ids:
+                for pool_id in self.subscribed_pool_ids:
                     mqtt_client.unsubscribe(
                         MqttTopic.stock_real_time_pool_code(pool_id, "#")
                     )
@@ -406,7 +406,7 @@ class BaseWorkflow(ABC):
     def start(self) -> bool:
         """启动工作流。
 
-        1. 调用 _init_workflow 钩子（加载配置/策略/收集 pool_ids）
+        1. 调用 _init_workflow 钩子（加载配置/策略）
         2. 订阅 MQTT 行情（pool 级或全局通配）
         3. 调用子类的 on_start 钩子
         4. 标记为运行中
@@ -419,7 +419,7 @@ class BaseWorkflow(ABC):
 
         self.logger.info("[%s] 工作流启动中...", self.__class__.__name__)
 
-        # 步骤1：调用子类初始化钩子，加载配置和策略，收集 pool_ids
+        # 步骤1：调用子类初始化钩子，加载配置和策略
         try:
             self._init_workflow()
         except Exception as exc:

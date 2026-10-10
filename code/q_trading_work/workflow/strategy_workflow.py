@@ -369,8 +369,8 @@ class StrategyWorkflow(BaseWorkflow):
         1. 从配置文件读取 service_name
         2. 调用 load_strategies_from_db() 加载策略模板和用户策略
 
-        **不在这里写 `_pool_ids`**：那是由 `_collect_startup_pool_ids()` 交给
-        基类订阅后回填的「已订阅」登记表（见 BaseWorkflow._pool_ids 注释）。
+        **不在这里写 `_subscribed_pool_ids`**：那是由 `_collect_startup_pool_ids()`
+        交给基类订阅后回填的「已订阅」登记表（见 BaseWorkflow._subscribed_pool_ids 注释）。
         """
         # 步骤1：读取 service_name
         self._service_name = tools.load_service_name()
@@ -1490,7 +1490,7 @@ class StrategyWorkflow(BaseWorkflow):
         active: set[str] = {
             s.pool_id for s in self.get_all_strategies().values() if s.pool_id
         }
-        for pool_id in self.pool_ids:
+        for pool_id in self.subscribed_pool_ids:
             if pool_id not in active:
                 self.unsubscribe_pool(pool_id)
 

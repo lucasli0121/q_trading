@@ -83,7 +83,7 @@ def _fake_subscribe(wf: StrategyWorkflow):
     def _subscribe(pool_id: str) -> bool:
         if pool_id:
             with wf._pool_lock:
-                wf._pool_ids.add(pool_id)
+                wf._subscribed_pool_ids.add(pool_id)
         return True
 
     return MagicMock(side_effect=_subscribe)
@@ -92,7 +92,7 @@ def _fake_subscribe(wf: StrategyWorkflow):
 def _fake_unsubscribe(wf: StrategyWorkflow):
     def _unsubscribe(pool_id: str) -> None:
         with wf._pool_lock:
-            wf._pool_ids.discard(pool_id)
+            wf._subscribed_pool_ids.discard(pool_id)
 
     return MagicMock(side_effect=_unsubscribe)
 
@@ -131,7 +131,7 @@ class TestReconcilePoolChanges(unittest.TestCase):
         self.state.user_strategy_name = "爸爸的强趋势"
         self.wf._user_strategies = {"s1": [self.state]}
         # 模拟启动期已订阅该池
-        self.wf._pool_ids = {"p1"}
+        self.wf._subscribed_pool_ids = {"p1"}
         self.wf._strategy_templates = {"s1": dict(STRONG_TEMPLATE)}
         self.wf._strategy_api.list.return_value = [dict(STRONG_TEMPLATE)]
         self.wf._user_strategy_api.list_all.return_value = [
@@ -223,7 +223,7 @@ class TestReconcilePoolChanges(unittest.TestCase):
         other.instance.requires_daily_selection = True
         self.wf._pool_api.get_by_id.return_value = {"name": "科技池"}
         self.wf._pool_api.get_stocks.return_value = [{"code": "000001"}]
-        self.wf._pool_ids = {"p1"}
+        self.wf._subscribed_pool_ids = {"p1"}
 
         self.wf.reconcile_user_strategies(reason="test")
 

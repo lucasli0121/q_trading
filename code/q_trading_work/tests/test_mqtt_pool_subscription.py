@@ -5,14 +5,15 @@
 `MQTT 订阅 topic 成功: q_share/config_change (QoS: 1, mid=1)` —— **池级 topic 一次
 都没订阅**，且没有任何错误日志、`_subscribe_mqtt()` 返回 True。
 
-根因是两个语义共用一个集合：`_init_workflow` 把「打算订阅的池」预填进 `_pool_ids`，
-而 `subscribe_pool` 把「在 `_pool_ids` 里」当作「已订阅」并直接短路返回，
+根因是两个语义共用一个集合：`_init_workflow` 把「打算订阅的池」预填进「已订阅登记表」
+（当年就叫 `_pool_ids`，现名 `_subscribed_pool_ids`），
+而 `subscribe_pool` 把「在登记表里」当作「已订阅」并直接短路返回，
 于是启动时的订阅循环整个空转：登记表里有 4 个池，broker 侧 0 个订阅。
 
 本文件守住三件事：
 
 1. 启动时每个待订阅池都必须真的 subscribe 到 real_time 与 minute 两个 topic；
-2. `_pool_ids`（已订阅登记表）不得被启动流程预填 —— 成员必须都有对应订阅；
+2. `_subscribed_pool_ids`（已订阅登记表）不得被启动流程预填 —— 成员必须都有对应订阅；
 3. `subscribe_pool` 的幂等只针对「真的订阅过」的池，而不是「登记过」的池。
 """
 
@@ -104,15 +105,15 @@ class TestStartupPoolSubscription(unittest.TestCase):
         )
 
     def test_registry_only_contains_actually_subscribed_pools(self) -> None:
-        """不变量：`_pool_ids` 里的每个池都必须有真实的订阅记录。
+        """不变量：`_subscribed_pool_ids` 里的每个池都必须有真实的订阅记录。
 
         这是本次事故的直接守卫 —— 预填登记表会让这条断言失败。
         """
         wf = _PoolWorkflow(["p1", "p2"])
         wf._subscribe_mqtt()
 
-        self.assertEqual(set(wf._pool_ids), {"p1", "p2"})
-        for pool_id in wf._pool_ids:
+        self.assertEqual(set(wf._subscribed_pool_ids), {"p1", "p2"})
+        for pool_id in wf._subscribed_pool_ids:
             self.assertIn(_minute_topic(pool_id), self.client.calls)
             self.assertIn(_real_time_topic(pool_id), self.client.calls)
 
@@ -137,7 +138,7 @@ class TestStartupPoolSubscription(unittest.TestCase):
                 "q_share/config_change",
             },
         )
-        self.assertEqual(wf._pool_ids, set())
+        self.assertEqual(wf._subscribed_pool_ids, set())
 
 
 class TestSubscribePoolIdempotency(unittest.TestCase):
@@ -169,7 +170,7 @@ class TestSubscribePoolIdempotency(unittest.TestCase):
 
         wf.unsubscribe_pool("p1")
 
-        self.assertEqual(wf._pool_ids, set())
+        self.assertEqual(wf._subscribed_pool_ids, set())
         self.assertEqual(
             set(self.client.unsubscribed),
             {_minute_topic("p1"), _real_time_topic("p1")},
@@ -211,10 +212,10 @@ class TestStrategyWorkflowStartupPools(unittest.TestCase):
             self.wf._init_workflow()
 
     def test_init_workflow_does_not_prefill_subscribed_registry(self) -> None:
-        """`_init_workflow` 只能「收集」，不能写 `_pool_ids`。"""
+        """`_init_workflow` 只能「收集」，不能写 `_subscribed_pool_ids`。"""
         self._init()
 
-        self.assertEqual(self.wf._pool_ids, set())
+        self.assertEqual(self.wf._subscribed_pool_ids, set())
         self.assertEqual(set(self.wf._collect_startup_pool_ids()), {"p1", "p2"})
 
     def test_startup_subscription_covers_pools_from_user_strategies(self) -> None:
@@ -231,7 +232,7 @@ class TestStrategyWorkflowStartupPools(unittest.TestCase):
         ):
             self.assertTrue(self.wf._subscribe_mqtt())
 
-        self.assertEqual(set(self.wf._pool_ids), {"p1", "p2"})
+        self.assertEqual(set(self.wf._subscribed_pool_ids), {"p1", "p2"})
         for pool_id in ("p1", "p2"):
             self.assertIn(_minute_topic(pool_id), client.calls)
             self.assertIn(_real_time_topic(pool_id), client.calls)
