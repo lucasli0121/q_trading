@@ -639,6 +639,34 @@ class BaseStrategy(ABC):
                 return today.strftime("%Y-%m-%d")
             today -= datetime.timedelta(days=1)
 
+    # ---- 打分与星级 ----
+
+    STAR_MAX: float = 5.0
+    """星级上限。服务端 `TradeSignalCreateRequest.star` 的字段约束是 0~5.0
+    （`web_api/routers/trade_signal.py::_validate_star_value`，越界直接 400）。"""
+
+    @classmethod
+    def score_to_star(cls, score: float) -> float:
+        """把 10 分制打分折算成 5 星制星级，**夹到 [0, 5]** 并保留一位小数。
+
+        为什么必须在策略侧夹：服务端对 `star` 做了范围校验，越界返回 400，
+        而 `_save_trade_signal` 里 `add()` 一旦抛异常，整条信号连同
+        MQTT 推送、企业微信/短信推送、订单创建会**一起被跳过**（同一个 try 块）。
+        也就是说一个越界的星级会让深跌卖出信号彻底丢失，不只是「星级记错」。
+
+        卖出侧尤其容易越界：分值是「技术分 + 持仓回撤扣分(+账户回撤扣分)」的叠加，
+        波段策略实测可到 −12.25（`(枢轴 −5 + 布林 −7.5)/2 −6`），
+        按 `−score/2` 折算得 6.1 星，超过上限。
+        （2026-10-12 线上 400 的直接原因。）
+
+        :param score: 10 分制打分（买入为正、卖出为负）
+        :return: 0~5 的星级，保留一位小数
+        """
+        value: float = float(score or 0.0)
+        if value != value:  # NaN：夹取对它无效，显式落 0
+            return 0.0
+        return round(max(0.0, min(abs(value) / 2.0, cls.STAR_MAX)), 1)
+
     # ---- 涨跌停幅度与阈值 ----
 
     @staticmethod

@@ -13,6 +13,43 @@ import httpx
 
 from api.client import ApiClient, is_not_found
 
+logger = logging.getLogger(__name__)
+
+STAR_MAX: float = 5.0
+"""星级上限，与服务端 `_validate_star_value` 一致（`web_api/routers/trade_signal.py`）。"""
+
+
+def _as_star(value: Any) -> float:
+    """把星级截断到服务端字段约束 [0, 5]，保留一位小数。
+
+    与 `_as_text` 同一层防御。服务端对越界 `star` 返回 400
+    （`{"detail": "star 应在 0~5.0 之间"}`），而 `_save_trade_signal` 里
+    `add()` 抛异常会让**整条信号**连同 MQTT 推送、企业微信/短信推送、
+    订单创建一起被跳过 —— 一个越界的星级等于一条信号凭空消失。
+
+    策略侧已统一用 `BaseStrategy.score_to_star()` 夹值，这里再兜一次：
+    将来新增策略或调用点漏夹时，最坏也只是星级被截断 + 一条 WARNING，
+    而不是信号丢失。（2026-10-12：波段策略卖出侧漏夹，3 条深跌卖出信号
+    连同下单一起被丢弃。）
+
+    注意这里只做**截断**、不做取绝对值：入参语义已经是「星级」，
+    负数说明上游算错了符号，截成 0 并告警，不猜它的本意。
+
+    :param value: 任意待归一化的星级
+    :return: 落在 [0, 5] 的星级，保留一位小数
+    """
+    try:
+        number: float = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number:  # NaN：任何比较都不成立，显式落 0
+        return 0.0
+    if number < 0 or number > STAR_MAX:
+        logger.warning(
+            "star 超出服务端允许范围 [0, %.1f]，已截断: 原值=%s", STAR_MAX, value
+        )
+    return round(max(0.0, min(number, STAR_MAX)), 1)
+
 
 def _as_text(value: Any) -> str:
     """把任意值归一化成字符串，保证请求体符合服务端 `str` 字段契约。
@@ -86,6 +123,7 @@ class TradeSignalApi:
         """
         # 服务端 TradeSignalCreateRequest 的 str 字段不接受 null / 数组，
         # 这里统一归一化，避免上游脏值导致整条信号保存 422（详见 _as_text）。
+        # star 越界则会让服务端返回 400（详见 _as_star）。
         body: dict[str, Any] = {
             "strategy_id": _as_text(strategy_id),
             "user_strategy_id": _as_text(user_strategy_id),
@@ -96,7 +134,7 @@ class TradeSignalApi:
             "profit_amount": round(profit_amount, 2),
             "reason": _as_text(reason),
             "score": round(float(score or 0.0), 2),
-            "star": round(float(star or 0.0), 1),
+            "star": _as_star(star),
         }
         result: Any = self._client.post("/api/trade_signal/add", body)
         return dict(result) if result else {}

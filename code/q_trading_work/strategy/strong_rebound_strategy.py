@@ -330,13 +330,13 @@ class StrongReboundStrategy(BaseStrategy):
                 volume_component * self.BUY_VOLUME_WEIGHT
                 + trend_component * self.BUY_TREND_WEIGHT
             ) * 10.0
-            # 星级：10 分制折算 5 星（保留一位小数），服务端字段约束为 0~5
-            star: float = max(0.0, min(avg_score / 2.0, 5.0))
+            # 星级：10 分制折算 5 星（保留一位小数），统一走基类折算（夹到 0~5）
+            star: float = self.score_to_star(avg_score)
             res: bool = avg_score >= self.BUY_MIN_SCORE
             extra = {
                 "code": code,
                 "score": round(avg_score, 2),
-                "star": round(star, 1),
+                "star": star,
                 "signal": "BUY",
                 "price": current_price
             }
@@ -600,8 +600,8 @@ class StrongReboundStrategy(BaseStrategy):
             if res:
                 extra["signal"] = "SELL"
                 extra["score"] = round(score, 2)
-                # 星级：卖出侧分数为负，按 10 分制折算 5 星并夹到 0~5
-                extra["star"] = round(max(0.0, min(-score / 2.0, 5.0)), 1)
+                # 星级：卖出侧分数为负，统一走基类折算（夹到 0~5）
+                extra["star"] = self.score_to_star(score)
                 # 字段名必须是 reason：`_save_trade_signal` 读的是
                 # `extra.get("reason", "")`，原实现写成 "reasons" 会静默丢失卖出原因
                 # （库里的 reason 与 MQTT 载荷都为空）。

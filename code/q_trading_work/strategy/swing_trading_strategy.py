@@ -566,7 +566,9 @@ class SwingTradingStrategy(BaseStrategy):
             boll_sr_factor = BollSRFactor(timeperiod=self.BUY_SR_WINDOW)  # 确保因子已注册
             boll_score: float = boll_sr_factor.score(stock_df)  # 计算布林带支撑位和阻力位
             avg_score: float = (inday_score + boll_score) / 2
-            star: float = avg_score / 2
+            # 星级统一走基类折算（夹到 0~5）。原实现直接 `avg_score / 2`，
+            # 服务端 star 越界会返回 400，整条信号连同推送与下单一起丢失。
+            star: float = self.score_to_star(avg_score)
             if avg_score > 0:
                 return True, {
                     "reason": (
@@ -575,7 +577,7 @@ class SwingTradingStrategy(BaseStrategy):
                     "signal": "BUY",
                     "code": code,
                     "score": round(avg_score, 2),
-                    "star": round(star, 1),
+                    "star": star,
                     "current_price": round(current_price, 2),
                     "create_time": create_time,
                 }
@@ -730,7 +732,11 @@ class SwingTradingStrategy(BaseStrategy):
                 extra["reason"] = reason
                 extra["current_price"] = round(current_price, 2)
                 extra["score"] = round(final_score, 2)
-                extra["star"] = round(-1.0 * final_score / 2, 1)
+                # 星级统一走基类折算（夹到 0~5）。**这里曾是线上 400 的源头**：
+                # final_score 是「技术分 + 持仓回撤扣分(+账户回撤扣分)」的叠加，
+                # 最低可到 −12.25，原实现 `-final_score / 2` 得 6.1 星，
+                # 超过服务端上限 ⇒ 整条卖出信号（含推送与下单）被丢弃。
+                extra["star"] = self.score_to_star(final_score)
                 extra["create_time"] = create_time
                 return True, extra
 
