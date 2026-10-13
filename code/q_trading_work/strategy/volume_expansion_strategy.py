@@ -612,6 +612,24 @@ class VolumeExpansionStrategy(BaseStrategy):
         )
         return matched, detail
 
+    # ---- 盘前准备 ----
+
+    def before_trading(self, trade_date: str, stock_codes: list[str], **kwargs: Any) -> None:
+        """每天交易前的准备工作：清理缓存 + 判定股票池的日线趋势方向。
+
+        趋势判定走基类 `load_daily_trend`（`AdxTrendFactor`，与波段策略同一口径），
+        结果注入门槛机制：**向下 ⇒ 买入门槛 +`TREND_BUY_OFFSET`（更难买）、
+        向上 ⇒ 卖出门槛 +`TREND_SELL_OFFSET`（更难卖）**。
+
+        为什么放盘前而不是在买入判定里按需算：判定要取日K（HTTP），而
+        `_check_buy_conditions` 在分钟级被高频调用，盘中打 HTTP 会拖慢甚至阻塞
+        交易线程；盘前一次性取完，盘中只查集合。
+        取数失败 / 数据不足时该项不产生偏移（fail-open）—— 门槛是附加收紧项，
+        缺失不该改变原有行为。
+        """
+        super().before_trading(trade_date, stock_codes, **kwargs)
+        self.load_daily_trend(stock_codes, trade_date)
+
     # ---- 分钟级买入 ----
 
     def _check_buy_conditions(
@@ -631,6 +649,16 @@ class VolumeExpansionStrategy(BaseStrategy):
         :param stock_data: 实时/分钟行情数据
         :return: (是否满足, 详细信息)
         """
+        # 极端利空禁买（2026-10-13）：市场极端 + 该股跌破 S3 ⇒ 当日只卖不买。
+        # 放在最前面：硬性拦截，不受 `MIN_SCORE + buy_threshold_offset` 影响。
+        if self.is_buy_blocked(code):
+            return False, {
+                "reason": (
+                    f"{self.user_strategy_name}, 极端利空禁买"
+                    "（前一交易日跌停超阈值且该股跌破S3），当日只卖不买"
+                ),
+                "code": code,
+            }
         try:
             current_price: float = float(stock_data.get("price", 0))
             open_price: float = float(stock_data.get("open", 0))

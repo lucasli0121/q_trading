@@ -51,6 +51,15 @@ MAX_SELL_OFFSET: float = 1.5
 """卖出侧放宽幅度上限（绝对值）。买入侧上限为 3.0，卖出侧取一半不到，
 避免市场偏移把卖出条件放宽成「见正分就抛」。"""
 
+DEFAULT_STOP_BUY_LIMIT_DOWN: float = 30.0
+"""「极端利空禁买」联动的跌停家数阈值（2026-10-13）。
+
+前一交易日跌停家数 **超过** 该值（严格大于）且该股盘后阀门达到 `VALVE_STOP_TIER`
+档（跌破 S3）时，当日该股**只卖不买**（见 `BaseStrategy.is_buy_blocked`）。
+默认 30 对应实测分布里的最后一档上界（2026-09-14~10-13 最大 56 家）。
+``<=0`` 表示关闭该联动，只保留门槛偏移。
+"""
+
 
 def limit_down_offset(
     limit_down: int | float | None,

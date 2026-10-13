@@ -51,6 +51,7 @@ from trade.manager import TradeExecutionResult, TradeManager
 from trade.notifier import TradeNotifier
 from utils import tools
 from utils.market_breadth import (
+    DEFAULT_STOP_BUY_LIMIT_DOWN,
     MAX_SELL_OFFSET,
     fetch_limit_counts,
     parse_bands,
@@ -236,9 +237,15 @@ class StrategyWorkflow(BaseWorkflow):
         self._market_offset_date: str = ""
         self._market_buy_offset: float = 0.0
         self._market_sell_offset: float = 0.0
+        # 前一交易日跌停家数**原值**（None = 没取到）。禁买联动判断的是「是否超过
+        # 阈值」，而分档在最后一档会把 31 与 300 家归成同一个偏移量，用偏移反推
+        # 会丢掉这个区别，所以原值必须单独留一份。
+        self._market_limit_down: float | None = None
         # 涨跌停分档（惰性读 cfg，见 _load_market_breadth_config）；None 表示尚未加载
         self._market_bands: tuple[tuple[float, float], ...] | None = None
         self._market_max_sell_offset: float = MAX_SELL_OFFSET
+        # 极端利空禁买联动的跌停家数阈值（`<=0` = 关闭联动，只保留门槛偏移）
+        self._market_stop_buy_limit_down: float = DEFAULT_STOP_BUY_LIMIT_DOWN
         self._scheduler: Any = None
         self._service_name: str = ""  # 当前 workflow 微服务名称
         # ---- 配置对账（热更新）状态 ----
@@ -3264,6 +3271,10 @@ class StrategyWorkflow(BaseWorkflow):
         直接改 ``cfg/stock.cfg`` 即可调参，不必重新打包。段不存在 / 解析失败时
         回退到代码里的默认分档（`utils/market_breadth.DEFAULT_BANDS`）。
 
+        除返回值外，还会顺带设置 `self._market_stop_buy_limit_down`（极端利空禁买
+        联动的跌停家数阈值）—— 它与分档同段配置、同一次加载，单独再读一次 cfg
+        只多一次磁盘 IO 且可能拿到与分档不同的快照。
+
         :return: ``(bands, max_sell_offset)``
         """
         from configparser import ConfigParser
@@ -3279,6 +3290,11 @@ class StrategyWorkflow(BaseWorkflow):
             bands = parse_bands(cp.get("market_breadth", "bands", fallback=""))
             cap = cp.getfloat(
                 "market_breadth", "max_sell_offset", fallback=MAX_SELL_OFFSET
+            )
+            self._market_stop_buy_limit_down = cp.getfloat(
+                "market_breadth",
+                "stop_buy_limit_down",
+                fallback=DEFAULT_STOP_BUY_LIMIT_DOWN,
             )
             return bands, cap
         except Exception as exc:  # pragma: no cover - 配置读取兜底
@@ -3341,10 +3357,13 @@ class StrategyWorkflow(BaseWorkflow):
         self._market_offset_date = trade_date
         self._market_buy_offset = buy_offset
         self._market_sell_offset = sell_offset
+        # 跌停家数原值供「极端利空禁买」联动判断；取数失败保持 None ⇒ 不触发禁买
+        # （fail-open：不许一次接口抖动把整个实例的买入停掉）。
+        self._market_limit_down = None if limit_down is None else float(limit_down)
         return buy_offset, sell_offset
 
     def _apply_daily_gates(self, state: StrategyState, trade_date: str) -> None:
-        """盘前把「个股阀门 + 市场偏移」注入策略实例。
+        """盘前把「个股阀门 + 市场偏移 + 禁买名单」注入策略实例。
 
         阀门在盘后计算、**次日生效**，所以按「前一交易日」精确查询阀门表
         （不是取最新一条：源交易日没有记录就说明当天没算，不该沿用更早的）。
@@ -3378,6 +3397,57 @@ class StrategyWorkflow(BaseWorkflow):
             instance.set_daily_valves(valves, prev_date)
         else:
             instance.clear_daily_valves()
+
+        self._apply_buy_block(instance, valves, sname)
+
+    def _apply_buy_block(
+        self,
+        instance: BaseStrategy,
+        valves: dict[str, dict[str, Any]],
+        strategy_name: str = "",
+    ) -> None:
+        """极端利空禁买：市场极弱 **且** 个股跌破 S3 时，当日只卖不买（2026-10-13）。
+
+        两个条件必须同时成立：
+
+        1. 前一交易日跌停家数 **严格大于** ``[market_breadth] stop_buy_limit_down``
+           （默认 30；``<=0`` 关闭联动）；
+        2. 该股盘后阀门达到 `VALVE_STOP_TIER` 档 —— 即当日买入侧跌破 S3
+           （触发值 = ``VALVE_STOP_TIER × VALVE_STEP``，默认 3.0）。
+
+        单看市场（跌停多但个股没破位）只抬门槛，仍允许买入；单看个股（破 S3 但
+        市场不极端）同样只是抬门槛。两者的交集才是「极端利空」。
+        跌停家数取不到（None）时**不触发** —— 不许一次接口抖动停掉整个实例的买入。
+        """
+        if not instance.BLOCK_BUY_ENABLED:
+            instance.clear_buy_blocked()
+            return
+        threshold: float = float(self._market_stop_buy_limit_down or 0.0)
+        limit_down: float | None = self._market_limit_down
+        if threshold <= 0 or limit_down is None or limit_down <= threshold:
+            instance.clear_buy_blocked()
+            return
+        stop_value: float = float(instance.VALVE_STOP_TIER) * float(instance.VALVE_STEP)
+        if stop_value <= 0:
+            instance.clear_buy_blocked()
+            return
+        blocked: list[str] = []
+        for code, record in valves.items():
+            try:
+                buy_valve: float = abs(float(record.get("buy_valve", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                continue
+            if buy_valve >= stop_value:
+                blocked.append(code)
+        instance.set_buy_blocked(blocked)
+        if blocked:
+            self.logger.warning(
+                "[%s] 极端利空禁买：前一交易日跌停 %.0f 家 > %.0f 家，"
+                "且 %d 只跌破 S3 ⇒ 当日只卖不买（%s）",
+                strategy_name or instance.user_strategy_name,
+                limit_down, threshold, len(blocked),
+                ",".join(sorted(blocked)[:10]),
+            )
 
     def _collect_hot_industry_codes(self) -> list[str]:
         """查询热门行业下的股票代码列表。"""

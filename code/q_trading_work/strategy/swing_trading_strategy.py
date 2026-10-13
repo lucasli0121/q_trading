@@ -128,11 +128,15 @@ class SwingTradingStrategy(BaseStrategy):
         同时必须继续往 `super().__init__()` 传，否则 `self.user_strategy_name`
         仍是空串，策略内所有以它为前缀的日志/原因文本会变成以逗号开头的空名字。
         """
-        # 必须在 `super().__init__()` **之前**建好：基类构造会回调子类的
-        # `apply_params()`，子类若在其中读到尚未赋值的实例属性就抛 AttributeError，
-        # 被 workflow 的 `except Exception` 兜住后表现为「整个用户策略静默不加载」
-        # （不建仓、不发信号、不卖，日志里只有一条 ERROR）。
-        self._downtrend_codes: set[str] = set()  # 日线趋势向下、当天跳过买入判定的股票
+        # 日线趋势方向**不在这里建**：唯一真源是 `BaseStrategy` 的
+        # `_trend_down_codes` / `_trend_up_codes`（盘前 `set_daily_trend` 整体替换、
+        # 选股 `add_daily_trend` 增量追加）。曾经在子类另存一套 `_downtrend_codes`，
+        # 结果门槛读基类集合、填充写子类集合，偏移恒为 0 且不报错。
+        #
+        # 实例化契约：子类若要新增实例属性，必须在下面 `super().__init__()` **之前**
+        # 建好 —— 基类构造会回调子类 `apply_params()`，在其中读到尚未赋值的属性会抛
+        # AttributeError，被 workflow 的 `except Exception` 兜住后表现为
+        # 「整个用户策略静默不加载」（不建仓、不发信号、不卖，日志里只有一条 ERROR）。
         # 必须调用基类初始化：设置 logger/factor_manager、加载策略参数并创建选股列表缓存字段
         super().__init__(
             user_strategy_id=user_strategy_id,
@@ -204,13 +208,16 @@ class SwingTradingStrategy(BaseStrategy):
         stock_data 是历史行情，不含当天行情。
 
         条件（全部满足）：
-            0. 日线不构成下跌趋势（ADX 达门槛且 −DI > +DI 时判为下跌，直接不选）
+            0. 日线趋势方向**只记录、不剔除**（向下 ⇒ 次日买入门槛上抬、
+               向上 ⇒ 次日卖出门槛上抬，见基类 `TREND_BUY_OFFSET` / `TREND_SELL_OFFSET`）
             1. 市盈率/利润增长率通过（金融业与非银金融豁免）
             2. KlineSRFactor 打分 > 0
 
-        条件 0 与盘中买入闸门（`handle_minute_bar` 读 `_downtrend_codes`）用同一个
-        `_is_downtrend`：选股链路（回测走的就是这里）与盘中链路若只在一侧过滤，
+        条件 0 与盘中的 `_downtrend_codes` / `_uptrend_codes` 用同一个
+        `_daily_trend_direction`：选股链路（回测走的就是这里）与盘中链路若口径不一，
         回测选出的股票集合会与实盘分叉，而两边日志都「看起来正常」。
+        2026-09-29 该条件原为**硬剔除**（趋势向下直接不选），2026-10-13 改成门槛：
+        继续剔除会让门槛永远没有机会生效 —— 选股阶段就被挡住了。
 
         :param stock_data: 股票日线行情数据列表，每项含 close/open/high/low 等字段
         :return: (是否匹配, 详细信息字典)
@@ -224,19 +231,12 @@ class SwingTradingStrategy(BaseStrategy):
         if not code:
             return False, {"reason": "条件1不满足: 无法获取股票代码"}
 
-        # ---- 条件0：日线趋势向下不选（与盘中买入判定同一口径）----
-        # 放在市盈率查询之前：趋势是本地计算，PE 要打一次 HTTP，先过滤掉下跌趋势的
-        # 股票能省下这部分请求。
+        # ---- 条件0：日线趋势方向（只记录，不剔除）----
+        # 用 `add_daily_trend` **增量**追加（不是 `set_daily_trend` 整体替换）：
+        # 选股只能看到手里这一只股票，替换会把盘前批量判定的结果整个抹掉。
         detail: dict[str, Any] = self._adx_detail(stock_df)
-        if self._is_downtrend(detail):
-            return False, {
-                "reason": (
-                    f"{self.strategy_name}, 日线趋势向下（ADX {float(detail.get('adx') or 0.0):.2f}"
-                    f" >= {self.TREND_ADX_THRESHOLD:.2f}"
-                    f"，-DI {float(detail.get('-DI') or 0.0):.2f}"
-                    f" > +DI {float(detail.get('+DI') or 0.0):.2f}），波段策略不参与"
-                )
-            }
+        direction: int = self._daily_trend_direction(detail)
+        self.add_daily_trend(code, direction)
 
         # ---- 条件1：市盈率<300, 利润增长率>10%, 此项检查不包含：金融业和非银金融行业 ----
         match, reason = self._check_industry_pe(code)
@@ -245,10 +245,15 @@ class SwingTradingStrategy(BaseStrategy):
         ksr_factor = KlineSRFactor(self.SR_WINDOW, self.SR_TOLERANCE)  # 确保因子已注册
         score: float = ksr_factor.score(stock_df)
         if score > 0.0:
-            return True, {"reason": "条件满足: KlineSRFactor 因子返回的分值满足买入条件", "score": score}
+            return True, {
+                "reason": "条件满足: KlineSRFactor 因子返回的分值满足买入条件",
+                "score": score,
+                "daily_trend": direction,
+            }
         if score == -10.0:
             self._break_max_r[code] = True
         return False, {"reason": "条件不满足: KlineSRFactor 因子返回的分值不满足买入条件"}
+
 
     def _check_industry_pe(self, code: str) -> tuple[bool, dict[str, Any]]:
         """只满足市盈率不要超过200, 不要亏损就行"""
@@ -285,24 +290,25 @@ class SwingTradingStrategy(BaseStrategy):
         两条链路的信号集合因此**不可直接比较**，回测结果只代表「当日候选股 + 持仓」
         这一子集。卖出侧同理：实时链路恒传空持仓，未持仓股票也会走一遍卖出判定。
 
-        **趋势闸门**（2026-09-29 新增）：日线趋势向下的股票当天不产生**买入**信号
-        （`before_trading` 判定的 `_downtrend_codes`）；**卖出与风控判定照常执行**。
-        下跌趋势里支撑位会被逐个跌穿，贴着支撑位买入等于逆势接刀，而持仓此时
-        恰恰最需要靠支撑位跌破与回撤止损离场。
+        **趋势门槛**（2026-09-29 引入硬闸门，2026-10-13 按用户要求改成门槛）：
+        日线趋势向下的股票不再直接跳过买入判定，改为**买入门槛上抬**
+        `TREND_BUY_OFFSET`（在 `_check_buy_conditions` 内经 `buy_threshold_offset`
+        生效）；趋势向上的股票**卖出门槛上抬**。**卖出与风控判定始终照常执行** ——
+        下跌趋势中的持仓最需要靠支撑位跌破与回撤止损离场。
         """
         self._before_minute_route(code, stock_data)
-        # 两种情况下不做买入判定、只判断卖出：
-        # ① 日线趋势向下（见类属性的趋势过滤说明）；
-        # ② 昨日股价突破最大阻力位（原逻辑）。
-        downtrend: bool = code in self._downtrend_codes
+        # 只有「昨日股价突破最大阻力位」仍短路买入判定（原逻辑）。
+        # 趋势方向已改成门槛，这里不能再短路 —— 短路了门槛就永远没机会生效，
+        # 等于把「改成门槛」退化成原来的硬闸门。
         break_max = self._break_max_r.get(code, False)
-        if not downtrend and not break_max:
+        if not break_max:
             # 如果买入条件成立就直接返回
             match, extra = self._check_buy_conditions(code, stock_data)
             if match:
                 return match, extra
         # 如果买入条件不成立，就判断卖出条件
         return self._check_sell_conditions(code, position, stock_data)
+
 
     def _before_minute_route(self, code: str, stock_data: dict[str, Any]) -> None:
         """分钟路由前钩子。
@@ -319,15 +325,17 @@ class SwingTradingStrategy(BaseStrategy):
         两者需要的根数不同（枢轴点只要前一交易日那 1 根，趋势判定要 2×ADX 周期），
         分两次取数会让盘前多打一轮 HTTP，且同一只股票在两条链路里可能拿到不同快照。
 
-        趋势向下的股票记进 `_downtrend_codes`，当天买入判定直接跳过（见
-        `handle_minute_bar`）；卖出与风控判定照常 —— 否则下跌趋势中的持仓会同时
-        失去支撑位卖出与回撤止损，而那正是最需要离场的时候。
+        趋势方向记进基类的方向集合，随后作为**门槛**生效：
+        **向下 ⇒ 买入门槛 +`TREND_BUY_OFFSET`，向上 ⇒ 卖出门槛 +`TREND_SELL_OFFSET`**。
+        2026-09-29 原实现是硬闸门（趋势向下直接跳过买入判定），2026-10-13 按用户
+        要求改成门槛 —— 只收紧、不封死，且卖出侧同步拿到反向保护（避免卖飞）。
         """
         #先调用父类进行每天的清理工作
         super().before_trading(trade_date, stock_codes, **kwargs)
         self._break_max_r.clear()
         self._inday_sr_points.clear()
-        self._downtrend_codes.clear()
+        down: set[str] = set()
+        up: set[str] = set()
         #计算买入点的支撑位和阻力位，供当天交易使用
         for code in stock_codes:
             klines: pd.DataFrame = self.load_his_daily_data(
@@ -335,17 +343,21 @@ class SwingTradingStrategy(BaseStrategy):
             )
             self._save_sr_points(code, self._build_sr_points(code, trade_date, klines))
             detail: dict[str, Any] = self._adx_detail(klines)
-            if self._is_downtrend(detail):
-                self._downtrend_codes.add(code)
-                # 必须记 INFO：`cfg/log.yaml` 的 info.log 是 INFO 级，这条是
-                # 「为什么这只股票今天没买入信号」的唯一解释，记 DEBUG 等于运维看不见
-                self.logger.info(
-                    "[%s] code=%s 日线趋势向下（ADX %.2f >= %.2f，-DI %.2f > +DI %.2f），"
-                    "当天跳过买入判定，卖出与风控照常",
-                    self.strategy_name, code,
+            direction: int = self._daily_trend_direction(detail)
+            if direction < 0:
+                down.add(str(code))
+            elif direction > 0:
+                up.add(str(code))
+            if direction:
+                # 逐条记 DEBUG：池子里趋势股可能过半，逐条 INFO 会把 info.log 刷满；
+                # 汇总结论由 `set_daily_trend` 记 INFO，那条才是排障入口。
+                self.logger.debug(
+                    "[%s] code=%s 日线趋势%s（ADX %.2f >= %.2f，%sDI 占优）",
+                    self.strategy_name, code, "向下" if direction < 0 else "向上",
                     float(detail.get("adx") or 0.0), self.TREND_ADX_THRESHOLD,
-                    float(detail.get("-DI") or 0.0), float(detail.get("+DI") or 0.0),
+                    "-" if direction < 0 else "+",
                 )
+        self.set_daily_trend(down, up, trade_date)
 
     def _trend_kline_days(self) -> int:
         """趋势判定与枢轴点计算共用的日K取数根数。
@@ -384,24 +396,20 @@ class SwingTradingStrategy(BaseStrategy):
     def _is_downtrend(self, detail: dict[str, Any]) -> bool:
         """是否构成「下跌趋势」：ADX 达强度门槛 且 −DI > +DI。
 
-        两个条件缺一不可：
+        口径已下沉到基类 `_daily_trend_direction`（`-1` 向下 / `1` 向上），本方法
+        只回答买入侧的「是否向下」。两个条件缺一不可：
         - 只看 `−DI > +DI`：震荡市里 DI 频繁交叉，会随机剔掉一半股票，
           与本策略「只在震荡市用」的定位相悖；
         - 只看 `ADX > 门槛`：只说明「有趋势」（上涨趋势正是本策略想参与的突破行情）。
 
-        ADX / DI 为 NaN（数据不足）时比较恒为 False，判不出下跌趋势 ⇒ 不过滤。
+        ADX / DI 为 NaN（数据不足）时比较恒为 False，判不出下跌趋势 ⇒ 不偏移。
+        2026-10-13 起本判定的结果只用于**抬高买入门槛**（`TREND_BUY_OFFSET`），
+        不再直接跳过买入判定。
 
         :param detail: `_adx_detail` 的返回值（可为空字典）
-        :return: True 表示日线下跌趋势成立，当天跳过买入判定
+        :return: True 表示日线下跌趋势成立
         """
-        adx: float = float(detail.get("adx") or 0.0)
-        if pd.isna(adx) or adx < float(self.TREND_ADX_THRESHOLD):
-            return False
-        plus_di: float = float(detail.get("+DI") or 0.0)
-        minus_di: float = float(detail.get("-DI") or 0.0)
-        if pd.isna(plus_di) or pd.isna(minus_di):
-            return False
-        return minus_di > plus_di
+        return self._daily_trend_direction(detail) < 0
 
     def _build_sr_points(
         self, code: str, trade_date: str, klines: pd.DataFrame
@@ -499,10 +507,23 @@ class SwingTradingStrategy(BaseStrategy):
             根据InDaySRFactor因子返回的分值判断，分值>0.0买入
             同时增加KlineSRFactor因子返回的分值判断，分值>0.0买入
 
+        **极端利空禁买**（2026-10-13）：市场极端（前一交易日跌停家数超过
+        `cfg/stock.cfg [market_breadth] stop_buy_limit_down`）且该股盘后阀门达到
+        `VALVE_STOP_TIER` 档（跌破 S3）时，当日**只卖不买** —— 直接判不成立，
+        返回的 reason 里说明原因。禁买是硬性的，不受 `buy_threshold_offset` 影响。
+
         :param code: 股票代码
         :param stock_data: 实时/分钟行情数据
         :return: (是否满足, 详细信息)
         """
+        if self.is_buy_blocked(code):
+            return False, {
+                "reason": (
+                    f"{self.user_strategy_name}, 极端利空禁买"
+                    "（前一交易日跌停超阈值且该股跌破S3），当日只卖不买"
+                ),
+                "code": code,
+            }
         try:
             preclose: float = float(stock_data.get("preclose", 0))
             current_price: float = float(stock_data.get("price", 0))

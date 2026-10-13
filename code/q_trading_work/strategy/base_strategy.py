@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Any, cast
+from typing import Any, Iterable, cast
 
 import pandas as pd
 import yaml
@@ -146,6 +146,14 @@ class BaseStrategy(ABC):
         self._market_buy_offset: float = 0.0   # 市场级买入门槛偏移（>0 = 更难买）
         self._market_sell_offset: float = 0.0  # 市场级卖出门槛偏移（>0 = 更难卖）
         self.daily_valve_date: str = ""        # 当前生效阀门来自哪个交易日
+        # 日线趋势闸门（2026-10-13）：趋势向下记买入侧、向上记卖出侧，作为**门槛偏移**
+        # 参与 `buy/sell_threshold_offset`。原 swing 的硬闸门（直接跳过买入判定）
+        # 已按用户要求改成门槛，因此这里只存方向、不再短路判定。
+        self._trend_down_codes: set[str] = set()
+        self._trend_up_codes: set[str] = set()
+        self.daily_trend_date: str = ""        # 趋势判定基于哪个交易日
+        # 极端利空禁买名单（2026-10-13）：由 workflow 盘前判定后注入，**只卖不买**。
+        self._buy_blocked_codes: set[str] = set()
         self.xshg = xcals.get_calendar("XSHG", start="2020-01-01")  # 上交所交易日历，用于判断交易日
         # 先加载策略参数再注册因子，保证 init_factors 使用加载后的参数：
         # 优先级 user_strategy.strategy_params > strategy.default_params > cfg/strategy.yaml
@@ -691,6 +699,44 @@ class BaseStrategy(ABC):
     VALVE_MAX: float = 5.0
     """单侧阀门上限，避免异常数据把门槛抬到不可达。"""
 
+    VALVE_STOP_TIER: int = 3
+    """阀门达到该档序号时视为「跌穿 S3 / 站上 R3」（2026-10-13 新增）。
+
+    与市场极端条件（前一交易日跌停家数超过 `stop_buy_limit_down`）**同时成立**
+    才触发禁买，见 `is_buy_blocked` 与 workflow 的 `_apply_daily_gates`。
+    触发值是 `VALVE_STOP_TIER × VALVE_STEP`（默认 3.0）。
+    """
+
+    TREND_GATE_ENABLED: bool = True
+    """日线趋势闸门总开关（2026-10-13 新增）。关闭时趋势不产生门槛偏移。"""
+
+    TREND_BUY_OFFSET: float = 1.0
+    """日线趋势**向下**时的买入门槛上调幅度（10 分制，正 = 更难买）。
+
+    语义：下跌趋势里支撑位会被逐个跌穿，贴着支撑位买入等于逆势接刀。
+    2026-09-29 原实现是**硬闸门**（趋势向下的股票当天直接跳过买入判定），
+    2026-10-13 按用户要求改成**门槛** —— 只抬高、不封死，极强信号仍可买。
+    """
+
+    TREND_SELL_OFFSET: float = 1.0
+    """日线趋势**向上**时的卖出门槛上调幅度（10 分制，正 = 更难卖）。
+
+    语义：上升趋势里阻力位会被逐个突破，「贴近阻力位」不再等于「该卖」，
+    抬高门槛避免卖飞。与买入侧方向相反、口径对称。
+    """
+
+    BLOCK_BUY_ENABLED: bool = True
+    """极端利空禁买总开关（2026-10-13 新增）。关闭时忽略盘前注入的禁买名单。"""
+
+    TREND_DAYS_LIMIT: int = 14
+    """日线趋势判定的 ADX 周期（基类默认值，子类可覆盖）。"""
+
+    TREND_ADX_THRESHOLD: float = 25.0
+    """ADX 强度门槛：达到才算「趋势确立」（基类默认值，子类可覆盖）。"""
+
+    TREND_KLINE_DAYS: int = 40
+    """趋势判定所需日K根数（ADX lookback = 2×周期，基类默认值）。"""
+
     SR_LEVEL_KEYS: tuple[str, ...] = ("s1", "s2", "s3", "r1", "r2", "r3")
     """枢轴点的六个档位键（浅 → 深），阀门计算与入库共用同一顺序。"""
 
@@ -738,18 +784,213 @@ class BaseStrategy(ABC):
         self._market_sell_offset = float(sell_offset or 0.0)
 
     def buy_threshold_offset(self, code: str) -> float:
-        """买入门槛的额外偏移量（正 = 更难买）= 个股买入阀门 + 市场偏移。"""
+        """买入门槛的额外偏移量（正 = 更难买）。
+
+        三项相加，都是**收紧**方向：
+
+        1. 个股买入阀门（盘后算、次日生效，见 `strategy/valve.py`）；
+        2. 市场偏移（前一交易日跌停家数分档，见 `utils/market_breadth.py`）；
+        3. 日线趋势向下（`TREND_BUY_OFFSET`，2026-10-13 由原硬闸门改成门槛）。
+        """
         stock: float = float(self._daily_buy_valve.get(str(code), 0.0)) if self.VALVE_ENABLED else 0.0
-        return stock + float(self._market_buy_offset)
+        return stock + float(self._market_buy_offset) + self.daily_trend_buy_offset(code)
 
     def sell_threshold_offset(self, code: str) -> float:
-        """卖出门槛的额外偏移量（正 = 更难卖）= 个股卖出阀门 + 市场偏移。
+        """卖出门槛的额外偏移量（正 = 更难卖）。
 
-        市场偏移在「市场转弱（跌停多）」时取负值 —— 即更容易卖出（风控优先），
-        与个股阀门的「卖飞了就抬门槛」是两套独立口径。
+        个股卖出阀门（卖飞了就抬门槛）与市场偏移（跌停多时取负 ⇒ 更容易卖，
+        风控优先）是两套独立口径；2026-10-13 再叠加日线趋势向上项
+        （`TREND_SELL_OFFSET`，趋势向上时不轻易卖飞）。
         """
         stock: float = float(self._daily_sell_valve.get(str(code), 0.0)) if self.VALVE_ENABLED else 0.0
-        return stock + float(self._market_sell_offset)
+        return stock + float(self._market_sell_offset) + self.daily_trend_sell_offset(code)
+
+    # ---- 日线趋势闸门（门槛口径，2026-10-13） ----
+
+    def set_daily_trend(
+        self,
+        down_codes: Iterable[str],
+        up_codes: Iterable[str],
+        trade_date: str = "",
+    ) -> None:
+        """注入当日日线趋势方向（盘前由子类判定）。
+
+        :param down_codes: 日线趋势向下的股票（次日买入门槛上调）
+        :param up_codes: 日线趋势向上的股票（次日卖出门槛上调）
+        :param trade_date: 判定基于哪个交易日（仅用于日志/可追溯）
+        """
+        self._trend_down_codes = {str(c) for c in (down_codes or ()) if c}
+        self._trend_up_codes = {str(c) for c in (up_codes or ()) if c}
+        self.daily_trend_date = str(trade_date or "")
+        if self._trend_down_codes or self._trend_up_codes:
+            self.logger.info(
+                "[%s] 日线趋势门槛：向下 %d 只（买入门槛 +%.1f）/ 向上 %d 只（卖出门槛 +%.1f）",
+                self.user_strategy_name,
+                len(self._trend_down_codes), self.TREND_BUY_OFFSET,
+                len(self._trend_up_codes), self.TREND_SELL_OFFSET,
+            )
+
+    def clear_daily_trend(self) -> None:
+        """清空日线趋势方向。"""
+        self._trend_down_codes = set()
+        self._trend_up_codes = set()
+        self.daily_trend_date = ""
+
+    def add_daily_trend(self, code: str, direction: int) -> None:
+        """**增量**记录一只股票的趋势方向（``-1`` 向下 / ``1`` 向上 / 其余忽略）。
+
+        与 `set_daily_trend` 的区别：那个是整体替换（盘前批量判定用），这个是
+        单只追加（选股链路用）。选股只能看到手里这只股票，用替换接口会把
+        盘前批量判定的结果整个抹掉。
+
+        方向集合是**唯一真源** —— 策略不得再维护自己的副本（``_downtrend_codes``
+        那类私有集合曾与这里并存，改一处忘一处就静默失效：门槛读基类集合、
+        填的是私有集合，偏移恒为 0 且没有任何报错）。
+        """
+        key: str = str(code or "")
+        if not key:
+            return
+        if direction < 0:
+            self._trend_down_codes.add(key)
+            self._trend_up_codes.discard(key)
+        elif direction > 0:
+            self._trend_up_codes.add(key)
+            self._trend_down_codes.discard(key)
+
+    def daily_trend_direction(self, code: str) -> int:
+        """该股当日日线趋势方向：``-1`` 向下 / ``1`` 向上 / ``0`` 无趋势或未判定。"""
+        key: str = str(code)
+        if key in self._trend_down_codes:
+            return -1
+        if key in self._trend_up_codes:
+            return 1
+        return 0
+
+    def daily_trend_buy_offset(self, code: str) -> float:
+        """日线趋势带来的买入门槛偏移（趋势向下 ⇒ 正 = 更难买；否则 0）。"""
+        if not self.TREND_GATE_ENABLED:
+            return 0.0
+        if str(code) in self._trend_down_codes:
+            return float(self.TREND_BUY_OFFSET)
+        return 0.0
+
+    def daily_trend_sell_offset(self, code: str) -> float:
+        """日线趋势带来的卖出门槛偏移（趋势向上 ⇒ 正 = 更难卖；否则 0）。"""
+        if not self.TREND_GATE_ENABLED:
+            return 0.0
+        if str(code) in self._trend_up_codes:
+            return float(self.TREND_SELL_OFFSET)
+        return 0.0
+
+    def _daily_trend_direction(self, detail: dict[str, Any]) -> int:
+        """由 ADX 明细判定趋势方向：``-1`` 向下 / ``1`` 向上 / ``0`` 判不出。
+
+        方向成立需要两个条件同时满足（与 swing 原 `_is_downtrend` 同一口径）：
+
+        - ``ADX >= TREND_ADX_THRESHOLD``：只说明「有趋势」，不足以定向；
+        - ``-DI`` 与 ``+DI`` 的大小关系才是方向。
+
+        只看 DI 交叉会把震荡市里随机交叉的股票剔掉一半；ADX / DI 为 NaN
+        （数据不足、次新股、停牌复牌）时比较恒为 False ⇒ 判不出趋势 ⇒ 不偏移。
+        """
+        adx: float = float(detail.get("adx") or 0.0)
+        if pd.isna(adx) or adx < float(self.TREND_ADX_THRESHOLD):
+            return 0
+        plus_di: float = float(detail.get("+DI") or 0.0)
+        minus_di: float = float(detail.get("-DI") or 0.0)
+        if pd.isna(plus_di) or pd.isna(minus_di):
+            return 0
+        if minus_di > plus_di:
+            return -1
+        if plus_di > minus_di:
+            return 1
+        return 0
+
+    def _adx_detail(self, klines: pd.DataFrame) -> dict[str, Any]:
+        """日线 ADX 明细（方向 + 强度）；数据不足或计算异常时返回空字典。
+
+        返回空字典表示「判不出趋势」，调用方按「不构成趋势」处理 ——
+        数据缺口不该被当成趋势信号把股票整个禁掉。
+        """
+        from factor.adx_trend_factor import AdxTrendFactor
+
+        if klines is None or len(klines) < 2 * int(self.TREND_DAYS_LIMIT):
+            return {}
+        try:
+            return AdxTrendFactor(days=self.TREND_DAYS_LIMIT).adx_trend(klines)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            self.logger.warning(
+                "[%s] 日线趋势计算失败: %s", self.user_strategy_name, exc
+            )
+            return {}
+
+    def _trend_kline_days(self) -> int:
+        """趋势判定所需日K根数（至少 2×ADX周期 + 1）。
+
+        ADX 的 lookback 是 `2×period`（talib 口径），少一根末值就是 NaN，
+        而 `NaN > 阈值` 恒为 False ⇒ 判不出趋势 ⇒ 门槛静默失效，故取够再留余量。
+        """
+        return max(
+            int(self.TREND_KLINE_DAYS),
+            2 * int(self.TREND_DAYS_LIMIT) + 1,
+        )
+
+    def load_daily_trend(self, stock_codes: Iterable[str], trade_date: str) -> None:
+        """盘前按日K判定股票池的趋势方向并注入（供子类 `before_trading` 调用）。
+
+        取数失败 / 数据不足一律按「判不出趋势」处理（不偏移）—— 门槛是**附加收紧项**，
+        缺失时不该改变原有行为。
+
+        :param stock_codes: 当日股票池
+        :param trade_date: 交易日 YYYY-MM-DD
+        """
+        down: set[str] = set()
+        up: set[str] = set()
+        days: int = self._trend_kline_days()
+        for code in stock_codes or ():
+            if not code:
+                continue
+            try:
+                klines: pd.DataFrame = self.load_his_daily_data(code, trade_date, days)
+            except Exception as exc:  # noqa: BLE001 - defensive
+                self.logger.warning(
+                    "[%s] 趋势判定取日K失败 code=%s: %s", self.user_strategy_name, code, exc
+                )
+                continue
+            direction: int = self._daily_trend_direction(self._adx_detail(klines))
+            if direction < 0:
+                down.add(str(code))
+            elif direction > 0:
+                up.add(str(code))
+        self.set_daily_trend(down, up, trade_date)
+
+    # ---- 极端利空禁买（2026-10-13） ----
+
+    def set_buy_blocked(self, codes: Iterable[str]) -> None:
+        """注入当日禁买名单（整体替换，避免跨日累积）。
+
+        语义是「只卖不买」：买入判定直接不成立，卖出与风控判定照常执行。
+        """
+        self._buy_blocked_codes = {str(c) for c in (codes or ()) if c}
+        if self._buy_blocked_codes:
+            # 记 INFO 而非 WARNING：触发原因（市场跌停家数、破 S3 只数）由调用方
+            # `StrategyWorkflow._apply_buy_block` 记 WARNING，这里只登记名单。
+            self.logger.info(
+                "[%s] 禁买名单 %d 只（当日只卖不买）：%s",
+                self.user_strategy_name, len(self._buy_blocked_codes),
+                ",".join(sorted(self._buy_blocked_codes)[:10]),
+            )
+
+    def clear_buy_blocked(self) -> None:
+        """清空禁买名单。"""
+        self._buy_blocked_codes = set()
+
+    def is_buy_blocked(self, code: str) -> bool:
+        """该股当日是否禁止买入（见 `set_buy_blocked`）。"""
+        if not self.BLOCK_BUY_ENABLED:
+            return False
+        return str(code) in self._buy_blocked_codes
+
 
     # ---- 盘后阀门计算 ----
 

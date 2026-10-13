@@ -1,6 +1,7 @@
-"""盘后个股阀门 + 盘前市场门槛偏移的测试（2026-10-13 新增）。
+"""盘后个股阀门 + 盘前市场门槛偏移 + 日线趋势门槛 + 极端利空禁买的测试。
 
-两项机制（用户口径）：
+四项机制（用户口径）：
+
 1. **盘后个股阀门**：当日出现买入信号后，若该股在剩余分钟里收盘价跌破当日支撑位
    达到 `VALVE_MIN_BREAKS`（默认 2）次，次日该股买入门槛上调；**按触达的最深档
    决定幅度**（破 S1 ⇒ +1×step、S2 ⇒ +2×、S3 ⇒ +3×，档位不叠加）。卖出侧
@@ -8,10 +9,14 @@
    阀门按「股票维度」存在服务端每日阀门表。
 2. **盘前市场偏移**：以前一交易日跌停家数分档映射成全局门槛偏移，跌停多则
    买入门槛上调、卖出门槛下调（更容易卖，但单独设上限）。
+3. **日线趋势门槛**（2026-10-13 二次修订）：趋势向下 ⇒ 买入门槛上调、趋势向上 ⇒
+   卖出门槛上调。swing 原先是「趋势向下直接跳过买入判定」的**硬闸门**，改成门槛。
+4. **极端利空禁买**（2026-10-13 二次修订）：前一交易日跌停家数超阈值 **且** 该股
+   跌破 S3 时，当日该股**只卖不买**（硬性拦截，不受门槛偏移影响）。
 
 本文件守住的是「错了不会报错、只会静默跑偏」的几处：分档边界、阀门方向
 （正=更难）、档位取最深而非累加、`>0` / `<0` 基准门槛在偏移下的换算、
-以及 workflow 的两个注入点。
+趋势门槛的方向与开关、禁买的两个条件必须**同时**成立、以及 workflow 的注入点。
 """
 
 from __future__ import annotations
@@ -25,13 +30,17 @@ from unittest.mock import MagicMock
 import pandas as pd
 
 import strategy.swing_trading_strategy as swing_module
+import strategy.volume_expansion_strategy as volume_module
 import workflow.strategy_workflow as strategy_workflow
 from strategy.base_strategy import BaseStrategy
+from strategy.strong_rebound_strategy import StrongReboundStrategy
 from strategy.swing_trading_strategy import SwingTradingStrategy
 from strategy.valve import compute_stock_valve, count_level_breaks
+from strategy.volume_expansion_strategy import VolumeExpansionStrategy
 from tests.test_config_reconcile import make_workflow
 from utils.market_breadth import (
     DEFAULT_BANDS,
+    DEFAULT_STOP_BUY_LIMIT_DOWN,
     MAX_SELL_OFFSET,
     fetch_limit_counts,
     limit_down_offset,
@@ -39,6 +48,9 @@ from utils.market_breadth import (
     resolve_market_offset,
 )
 from workflow.strategy_workflow import StrategyState
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 
 def _minutes(*pairs: tuple[str, float]) -> list[tuple[str, float]]:
@@ -783,6 +795,344 @@ class TestWorkflowApplyDailyGates(unittest.TestCase):
             wf._apply_daily_gates(self._state(), "2026-10-13")
             wf._apply_daily_gates(self._state(), "2026-10-13")
         self.assertEqual(fetch.call_count, 1)
+
+
+class TestDailyTrendGate(unittest.TestCase):
+    """日线趋势门槛（2026-10-13）：向下 ⇒ 买入更难，向上 ⇒ 卖出更难。"""
+
+    def _strategy(self) -> SwingTradingStrategy:
+        strategy = SwingTradingStrategy()
+        strategy.user_strategy_name = "测试趋势门槛"
+        return strategy
+
+    def test_default_is_zero(self) -> None:
+        strategy = self._strategy()
+        self.assertEqual(strategy.daily_trend_direction("600183.SH"), 0)
+        self.assertEqual(strategy.daily_trend_buy_offset("600183.SH"), 0.0)
+        self.assertEqual(strategy.daily_trend_sell_offset("600183.SH"), 0.0)
+
+    def test_each_direction_moves_only_its_own_side(self) -> None:
+        """趋势向下只抬买入、向上只抬卖出 —— 两侧互不串台。"""
+        strategy = self._strategy()
+        strategy.set_daily_trend(
+            down_codes=["600183.SH"], up_codes=["000988.SZ"], trade_date="2026-10-13"
+        )
+        self.assertEqual(strategy.daily_trend_direction("600183.SH"), -1)
+        self.assertEqual(strategy.daily_trend_direction("000988.SZ"), 1)
+        self.assertAlmostEqual(
+            strategy.buy_threshold_offset("600183.SH"), strategy.TREND_BUY_OFFSET
+        )
+        self.assertEqual(strategy.sell_threshold_offset("600183.SH"), 0.0)
+        self.assertEqual(strategy.buy_threshold_offset("000988.SZ"), 0.0)
+        self.assertAlmostEqual(
+            strategy.sell_threshold_offset("000988.SZ"), strategy.TREND_SELL_OFFSET
+        )
+
+    def test_trend_stacks_with_valve_and_market(self) -> None:
+        strategy = self._strategy()
+        strategy.set_daily_valves(
+            {"600183.SH": {"buy_valve": 2.0, "sell_valve": 1.0}}, "2026-10-12"
+        )
+        strategy.set_market_offset(buy_offset=1.0, sell_offset=-0.5)
+        strategy.set_daily_trend(
+            down_codes=["600183.SH"], up_codes=["600183.SH"], trade_date="2026-10-13"
+        )
+        # 买入 = 阀门 2.0 + 市场 1.0 + 趋势 1.0
+        self.assertAlmostEqual(strategy.buy_threshold_offset("600183.SH"), 4.0)
+        # 卖出 = 阀门 1.0 + 市场 −0.5 + 趋势 1.0
+        self.assertAlmostEqual(strategy.sell_threshold_offset("600183.SH"), 1.5)
+
+    def test_gate_can_be_disabled(self) -> None:
+        strategy = self._strategy()
+        strategy.TREND_GATE_ENABLED = False
+        strategy.set_daily_trend(
+            down_codes=["600183.SH"], up_codes=["600183.SH"], trade_date="2026-10-13"
+        )
+        # 关掉总开关后方向仍可查（便于排查），但不产生偏移
+        self.assertEqual(strategy.daily_trend_direction("600183.SH"), -1)
+        self.assertEqual(strategy.buy_threshold_offset("600183.SH"), 0.0)
+        self.assertEqual(strategy.sell_threshold_offset("600183.SH"), 0.0)
+
+    def test_clear_resets_direction(self) -> None:
+        strategy = self._strategy()
+        strategy.set_daily_trend(
+            down_codes=["600183.SH"], up_codes=[], trade_date="2026-10-13"
+        )
+        strategy.clear_daily_trend()
+        self.assertEqual(strategy.daily_trend_direction("600183.SH"), 0)
+        self.assertEqual(strategy.daily_trend_date, "")
+
+    def test_direction_requires_both_adx_and_di(self) -> None:
+        """只有 ADX 或只有 DI 都不足以定向；NaN 一律判不出。"""
+        strategy = self._strategy()
+        threshold: float = float(strategy.TREND_ADX_THRESHOLD)
+        cases: list[tuple[dict, int]] = [
+            # ADX 不到门槛 ⇒ 无方向（震荡市里 DI 频繁交叉，不能据此定向）
+            ({"adx": threshold - 1, "+DI": 10.0, "-DI": 30.0}, 0),
+            # ADX 达门槛且 −DI 占优 ⇒ 向下
+            ({"adx": threshold + 1, "+DI": 10.0, "-DI": 30.0}, -1),
+            # ADX 达门槛且 +DI 占优 ⇒ 向上
+            ({"adx": threshold + 1, "+DI": 30.0, "-DI": 10.0}, 1),
+            # NaN（数据不足 / 次新股 / 停牌复牌）⇒ 判不出，不得当成趋势
+            ({"adx": float("nan"), "+DI": 30.0, "-DI": 10.0}, 0),
+            ({"adx": threshold + 1, "+DI": float("nan"), "-DI": 10.0}, 0),
+            ({}, 0),
+        ]
+        for detail, expected in cases:
+            with self.subTest(detail=detail):
+                self.assertEqual(strategy._daily_trend_direction(detail), expected)
+
+    def test_load_daily_trend_is_fail_open(self) -> None:
+        """取数失败 ⇒ 不产生偏移（门槛是附加收紧项，缺失不该改变原有行为）。"""
+        strategy = self._strategy()
+        strategy.load_his_daily_data = MagicMock(side_effect=RuntimeError("取数失败"))
+        strategy.load_daily_trend(["600183.SH"], "2026-10-13")
+        self.assertEqual(strategy.daily_trend_direction("600183.SH"), 0)
+        self.assertEqual(strategy.buy_threshold_offset("600183.SH"), 0.0)
+
+
+class TestBuyBlock(unittest.TestCase):
+    """极端利空禁买：市场跌停超阈值 **且** 个股跌破 S3 ⇒ 只卖不买。"""
+
+    def _state(self) -> StrategyState:
+        instance = SwingTradingStrategy()
+        instance.user_strategy_name = "测试禁买"
+        return StrategyState(
+            strategy_id="s1",
+            user_strategy_id="us1",
+            strategy_name="测试禁买",
+            class_path="strategy.swing_trading_strategy",
+            class_name="SwingTradingStrategy",
+            instance=instance,
+            status="running",
+        )
+
+    def _apply(
+        self,
+        wf: strategy_workflow.StrategyWorkflow,
+        state: StrategyState,
+        limit_down: int | None,
+        valves: list[dict],
+    ) -> None:
+        wf._strategy_daily_valve_api = MagicMock()
+        wf._strategy_daily_valve_api.list.return_value = valves
+        wf._market_breadth_api = MagicMock()
+        with mock.patch.object(
+            strategy_workflow,
+            "fetch_limit_counts",
+            return_value=(60, limit_down, "" if limit_down is not None else "超时"),
+        ):
+            wf._apply_daily_gates(state, "2026-10-13")
+
+    def test_extreme_market_with_s3_blocks(self) -> None:
+        wf = make_workflow()
+        state = self._state()
+        self._apply(
+            wf, state, 56,
+            [{"stock_code": "600183.SH", "trade_date": "2026-10-12",
+              "buy_valve": 3.0, "sell_valve": 0.0}],
+        )
+        self.assertTrue(state.instance.is_buy_blocked("600183.SH"))
+        self.assertFalse(state.instance.is_buy_blocked("000988.SZ"))
+
+    def test_extreme_market_with_shallow_valve_does_not_block(self) -> None:
+        """只破 S2（+2.0）不算「跌破 S3」，仍可买入（门槛已抬高）。"""
+        wf = make_workflow()
+        state = self._state()
+        self._apply(
+            wf, state, 56,
+            [{"stock_code": "600183.SH", "buy_valve": 2.0, "sell_valve": 0.0}],
+        )
+        self.assertFalse(state.instance.is_buy_blocked("600183.SH"))
+
+    def test_market_at_threshold_does_not_block(self) -> None:
+        """阈值是「严格大于」：恰好 30 家不触发。"""
+        wf = make_workflow()
+        state = self._state()
+        self._apply(
+            wf, state, 30, [{"stock_code": "600183.SH", "buy_valve": 3.0}]
+        )
+        self.assertFalse(state.instance.is_buy_blocked("600183.SH"))
+
+    def test_extreme_market_at_default_threshold_blocks(self) -> None:
+        """阈值取自配置，默认 30（`DEFAULT_STOP_BUY_LIMIT_DOWN`）。"""
+        wf = make_workflow()
+        state = self._state()
+        self.assertEqual(wf._market_stop_buy_limit_down, DEFAULT_STOP_BUY_LIMIT_DOWN)
+        self._apply(
+            wf, state, int(DEFAULT_STOP_BUY_LIMIT_DOWN) + 1,
+            [{"stock_code": "600183.SH", "buy_valve": 3.0}],
+        )
+        self.assertTrue(state.instance.is_buy_blocked("600183.SH"))
+
+    def test_fetch_failure_never_blocks(self) -> None:
+        """取不到跌停家数 ⇒ 不触发禁买（不许一次接口抖动停掉整个实例的买入）。"""
+        wf = make_workflow()
+        state = self._state()
+        self._apply(wf, state, None, [{"stock_code": "600183.SH", "buy_valve": 3.0}])
+        self.assertFalse(state.instance.is_buy_blocked("600183.SH"))
+
+    def test_config_switch_disables_block(self) -> None:
+        """`stop_buy_limit_down = 0` 关闭联动，只保留门槛偏移。"""
+        wf = make_workflow()
+        state = self._state()
+        wf._market_stop_buy_limit_down = 0
+        wf._market_limit_down = 300
+        wf._apply_buy_block(state.instance, {"600183.SH": {"buy_valve": 5.0}})
+        self.assertFalse(state.instance.is_buy_blocked("600183.SH"))
+
+    def test_block_is_replaced_not_accumulated(self) -> None:
+        """名单整体替换：条件消失（或换股）时旧名单必须清掉，否则会跨日残留。"""
+        wf = make_workflow()
+        state = self._state()
+        instance = state.instance
+        wf._market_stop_buy_limit_down = 30
+        wf._market_limit_down = 56
+        wf._apply_buy_block(instance, {"600183.SH": {"buy_valve": 3.0}})
+        self.assertTrue(instance.is_buy_blocked("600183.SH"))
+        wf._apply_buy_block(instance, {"000001.SZ": {"buy_valve": 3.0}})
+        self.assertFalse(instance.is_buy_blocked("600183.SH"))
+        self.assertTrue(instance.is_buy_blocked("000001.SZ"))
+        wf._apply_buy_block(instance, {})
+        self.assertFalse(instance.is_buy_blocked("000001.SZ"))
+
+    def test_block_can_be_disabled_on_strategy(self) -> None:
+        wf = make_workflow()
+        state = self._state()
+        state.instance.BLOCK_BUY_ENABLED = False
+        wf._market_stop_buy_limit_down = 30
+        wf._market_limit_down = 56
+        wf._apply_buy_block(state.instance, {"600183.SH": {"buy_valve": 3.0}})
+        self.assertFalse(state.instance.is_buy_blocked("600183.SH"))
+
+    def test_sell_side_is_unaffected(self) -> None:
+        """「只卖不买」：禁买不得顺手把卖出门槛也改掉。"""
+        wf = make_workflow()
+        state = self._state()
+        instance = state.instance
+        instance.set_market_offset(buy_offset=3.0, sell_offset=-1.5)
+        before: float = instance.sell_threshold_offset("600183.SH")
+        wf._market_stop_buy_limit_down = 30
+        wf._market_limit_down = 56
+        wf._apply_buy_block(instance, {"600183.SH": {"buy_valve": 3.0}})
+        self.assertTrue(instance.is_buy_blocked("600183.SH"))
+        self.assertAlmostEqual(instance.sell_threshold_offset("600183.SH"), before)
+
+
+class TestBuyBlockInStrategies(unittest.TestCase):
+    """禁买必须在**三个策略**的买入判定入口硬拦截（源码级 + 功能级）。"""
+
+    _MINUTE_BAR: dict = {
+        "price": 10.0,
+        "open": 9.9,
+        "preclose": 9.8,
+        "create_time": "2026-10-13 10:00:00",
+    }
+
+    def test_every_strategy_checks_buy_block(self) -> None:
+        """源码级守卫：每个策略的买入判定都必须先查 `is_buy_blocked`。
+
+        漏掉一个策略 ⇒ 该策略在极端行情里照常开仓，而日志完全正常。
+        """
+        for rel in (
+            "strategy/swing_trading_strategy.py",
+            "strategy/volume_expansion_strategy.py",
+            "strategy/strong_rebound_strategy.py",
+        ):
+            with self.subTest(module=rel):
+                text: str = (_PROJECT_ROOT / rel).read_text(encoding="utf-8")
+                self.assertIn("is_buy_blocked(code)", text)
+
+    def test_blocked_code_is_rejected_by_all_strategies(self) -> None:
+        factories = (
+            ("swing", SwingTradingStrategy),
+            ("volume", VolumeExpansionStrategy),
+            ("strong", StrongReboundStrategy),
+        )
+        for label, factory in factories:
+            with self.subTest(strategy=label):
+                strategy = factory()
+                strategy.user_strategy_name = f"测试{label}"
+                strategy.set_buy_blocked(["600183.SH"])
+                matched, detail = strategy._check_buy_conditions(
+                    "600183.SH", dict(self._MINUTE_BAR)
+                )
+                self.assertFalse(matched)
+                self.assertIn("禁买", str(detail.get("reason", "")))
+
+    def test_unblocked_code_still_walks_normal_path(self) -> None:
+        """没进禁买名单的股票不能因为新增判断被判死。"""
+        strategy = SwingTradingStrategy()
+        strategy.user_strategy_name = "测试未禁买"
+        strategy.set_buy_blocked(["600183.SH"])
+        _matched, detail = strategy._check_buy_conditions("000988.SZ", dict(self._MINUTE_BAR))
+        self.assertNotIn("禁买", str(detail.get("reason", "")))
+
+    def test_block_can_be_disabled_by_class_flag(self) -> None:
+        strategy = SwingTradingStrategy()
+        strategy.user_strategy_name = "测试关禁买"
+        strategy.set_buy_blocked(["600183.SH"])
+        strategy.BLOCK_BUY_ENABLED = False
+        _matched, detail = strategy._check_buy_conditions("600183.SH", dict(self._MINUTE_BAR))
+        self.assertNotIn("禁买", str(detail.get("reason", "")))
+
+
+class TestTrendGateWiringGuard(unittest.TestCase):
+    """趋势闸门从「硬闸门」改成「门槛」的源码级守卫。"""
+
+    def test_swing_minute_route_no_longer_skips_downtrend(self) -> None:
+        """`handle_minute_bar` 不能再短路趋势向下的股票 —— 短路了门槛就永不生效。
+
+        同时守住「方向集合唯一真源」：子类不得再维护 `_downtrend_codes` 那类私有副本，
+        否则门槛读基类集合、填充写私有集合，偏移恒为 0 且没有任何报错。
+        """
+        text: str = (_PROJECT_ROOT / "strategy/swing_trading_strategy.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotRegex(text, r"self\._downtrend_codes\s*[:=.]")
+        self.assertNotIn("if not downtrend and not break_max", text)
+        self.assertIn("self.add_daily_trend(", text)
+
+    def test_swing_selection_no_longer_drops_downtrend_stocks(self) -> None:
+        """选股条件 0 也不能再剔除：剔除会让门槛拿不到这些股票。"""
+        text: str = (_PROJECT_ROOT / "strategy/swing_trading_strategy.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("波段策略不参与", text)
+
+    def test_swing_injects_trend_direction(self) -> None:
+        text: str = (_PROJECT_ROOT / "strategy/swing_trading_strategy.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("self.set_daily_trend(", text)
+
+    def test_volume_strategy_loads_trend_before_trading(self) -> None:
+        """成交量策略原先没有 before_trading，趋势门槛必须新增盘前判定。"""
+        text: str = (_PROJECT_ROOT / "strategy/volume_expansion_strategy.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def before_trading", text)
+        self.assertIn("self.load_daily_trend(", text)
+
+    def test_volume_strategy_does_not_fetch_daily_kline_intraday(self) -> None:
+        """趋势判定必须在盘前完成：盘中取日K（HTTP）会拖慢交易线程。"""
+        text: str = (_PROJECT_ROOT / "strategy/volume_expansion_strategy.py").read_text(
+            encoding="utf-8"
+        )
+        buy_body: str = text.split("def _check_buy_conditions", 1)[1]
+        self.assertNotIn("load_daily_trend", buy_body.split("def _check_sell_conditions", 1)[0])
+
+    def test_every_strategy_has_the_offset_in_buy_and_sell(self) -> None:
+        """三个策略的买卖判定都要走统一的 `buy/sell_threshold_offset`。"""
+        for rel in (
+            "strategy/swing_trading_strategy.py",
+            "strategy/volume_expansion_strategy.py",
+            "strategy/strong_rebound_strategy.py",
+        ):
+            with self.subTest(module=rel):
+                text: str = (_PROJECT_ROOT / rel).read_text(encoding="utf-8")
+                self.assertIn("buy_threshold_offset(", text)
+                self.assertIn("sell_threshold_offset(", text)
 
 
 if __name__ == "__main__":

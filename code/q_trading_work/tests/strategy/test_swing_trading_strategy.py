@@ -190,11 +190,15 @@ def _swing_strategy(tag: str) -> SwingTradingStrategy:
 
 
 class TestSwingTrendFilter(unittest.TestCase):
-    """趋势闸门：日线下跌趋势时跳过买入判定，卖出与风控判定照常（2026-09-29）。
+    """日线趋势**门槛**：向下抬买入门槛、向上抬卖出门槛（2026-10-13 由硬闸门改成）。
 
-    `_is_downtrend` 的判定表在下面逐个用例覆盖；这里重点是「闸门确实接在
-    买入判定之前，且没有顺手把卖出也关掉」—— 后者会让下跌趋势中的持仓
-    同时失去支撑位卖出与回撤止损，正是最需要离场的时刻。
+    2026-09-29 原实现是硬闸门（趋势向下 ⇒ 当天直接跳过买入判定）；
+    2026-10-13 按用户要求改成门槛 —— 只收紧、不封死。
+    本组测试守住三件事：
+
+    1. 趋势向下**只抬门槛**（弱信号被挡、极强信号仍可成交），而不是整条买入链路被关掉；
+    2. 趋势向上抬的是**卖出**门槛，买入不受影响；
+    3. 卖出与风控判定不会被趋势门槛顺手关掉 —— 下跌趋势中的持仓最需要离场。
     """
 
     USID: str = "test-swing-trend-filter"
@@ -207,36 +211,74 @@ class TestSwingTrendFilter(unittest.TestCase):
             patch.object(BollSRFactor, "score", return_value=value),
         )
 
-    def _run(self, strategy: SwingTradingStrategy, price: float = 10.0):
-        p1, p2 = self._scores(10.0)  # 位置分 +10：正常必然买入
+    def _run(
+        self, strategy: SwingTradingStrategy, price: float = 10.0, score: float = 10.0
+    ):
+        p1, p2 = self._scores(score)
         with p1, p2, patch.object(
             strategy, "_get_sr_points", return_value=pd.DataFrame()
         ), patch.object(strategy, "_get_minute_cache", return_value=[]):
             return strategy.handle_minute_bar("000001", {}, _bar(price=price))
 
-    def test_downtrend_blocks_buy(self) -> None:
-        """趋势向下时，位置分 +10 也不得产生买入信号。"""
+    def test_downtrend_raises_buy_bar_instead_of_blocking(self) -> None:
+        """趋势向下 ⇒ 买入门槛 +1.0：卡在基准门槛上方的弱信号被挡下。
+
+        位置分 0.5（avg_score = 0.5）在无趋势时 `0.5 > 0` 成立 ⇒ 买入；
+        趋势向下时 `0.5 > 1.0` 不成立 ⇒ 不买。这就是「门槛」与「硬闸门」的区别。
+        """
         strategy = _swing_strategy(self.USID)
-        strategy._downtrend_codes.add("000001")
-        matched, extra = self._run(strategy)
+        matched, extra = self._run(strategy, score=0.5)
+        self.assertTrue(matched)
+        self.assertEqual(extra["signal"], "BUY")
+
+        strategy.set_daily_trend(down_codes=["000001"], up_codes=[], trade_date="2026-10-13")
+        matched, extra = self._run(strategy, score=0.5)
         self.assertFalse(matched)
+        # 买入不成立时 handle_minute_bar 会继续走卖出判定，返回的不是买入分支的明细，
+        # 所以这里只能断言「没有产生 BUY」。
         self.assertNotEqual(extra.get("signal"), "BUY")
 
-    def test_uptrend_still_buys(self) -> None:
-        """对照组：同一份行情、同一套打分，无趋势标记时照常买入。
+    def test_strong_signal_still_buys_when_downtrend(self) -> None:
+        """极强信号（位置分 +10）在趋势向下时**仍可买入** —— 门槛不是封死。
 
-        没有这条对照，`test_downtrend_blocks_buy` 即使在闸门接错位置
-        （例如把买入整条链路关掉）时也会通过。
+        原硬闸门实现下这条必为 False；若改完仍是 False，说明门槛接错了位置
+        （例如把 `downtrend` 短路又留了一处），等于没改成门槛。
         """
+        strategy = _swing_strategy(self.USID)
+        strategy.set_daily_trend(down_codes=["000001"], up_codes=[], trade_date="2026-10-13")
+        matched, extra = self._run(strategy)
+        self.assertTrue(matched)
+        self.assertEqual(extra["signal"], "BUY")
+        # 成功分支会带上偏移量，便于从信号明细反查门槛被抬了多少
+        self.assertIn("买入门槛偏移", str(extra.get("reason", "")))
+
+    def test_uptrend_still_buys(self) -> None:
+        """对照组：同一份行情、同一套打分，无趋势标记时照常买入。"""
         strategy = _swing_strategy(self.USID)
         matched, extra = self._run(strategy)
         self.assertTrue(matched)
         self.assertEqual(extra["signal"], "BUY")
 
+    def test_uptrend_raises_sell_bar(self) -> None:
+        """趋势向上 ⇒ 卖出门槛 +1.0：卡在门槛上的弱卖出信号被挡下。
+
+        位置分 −1.0（final_score = −1.0）无趋势时 `-1.0 < 0` 成立 ⇒ SELL；
+        趋势向上时 `-1.0 < -1.0` 不成立 ⇒ 不卖（避免趋势里卖飞）。
+        """
+        strategy = _swing_strategy(self.USID)
+        matched, extra = self._run(strategy, score=-1.0)
+        self.assertTrue(matched)
+        self.assertEqual(extra["signal"], "SELL")
+
+        strategy.set_daily_trend(down_codes=[], up_codes=["000001"], trade_date="2026-10-13")
+        self.assertGreater(strategy.sell_threshold_offset("000001"), 0.0)
+        matched, _extra = self._run(strategy, score=-1.0)
+        self.assertFalse(matched)
+
     def test_sell_still_runs_when_downtrend(self) -> None:
         """趋势向下时卖出判定仍在执行：位置分 −10 应照常产出 SELL。"""
         strategy = _swing_strategy(self.USID)
-        strategy._downtrend_codes.add("000001")
+        strategy.set_daily_trend(down_codes=["000001"], up_codes=[], trade_date="2026-10-13")
         p1, p2 = self._scores(-10.0)
         with p1, p2, patch.object(
             strategy, "_get_sr_points", return_value=pd.DataFrame()
@@ -266,29 +308,58 @@ class TestSwingTrendFilter(unittest.TestCase):
         """取数根数必须覆盖 ADX 的 2×period lookback。
 
         少一根时 talib 的末值是 NaN，`NaN > 阈值` 恒为 False ⇒ 判不出下跌趋势
-        ⇒ 趋势闸门静默失效（不报错、不告警，只是永远不过滤）。
+        ⇒ 趋势门槛静默失效（不报错、不告警，只是永远不偏移）。
         """
         strategy = _swing_strategy(self.USID)
         self.assertGreaterEqual(
             strategy._trend_kline_days(), 2 * strategy.TREND_DAYS_LIMIT + 1
         )
 
-    def test_match_strategy_rejects_downtrend_before_pe_query(self) -> None:
-        """选股链路同样过滤下跌趋势，且必须排在市盈率查询之前（省一次 HTTP）。"""
+    def test_match_strategy_no_longer_drops_downtrend(self) -> None:
+        """选股条件 0 改成「只记录、不剔除」（2026-10-13）。
+
+        原实现把趋势向下的股票在选股阶段就剔掉，但门槛要在**买入判定**里才生效 ——
+        选股剔掉了，门槛就永远拿不到这些股票，等于把「改成门槛」退化成原来的硬闸门。
+        现在流程必须继续走到市盈率检查，并把方向记进集合。
+        """
         strategy = _swing_strategy(self.USID)
         stock_data: list[dict[str, Any]] = [
             {"code": "000001", "high": 10.0, "low": 9.0, "close": 9.5, "open": 9.6}
             for _ in range(40)
         ]
+        blocked_reason: dict[str, Any] = {"reason": "条件1不满足: 市盈率过高"}
         with patch.object(
             strategy,
             "_adx_detail",
             return_value={"adx": 31.0, "+DI": 18.0, "-DI": 27.0},
-        ), patch.object(strategy, "_check_industry_pe") as pe:
+        ), patch.object(
+            strategy, "_check_industry_pe", return_value=(False, blocked_reason)
+        ) as pe:
             matched, extra = strategy.is_match_strategy(stock_data)
+        # 没有因为趋势向下提前返回 ⇒ 说明走到市盈率检查了
+        pe.assert_called_once()
         self.assertFalse(matched)
-        self.assertIn("趋势向下", extra["reason"])
-        pe.assert_not_called()
+        self.assertEqual(strategy.daily_trend_direction("000001"), -1)
+        self.assertEqual(strategy.daily_trend_direction("000001"), -1)
+
+    def test_match_strategy_records_uptrend(self) -> None:
+        """选股链路与盘中链路共用同一份方向集合，回测与实盘才不会分叉。"""
+        strategy = _swing_strategy(self.USID)
+        stock_data: list[dict[str, Any]] = [
+            {"code": "000002", "high": 10.0, "low": 9.0, "close": 9.5, "open": 9.6}
+            for _ in range(40)
+        ]
+        with patch.object(
+            strategy,
+            "_adx_detail",
+            return_value={"adx": 31.0, "+DI": 27.0, "-DI": 18.0},
+        ), patch.object(
+            strategy, "_check_industry_pe", return_value=(False, {"reason": "PE 不过"})
+        ):
+            strategy.is_match_strategy(stock_data)
+        self.assertEqual(strategy.daily_trend_direction("000002"), 1)
+        self.assertGreater(strategy.sell_threshold_offset("000002"), 0.0)
+
 
     def test_build_sr_points_returns_empty_on_short_data(self) -> None:
         """日线为空时返回空表而不是抛异常（空表会中断整个股票池的盘前准备）。"""

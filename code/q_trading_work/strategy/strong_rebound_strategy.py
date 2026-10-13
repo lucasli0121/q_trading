@@ -243,10 +243,21 @@ class StrongReboundStrategy(BaseStrategy):
         而阈值 6.0/10 = 0.6，所以只要成交量条件达标即可买入，趋势只用于加厚分数；
         反过来，趋势满分成全也补不上成交量不足（0.3 < 0.6）。
 
+        **极端利空禁买**（2026-10-13）：市场极端（前一交易日跌停家数超过阈值）且
+        该股盘后阀门达到 `VALVE_STOP_TIER` 档（跌破 S3）时，当日**只卖不买**。
+
         :param code: 股票代码
         :param stock_data: 实时/分钟行情数据
         :return: (是否满足, 详细信息)
         """
+        if self.is_buy_blocked(code):
+            return False, {
+                "reason": (
+                    f"{self.user_strategy_name}, 极端利空禁买"
+                    "（前一交易日跌停超阈值且该股跌破S3），当日只卖不买"
+                ),
+                "code": code,
+            }
         try:
             current_price: float = float(stock_data.get("price", 0))
             open_price: float = float(stock_data.get("open", 0))
