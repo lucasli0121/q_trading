@@ -520,8 +520,13 @@ class VolumeExpansionStrategy(BaseStrategy):
 
     @staticmethod
     def _to_star(score: float) -> float:
-        """10 分制折算 5 星，夹到 0~5（服务端字段约束）。"""
-        return round(max(0.0, min(score / 2.0, 5.0)), 1)
+        """10 分制折算 5 星，夹到 0~5（服务端字段约束）。
+
+        折算逻辑已上移 `BaseStrategy.score_to_star`：原先四个策略各自实现一遍，
+        漏改其中一处（波段策略卖出侧）就让超范围的星级打到服务端被 400 拒绝。
+        这里保留方法名兼容既有调用点。
+        """
+        return BaseStrategy.score_to_star(score)
 
     # ---- 行情构造 ----
 
@@ -718,7 +723,10 @@ class VolumeExpansionStrategy(BaseStrategy):
                 "partner_score": "" if partner_score is None else round(partner_score, 2),
                 "create_time": create_time,
             }
-            matched: bool = bool(volume_ok and partner_ok and combined >= self.MIN_SCORE)
+            # 买入门槛偏移：个股阀门（盘后算）+ 市场偏移，均为「>0 = 更难买」
+            buy_offset: float = self.buy_threshold_offset(code)
+            buy_threshold: float = self.MIN_SCORE + buy_offset
+            matched: bool = bool(volume_ok and partner_ok and combined >= buy_threshold)
             partner_text: str = (
                 "数据不足" if partner_score is None else f"{partner_score:.2f}"
             )
@@ -732,7 +740,7 @@ class VolumeExpansionStrategy(BaseStrategy):
                 f"成交量分{volume_score:.2f}（{mode} 模式，门槛 {volume_threshold}），"
                 f"搭配分{partner_text}（{partner_name}，门槛 {self.BUY_PARTNER_MIN_SCORE}），"
                 f"量能强度{vol_strength:.2f} 位置强度{pos_strength:.2f}，"
-                f"综合分{combined:.2f}（门槛 {self.MIN_SCORE}）{extras}"
+                f"综合分{combined:.2f}（门槛 {buy_threshold:.2f}）{extras}"
             )
             return matched, detail
         except Exception as exc:
@@ -874,17 +882,20 @@ class VolumeExpansionStrategy(BaseStrategy):
 
             extra["score"] = round(score, 2)
             extra["volume_score"] = round(volume_score, 2)
-            if score <= self.SELL_MAX_SCORE:
+            # 卖出门槛偏移：个股阀门（卖飞后更难卖）+ 市场偏移（市场弱时更容易卖）。
+            sell_offset: float = self.sell_threshold_offset(code)
+            sell_threshold: float = self.SELL_MAX_SCORE - sell_offset
+            if score <= sell_threshold:
                 extra["signal"] = "SELL"
-                # 卖出侧分数为负，按 10 分制折算 5 星并夹到 0~5
-                extra["star"] = round(max(0.0, min(-score / 2.0, 5.0)), 1)
+                # 卖出侧分数为负，统一走基类折算（夹到 0~5）
+                extra["star"] = self.score_to_star(score)
                 extra["reason"] = (
-                    f"{self.user_strategy_name},卖出分{score:.2f} <= {self.SELL_MAX_SCORE}："
+                    f"{self.user_strategy_name},卖出分{score:.2f} <= {sell_threshold:.2f}："
                     + ("；".join(reasons) if reasons else "无明细")
                 )
                 return True, extra
             extra["reason"] = (
-                f"{self.user_strategy_name}, 卖出分{score:.2f} 未达阈值 {self.SELL_MAX_SCORE}"
+                f"{self.user_strategy_name}, 卖出分{score:.2f} 未达阈值 {sell_threshold:.2f}"
                 + (f"（{'；'.join(reasons)}）" if reasons else "")
             )
             return False, extra

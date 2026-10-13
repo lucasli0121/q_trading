@@ -21,11 +21,13 @@ from web_api.routers import (
     factor,
     finance,
     market,
+    market_breadth,
     order,
     stock_info,
     stock_pool,
     stock_screener,
     strategy,
+    strategy_daily_valve,
     strategy_select_stocks,
     system_message,
     trade_signal,
@@ -69,6 +71,7 @@ app.include_router(strategy.router)
 app.include_router(factor.router)
 app.include_router(user_factor.router)
 app.include_router(market.router)
+app.include_router(market_breadth.router)
 app.include_router(finance.router)
 app.include_router(stock_info.router)
 app.include_router(blacklist.router)
@@ -76,6 +79,7 @@ app.include_router(stock_screener.router)
 app.include_router(order.router)
 app.include_router(user_strategy.router)
 app.include_router(strategy_select_stocks.router)
+app.include_router(strategy_daily_valve.router)
 app.include_router(user_preference.router)
 app.include_router(trade_signal.router)
 app.include_router(data_agent.router)

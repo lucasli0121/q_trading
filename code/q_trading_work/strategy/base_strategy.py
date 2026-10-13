@@ -137,6 +137,15 @@ class BaseStrategy(ABC):
         # 必须在 `_apply_resolved_params` 之前建好：基类构造会回调子类 `apply_params`，
         # 子类若在其中读到本属性，晚赋值就会 AttributeError（见「实例化契约」的失效方式）。
         self.account_drawdown_pct: float = 0.0
+        # 每日阀门与市场偏移（盘前由 workflow 注入，算法见 strategy/valve.py）。
+        # 同样必须在 `_apply_resolved_params` 之前建好：基类构造回调子类 `apply_params`，
+        # 子类若在其中读到这些属性，晚赋值就会 AttributeError（见类 docstring 的
+        # 「实例化契约」失效方式）。
+        self._daily_buy_valve: dict[str, float] = {}   # code -> 买入门槛上调幅度（>=0）
+        self._daily_sell_valve: dict[str, float] = {}  # code -> 卖出门槛上调幅度（>=0）
+        self._market_buy_offset: float = 0.0   # 市场级买入门槛偏移（>0 = 更难买）
+        self._market_sell_offset: float = 0.0  # 市场级卖出门槛偏移（>0 = 更难卖）
+        self.daily_valve_date: str = ""        # 当前生效阀门来自哪个交易日
         self.xshg = xcals.get_calendar("XSHG", start="2020-01-01")  # 上交所交易日历，用于判断交易日
         # 先加载策略参数再注册因子，保证 init_factors 使用加载后的参数：
         # 优先级 user_strategy.strategy_params > strategy.default_params > cfg/strategy.yaml
@@ -666,6 +675,173 @@ class BaseStrategy(ABC):
         if value != value:  # NaN：夹取对它无效，显式落 0
             return 0.0
         return round(max(0.0, min(abs(value) / 2.0, cls.STAR_MAX)), 1)
+
+    # ---- 每日阀门与市场偏移（门槛换算）----
+
+    VALVE_ENABLED: bool = True
+    """是否启用盘后个股阀门。关闭时 `buy_threshold_offset` 恒返回市场偏移部分。"""
+
+    VALVE_STEP: float = 1.0
+    """阀门触发一次的上调幅度（10 分制）。"""
+
+    VALVE_MIN_BREAKS: int = 2
+    """判定「反复跌穿/站上」所需的最少分钟数。"""
+
+    VALVE_MAX: float = 5.0
+    """单侧阀门上限，避免异常数据把门槛抬到不可达。"""
+
+    def set_daily_valves(
+        self, valves: dict[str, dict[str, Any]], trade_date: str = ""
+    ) -> None:
+        """注入当日个股阀门（盘前由 workflow 从服务端读取后调用）。
+
+        :param valves: ``{code: {"buy_valve": float, "sell_valve": float}}``
+        :param trade_date: 阀门来源交易日（仅用于日志/可追溯）
+        """
+        buy_map: dict[str, float] = {}
+        sell_map: dict[str, float] = {}
+        limit: float = abs(float(self.VALVE_MAX))
+        for code, item in (valves or {}).items():
+            if not code or not isinstance(item, dict):
+                continue
+            buy_valve: float = abs(float(item.get("buy_valve", 0.0) or 0.0))
+            sell_valve: float = abs(float(item.get("sell_valve", 0.0) or 0.0))
+            buy_map[str(code)] = min(buy_valve, limit)
+            sell_map[str(code)] = min(sell_valve, limit)
+        self._daily_buy_valve = buy_map
+        self._daily_sell_valve = sell_map
+        self.daily_valve_date = str(trade_date or "")
+        if buy_map or sell_map:
+            self.logger.info(
+                "[%s] 已加载每日阀门 %d 只 (来源交易日 %s)",
+                self.user_strategy_name, max(len(buy_map), len(sell_map)),
+                self.daily_valve_date or "?",
+            )
+
+    def clear_daily_valves(self) -> None:
+        """清空个股阀门（市场偏移不受影响）。"""
+        self._daily_buy_valve = {}
+        self._daily_sell_valve = {}
+        self.daily_valve_date = ""
+
+    def set_market_offset(self, buy_offset: float, sell_offset: float) -> None:
+        """注入市场级门槛偏移（盘前按涨跌停家数算，见 utils/market_breadth.py）。
+
+        :param buy_offset: 买入门槛偏移，``>0`` 表示更难买
+        :param sell_offset: 卖出门槛偏移，``>0`` 表示更难卖、``<0`` 表示更容易卖
+        """
+        self._market_buy_offset = float(buy_offset or 0.0)
+        self._market_sell_offset = float(sell_offset or 0.0)
+
+    def buy_threshold_offset(self, code: str) -> float:
+        """买入门槛的额外偏移量（正 = 更难买）= 个股买入阀门 + 市场偏移。"""
+        stock: float = float(self._daily_buy_valve.get(str(code), 0.0)) if self.VALVE_ENABLED else 0.0
+        return stock + float(self._market_buy_offset)
+
+    def sell_threshold_offset(self, code: str) -> float:
+        """卖出门槛的额外偏移量（正 = 更难卖）= 个股卖出阀门 + 市场偏移。
+
+        市场偏移在「市场转弱（跌停多）」时取负值 —— 即更容易卖出（风控优先），
+        与个股阀门的「卖飞了就抬门槛」是两套独立口径。
+        """
+        stock: float = float(self._daily_sell_valve.get(str(code), 0.0)) if self.VALVE_ENABLED else 0.0
+        return stock + float(self._market_sell_offset)
+
+    # ---- 盘后阀门计算 ----
+
+    def compute_daily_valve(
+        self,
+        code: str,
+        trade_date: str,
+        buy_signal_times: list[str],
+        sell_signal_times: list[str],
+    ) -> dict[str, Any]:
+        """盘后计算单只股票当日阀门（语义见 strategy/valve.py 模块 docstring）。
+
+        基础实现 = 「当日分钟缓存 + 上一交易日枢轴点 S1/R1」：
+        买入信号后收盘价跌破 S1 达 `VALVE_MIN_BREAKS` 次 → 次日买入门槛 +`VALVE_STEP`；
+        卖出信号后收盘价站上 R1 达同样次数 → 次日卖出门槛 +`VALVE_STEP`。
+
+        数据不足（无分钟缓存 / 取不到日K）时返回空字典 —— 调用方按「无阀门」处理。
+        阀门是**附加收紧项**，缺失时不该改变原有门槛（fail-open），否则一次取数
+        抖动就会静默放宽/收紧整个策略。
+
+        :param code: 股票代码
+        :param trade_date: 交易日 YYYY-MM-DD
+        :param buy_signal_times: 当日买入信号时间列表
+        :param sell_signal_times: 当日卖出信号时间列表
+        :return: 阀门结果字典；数据不足时为空字典
+        """
+        if not self.VALVE_ENABLED or not code:
+            return {}
+        points: list[tuple[str, float]] = []
+        for bar in self._get_minute_cache(code):
+            ts: str = str(bar.get("create_time") or "")
+            raw: Any = bar.get("close", bar.get("price"))
+            if not ts or raw is None:
+                continue
+            try:
+                points.append((ts, float(raw)))
+            except (TypeError, ValueError):
+                continue
+        if not points:
+            return {}
+        support, resistance = self._daily_sr_levels(code, trade_date)
+        from strategy.valve import compute_stock_valve
+
+        result: dict[str, Any] = compute_stock_valve(
+            points,
+            buy_signal_times,
+            sell_signal_times,
+            support=support,
+            resistance=resistance,
+            step=self.VALVE_STEP,
+            min_breaks=self.VALVE_MIN_BREAKS,
+            max_valve=self.VALVE_MAX,
+        )
+        result["support"] = round(float(support), 4)
+        result["resistance"] = round(float(resistance), 4)
+        return result
+
+    def _daily_sr_levels(self, code: str, trade_date: str) -> tuple[float, float]:
+        """取当日枢轴点的 S1 支撑位与 R1 阻力位（基于上一交易日日线）。
+
+        :return: ``(s1, r1)``；取数/计算失败时返回 ``(0.0, 0.0)``
+        （0 会被 `count_level_breaks` 判为无效点位，等价于不做判定）
+        """
+        from factor.in_day_support_resistance import InDaySRFactor
+
+        klines: pd.DataFrame
+        try:
+            klines = self.load_his_daily_data(code, trade_date, 3)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning(
+                "[%s] 阀门取日K失败 code=%s: %s", self.user_strategy_name, code, exc
+            )
+            return 0.0, 0.0
+        if klines is None or klines.empty:
+            return 0.0, 0.0
+        try:
+            points = InDaySRFactor().pivot_points(klines)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning(
+                "[%s] 阀门算枢轴点失败 code=%s: %s", self.user_strategy_name, code, exc
+            )
+            return 0.0, 0.0
+        if points is None or points.empty:
+            return 0.0, 0.0
+        last = points.iloc[-1]
+
+        def _to_float(value: Any) -> float:
+            try:
+                result = float(value)
+            except (TypeError, ValueError):
+                return 0.0
+            if result != result:  # NaN
+                return 0.0
+            return result
+
+        return _to_float(last.get("s1", 0.0)), _to_float(last.get("r1", 0.0))
 
     # ---- 涨跌停幅度与阈值 ----
 

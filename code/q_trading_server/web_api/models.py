@@ -467,3 +467,63 @@ class SystemMessageItem(BaseModel):
     create_id: str = Field(default="", description="创建者用户 ID")
     user_ids: list[str] = Field(default_factory=list, description="推送目标用户 ID 列表，为空表示广播")
     create_time: str = Field(default="", description="创建时间")
+
+
+# ==================== 每日个股阀门 ====================
+
+
+class StrategyDailyValveInput(BaseModel):
+    """单只股票的当日阀门输入"""
+    stock_code: str = Field(..., description="股票代码")
+    trade_date: str = Field(..., description="阀门来源交易日 YYYY-MM-DD")
+    buy_valve: float = Field(default=0.0, ge=0.0, description="买入门槛上调幅度（>=0，越大越难买）")
+    sell_valve: float = Field(default=0.0, ge=0.0, description="卖出门槛上调幅度（>=0，越大越难卖）")
+    support_break_count: int = Field(default=0, ge=0, description="买入信号后跌破 S1 支撑位的分钟数")
+    resistance_break_count: int = Field(default=0, ge=0, description="卖出信号后站上 R1 阻力位的分钟数")
+    reason: str = Field(default="", description="阀门原因描述")
+
+
+class StrategyDailyValveCreateRequest(BaseModel):
+    """批量保存每日阀门请求"""
+    user_strategy_id: str = Field(..., description="用户策略 ID")
+    items: list[StrategyDailyValveInput] = Field(..., description="当日各股票的阀门")
+
+
+class StrategyDailyValveItem(BaseModel):
+    """每日阀门响应"""
+    id: str = Field(default="", description="记录 ID")
+    user_strategy_id: str = Field(default="", description="用户策略 ID")
+    stock_code: str = Field(default="", description="股票代码")
+    trade_date: str = Field(default="", description="阀门来源交易日")
+    buy_valve: float = Field(default=0.0, description="买入门槛上调幅度")
+    sell_valve: float = Field(default=0.0, description="卖出门槛上调幅度")
+    support_break_count: int = Field(default=0, description="跌破 S1 的分钟数")
+    resistance_break_count: int = Field(default=0, description="站上 R1 的分钟数")
+    reason: str = Field(default="", description="阀门原因描述")
+    update_time: str = Field(default="", description="更新时间")
+
+
+# ==================== 每日市场宽度（涨跌停） ====================
+
+
+class MarketBreadthSaveRequest(BaseModel):
+    """保存每日涨跌停家数请求"""
+    trade_date: str = Field(..., description="交易日 YYYY-MM-DD")
+    limit_up: int = Field(default=0, ge=0, description="涨停家数")
+    limit_down: int = Field(default=0, ge=0, description="跌停家数")
+    buy_offset: float = Field(default=0.0, description="买入门槛偏移（>=0，越大越难买）")
+    sell_offset: float = Field(default=0.0, description="卖出门槛偏移（<=0 表示更容易卖）")
+    source: str = Field(default="akshare", description="数据来源")
+
+
+class MarketBreadthItem(BaseModel):
+    """每日涨跌停家数响应"""
+    id: str = Field(default="", description="记录 ID")
+    trade_date: str = Field(default="", description="交易日")
+    limit_up: int = Field(default=0, description="涨停家数")
+    limit_down: int = Field(default=0, description="跌停家数")
+    buy_offset: float = Field(default=0.0, description="买入门槛偏移")
+    sell_offset: float = Field(default=0.0, description="卖出门槛偏移")
+    source: str = Field(default="", description="数据来源")
+    update_time: str = Field(default="", description="更新时间")
+

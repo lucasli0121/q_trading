@@ -37,6 +37,9 @@ config=cfg/log.yaml
 [scheduler]
 before_trading_hour = 9
 before_trading_minute = 0
+# 盘后阀门计算（当日信号 + 分钟行情 → 次日门槛偏移）的执行时刻
+after_trading_hour = 15
+after_trading_minute = 10
 [trade]
 enterprise_wechat_webhook_url=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPLACE_WITH_WEBHOOK_KEY
 wechat_webhook_url=

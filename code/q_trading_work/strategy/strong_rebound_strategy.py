@@ -332,7 +332,9 @@ class StrongReboundStrategy(BaseStrategy):
             ) * 10.0
             # 星级：10 分制折算 5 星（保留一位小数），统一走基类折算（夹到 0~5）
             star: float = self.score_to_star(avg_score)
-            res: bool = avg_score >= self.BUY_MIN_SCORE
+            # 买入门槛偏移：个股阀门（盘后算）+ 市场偏移，均为「>0 = 更难买」
+            buy_threshold: float = self.BUY_MIN_SCORE + self.buy_threshold_offset(code)
+            res: bool = avg_score >= buy_threshold
             extra = {
                 "code": code,
                 "score": round(avg_score, 2),
@@ -343,14 +345,14 @@ class StrongReboundStrategy(BaseStrategy):
             if not res:
                 extra["reason"] = (
                     f"{self.user_strategy_name}, 最终计算的买入分值不足最小值,"
-                    f"最小值:{self.BUY_MIN_SCORE}, 当前分值:{avg_score:.2f}"
+                    f"最小值:{buy_threshold:.2f}, 当前分值:{avg_score:.2f}"
                     f"（成交量分:{volume_score:.2f}/{self.BUY_VOLUME_MAX_SCORE}, "
                     f"趋势分:{trend_score:.2f}/{MultiTrendFactor.MAX_SCORE}）"
                 )
             else:
                 extra["reason"] = (
                     f"买入条件合格，分值超过最小值,当前分值:{avg_score:.2f},"
-                    f"最小分值:{self.BUY_MIN_SCORE}"
+                    f"最小分值:{buy_threshold:.2f}"
                     f"（成交量分:{volume_score:.2f}, 趋势分:{trend_score:.2f}）"
                 )
 
@@ -596,7 +598,9 @@ class StrongReboundStrategy(BaseStrategy):
             # print(f"股价低于均价得分, action=SELL, code:{code}, time:{create_time}, result:{result}")
             score += float(result)
 
-            res: bool = score < self.SELL_MAX_SCORE
+            # 卖出门槛偏移：个股阀门（卖飞后更难卖）+ 市场偏移（市场弱时更容易卖）
+            sell_threshold: float = self.SELL_MAX_SCORE - self.sell_threshold_offset(code)
+            res: bool = score < sell_threshold
             if res:
                 extra["signal"] = "SELL"
                 extra["score"] = round(score, 2)
@@ -605,7 +609,7 @@ class StrongReboundStrategy(BaseStrategy):
                 # 字段名必须是 reason：`_save_trade_signal` 读的是
                 # `extra.get("reason", "")`，原实现写成 "reasons" 会静默丢失卖出原因
                 # （库里的 reason 与 MQTT 载荷都为空）。
-                extra["reason"] = f"卖出分数{score:.2f} 小于 设定值{self.SELL_MAX_SCORE}"
+                extra["reason"] = f"卖出分数{score:.2f} 小于 设定值{sell_threshold:.2f}"
                 return True, extra
 
             return False, extra

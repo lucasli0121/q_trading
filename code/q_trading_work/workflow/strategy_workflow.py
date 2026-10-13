@@ -25,9 +25,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 from api.client import ApiClient, is_not_found
+from api.market_breadth import MarketBreadthApi
 from api.pool import PoolApi
 from api.stock_info import StockInfoApi
 from api.strategy import StrategyApi
+from api.strategy_daily_valve import StrategyDailyValveApi
 from api.trade_signal import TradeSignalApi
 from api.strategy_select_stock import StrategySelectStockApi
 from api.user_strategy import UserStrategyApi
@@ -48,6 +50,7 @@ from strategy.base_strategy import BaseStrategy
 from trade.manager import TradeExecutionResult, TradeManager
 from trade.notifier import TradeNotifier
 from utils import tools
+from utils.market_breadth import fetch_limit_counts, resolve_market_offset
 import exchange_calendars as xcals
 from workflow.base_workflow import BaseWorkflow
 
@@ -219,6 +222,15 @@ class StrategyWorkflow(BaseWorkflow):
         self._notifier: TradeNotifier = TradeNotifier(api_client=self._admin_client)
         self._pool_api: PoolApi = PoolApi(self._admin_client)
         self._stock_info_api: StockInfoApi = StockInfoApi(self._admin_client)
+        self._strategy_daily_valve_api: StrategyDailyValveApi = StrategyDailyValveApi(
+            self._admin_client
+        )
+        self._market_breadth_api: MarketBreadthApi = MarketBreadthApi(self._admin_client)
+        # 市场级门槛偏移（盘前算一次，当日复用）。来源：前一交易日涨跌停家数，
+        # 见 utils/market_breadth.py；取不到数据时偏移为 0（不限制）。
+        self._market_offset_date: str = ""
+        self._market_buy_offset: float = 0.0
+        self._market_sell_offset: float = 0.0
         self._scheduler: Any = None
         self._service_name: str = ""  # 当前 workflow 微服务名称
         # ---- 配置对账（热更新）状态 ----
@@ -2993,6 +3005,8 @@ class StrategyWorkflow(BaseWorkflow):
 
         hour: int = 8
         minute: int = 0
+        after_hour: int = 15
+        after_minute: int = 10
         try:
             from configparser import ConfigParser
             from utils.tools import resource_path
@@ -3001,6 +3015,8 @@ class StrategyWorkflow(BaseWorkflow):
             if cp.has_section("scheduler"):
                 hour = cp.getint("scheduler", "before_trading_hour", fallback=9)
                 minute = cp.getint("scheduler", "before_trading_minute", fallback=0)
+                after_hour = cp.getint("scheduler", "after_trading_hour", fallback=15)
+                after_minute = cp.getint("scheduler", "after_trading_minute", fallback=10)
         except Exception as exc:
             self.logger.warning("读取 scheduler 配置失败，使用默认值 8:00: %s", exc)
 
@@ -3013,6 +3029,22 @@ class StrategyWorkflow(BaseWorkflow):
             misfire_grace_time=300,
         )
         self.logger.info("定时器已设置: 每个交易日 %02d:%02d 运行盘前筛选", hour, minute)
+
+        # 盘后阀门计算：收盘后按当日信号与分钟行情算出次日生效的个股门槛偏移。
+        # 放在 15:10（收盘 15:00 之后），留出收盘数据落库时间。
+        self._scheduler.add_job(
+            self.daily_after_trading,
+            CronTrigger(hour=after_hour, minute=after_minute, day_of_week="mon-fri"),
+            id="daily_after_trading",
+            name="每日盘后阀门计算",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
+        )
+        self.logger.info(
+            "定时器已设置: 每个交易日 %02d:%02d 运行盘后阀门计算",
+            after_hour, after_minute,
+        )
 
         # 配置对账轮询（兜底）：主通道是服务端的变更通知，这里覆盖
         # 「通知漏发 / MQTT 掉线重连期间 / 进程晚于服务端启动」这几种情况。
@@ -3061,6 +3093,229 @@ class StrategyWorkflow(BaseWorkflow):
             self._run_daily_selection_for_state(state, industry_codes, trade_date)
 
         self.logger.info("===== 每日盘前筛选结束 trade_date=%s =====", trade_date)
+
+    # ---- 盘后个股阀门（strategy/valve.py 的算法落地）----
+
+    def daily_after_trading(self) -> None:
+        """每日盘后定时任务：按用户策略计算次日生效的个股阀门并入库存表。
+
+        对每个**运行中**的用户策略：
+        1. 查当日已保存的交易信号（买入/卖出）；
+        2. 对信号涉及的每只股票，用当日分钟缓存 + 上一交易日枢轴点 S1/R1，统计
+           「买入后跌破 S1 的分钟数」「卖出后站上 R1 的分钟数」；
+        3. 达到阈值（`BaseStrategy.VALVE_MIN_BREAKS`）则给出次日同侧的门槛上调幅度，
+           写入服务端每日阀门表。
+
+        只写入「有穿破记录或阀门非 0」的股票；当日无信号则跳过。
+        """
+        trade_date: str = datetime.now().strftime("%Y-%m-%d")
+        if not self.xshg.is_session(trade_date):
+            self.logger.info("今日 %s 为节假日，跳过盘后阀门计算", trade_date)
+            return
+        self.logger.info("===== 每日盘后阀门计算开始 trade_date=%s =====", trade_date)
+        for state in self._snapshot_states():
+            if state.status != "running" or state.instance is None:
+                continue
+            try:
+                self._run_daily_valve_for_state(state, trade_date)
+            except Exception as exc:
+                self.logger.error(
+                    "[%s] 盘后阀门计算异常 (user_strategy_id=%s): %s",
+                    state.strategy_name, state.user_strategy_id, exc, exc_info=True,
+                )
+        self.logger.info("===== 每日盘后阀门计算结束 trade_date=%s =====", trade_date)
+
+    def _run_daily_valve_for_state(self, state: StrategyState, trade_date: str) -> None:
+        """计算并保存单个用户策略的当日阀门。"""
+        instance: BaseStrategy | None = state.instance
+        if instance is None:
+            return
+        sname: str = state.strategy_name
+        usid: str = state.user_strategy_id
+
+        # 1. 当日信号（服务端按 user_strategy_id + 时间段过滤）
+        try:
+            signals: list[dict[str, Any]] = self._trade_signal_api.list(
+                user_strategy_id=usid,
+                start_time=f"{trade_date} 00:00:00",
+                end_time=f"{trade_date} 23:59:59",
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[%s] 盘后阀门：查询当日信号失败，跳过 (user_strategy_id=%s): %s",
+                sname, usid, exc,
+            )
+            return
+        if not signals:
+            self.logger.info(
+                "[%s] 盘后阀门：当日无交易信号 (user_strategy_id=%s)", sname, usid
+            )
+            return
+
+        # 2. 按股票聚合买卖信号时间
+        buckets: dict[str, dict[str, list[str]]] = {}
+        for sig in signals:
+            code: str = str(sig.get("stock_code") or "")
+            action: str = str(sig.get("action") or "")
+            ts: str = str(sig.get("create_time") or "")
+            if not code or not ts:
+                continue
+            bucket = buckets.setdefault(code, {"buy": [], "sell": []})
+            if "卖" in action:
+                bucket["sell"].append(ts)
+            elif "买" in action:
+                bucket["buy"].append(ts)
+        if not buckets:
+            self.logger.info(
+                "[%s] 盘后阀门：信号无有效代码/时间 (user_strategy_id=%s)", sname, usid
+            )
+            return
+
+        # 3. 逐只计算阀门
+        min_breaks: int = int(instance.VALVE_MIN_BREAKS)
+        items: list[dict[str, Any]] = []
+        for code, bucket in buckets.items():
+            try:
+                result: dict[str, Any] = instance.compute_daily_valve(
+                    code, trade_date, bucket["buy"], bucket["sell"]
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "[%s] 盘后阀门计算失败 code=%s: %s", sname, code, exc
+                )
+                continue
+            if not result:
+                continue
+            buy_valve: float = float(result.get("buy_valve", 0.0) or 0.0)
+            sell_valve: float = float(result.get("sell_valve", 0.0) or 0.0)
+            support_breaks: int = int(result.get("support_break_count", 0) or 0)
+            resistance_breaks: int = int(result.get("resistance_break_count", 0) or 0)
+            if not (buy_valve or sell_valve or support_breaks or resistance_breaks):
+                continue
+            items.append(
+                {
+                    "stock_code": code,
+                    "trade_date": trade_date,
+                    "buy_valve": buy_valve,
+                    "sell_valve": sell_valve,
+                    "support_break_count": support_breaks,
+                    "resistance_break_count": resistance_breaks,
+                    "reason": (
+                        f"买入后跌破S1 {support_breaks}次(阈值{min_breaks})；"
+                        f"卖出后站上R1 {resistance_breaks}次"
+                    ),
+                }
+            )
+
+        if not items:
+            self.logger.info(
+                "[%s] 盘后阀门：当日无股票触发门槛上调 (user_strategy_id=%s)",
+                sname, usid,
+            )
+            return
+
+        saved: list[dict[str, Any]] = self._strategy_daily_valve_api.add(usid, items)
+        self.logger.info(
+            "[%s] 盘后阀门已保存 %d 只 (user_strategy_id=%s): %s",
+            sname, len(saved), usid,
+            ", ".join(
+                f"{i['stock_code']}(买+{i['buy_valve']:.1f}/卖+{i['sell_valve']:.1f})"
+                for i in items
+            ),
+        )
+
+    # ---- 盘前门槛注入（个股阀门 + 市场偏移）----
+
+    def _previous_trading_day(self, trade_date: str) -> str:
+        """取 trade_date 的前一个交易日（YYYY-MM-DD）。"""
+        import datetime as _dt
+
+        day = datetime.strptime(trade_date[:10], "%Y-%m-%d").date()
+        for _ in range(30):
+            day -= _dt.timedelta(days=1)
+            if self.xshg.is_session(day):
+                return day.strftime("%Y-%m-%d")
+        return trade_date
+
+    def _resolve_market_offset(self, trade_date: str) -> tuple[float, float]:
+        """盘前解析市场级门槛偏移（按交易日缓存，避免每个策略重复拉取）。
+
+        数据源是 **前一交易日** 的涨跌停家数（见 utils/market_breadth.py）。
+        取不到时返回 ``(0.0, 0.0)``（= 不限制），只打 WARNING —— 按「拦全部」兜底
+        会让一次接口抖动停掉整个实例的买卖。
+
+        :param trade_date: 今日交易日 YYYY-MM-DD
+        :return: ``(buy_offset, sell_offset)``
+        """
+        if self._market_offset_date == trade_date:
+            return self._market_buy_offset, self._market_sell_offset
+
+        prev_date: str = self._previous_trading_day(trade_date)
+        limit_up, limit_down, error = fetch_limit_counts(prev_date.replace("-", ""))
+        if limit_down is None:
+            self.logger.warning(
+                "盘前市场宽度取数失败（源交易日 %s），今日买卖门槛不偏移: %s",
+                prev_date, error or "未知原因",
+            )
+            buy_offset, sell_offset = 0.0, 0.0
+        else:
+            buy_offset, sell_offset = resolve_market_offset(limit_down)
+            self.logger.info(
+                "盘前市场宽度：源交易日 %s 涨停 %s 家 / 跌停 %d 家 ⇒ "
+                "买入门槛 %+.1f、卖出门槛 %+.1f",
+                prev_date, limit_up, limit_down, buy_offset, sell_offset,
+            )
+            try:
+                self._market_breadth_api.add(
+                    trade_date=prev_date,
+                    limit_up=int(limit_up or 0),
+                    limit_down=int(limit_down),
+                    buy_offset=buy_offset,
+                    sell_offset=sell_offset,
+                )
+            except Exception as exc:
+                self.logger.warning("保存市场宽度失败（不影响交易）: %s", exc)
+
+        self._market_offset_date = trade_date
+        self._market_buy_offset = buy_offset
+        self._market_sell_offset = sell_offset
+        return buy_offset, sell_offset
+
+    def _apply_daily_gates(self, state: StrategyState, trade_date: str) -> None:
+        """盘前把「个股阀门 + 市场偏移」注入策略实例。
+
+        阀门在盘后计算、**次日生效**，所以按「前一交易日」精确查询阀门表
+        （不是取最新一条：源交易日没有记录就说明当天没算，不该沿用更早的）。
+        """
+        instance: BaseStrategy | None = state.instance
+        if instance is None:
+            return
+        sname: str = state.strategy_name
+        usid: str = state.user_strategy_id
+
+        buy_offset, sell_offset = self._resolve_market_offset(trade_date)
+        instance.set_market_offset(buy_offset, sell_offset)
+
+        prev_date: str = self._previous_trading_day(trade_date)
+        try:
+            records: list[dict[str, Any]] = self._strategy_daily_valve_api.list(
+                usid, trade_date=prev_date
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[%s] 读取每日阀门失败，本次不做个股门槛偏移: %s", sname, exc
+            )
+            records = []
+
+        valves: dict[str, dict[str, Any]] = {}
+        for record in records:
+            code: str = str(record.get("stock_code") or "")
+            if code:
+                valves[code] = record
+        if valves:
+            instance.set_daily_valves(valves, prev_date)
+        else:
+            instance.clear_daily_valves()
 
     def _collect_hot_industry_codes(self) -> list[str]:
         """查询热门行业下的股票代码列表。"""
@@ -3124,6 +3379,9 @@ class StrategyWorkflow(BaseWorkflow):
                     sname, usid, exc, exc_info=True,
                 )
             self.logger.info("[%s] before_trading 完成 (user_strategy_id=%s)", sname, usid)
+
+        # 2.5 注入当日门槛：个股阀门（盘后算、当日生效）+ 市场偏移（涨跌停家数）
+        self._apply_daily_gates(state, trade_date)
 
         # 3. 合并股票池 + 热门行业
         combined: list[str] = list(dict.fromkeys(pool_codes + industry_codes))

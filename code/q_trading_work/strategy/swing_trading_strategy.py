@@ -569,11 +569,18 @@ class SwingTradingStrategy(BaseStrategy):
             # 星级统一走基类折算（夹到 0~5）。原实现直接 `avg_score / 2`，
             # 服务端 star 越界会返回 400，整条信号连同推送与下单一起丢失。
             star: float = self.score_to_star(avg_score)
-            if avg_score > 0:
+            # 买入门槛偏移：个股阀门（盘后算，见 strategy/valve.py）+ 市场偏移。
+            # 基准门槛是「> 0」，偏移后更难买。未达门槛时下面会走「未满足」分支，
+            # 不影响卖出与回撤止损。
+            buy_offset: float = self.buy_threshold_offset(code)
+            if avg_score > buy_offset:
+                reason_text: str = (
+                    f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}, 平均分值:{avg_score:.2f}"
+                )
+                if buy_offset:
+                    reason_text += f", 买入门槛偏移+{buy_offset:.2f}"
                 return True, {
-                    "reason": (
-                        f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f}, 平均分值:{avg_score:.2f}"
-                    ),
+                    "reason": reason_text,
                     "signal": "BUY",
                     "code": code,
                     "score": round(avg_score, 2),
@@ -719,12 +726,17 @@ class SwingTradingStrategy(BaseStrategy):
                     f"扣{risk_score:.2f}分)"
                 )
 
-            if final_score < 0:
+            # 卖出门槛偏移：个股阀门（卖出后价格反而站上 R1 = 卖飞，次日更难卖）+
+            # 市场偏移（市场转弱时取负值 = 更容易卖）。基准门槛是「< 0」。
+            sell_offset: float = self.sell_threshold_offset(code)
+            if final_score < -sell_offset:
                 extra["signal"] = "SELL"
                 reason: str = (
                     f"条件满足: 枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f},"
                     f"平均分值:{avg_score:.2f}"
                 )
+                if sell_offset:
+                    reason += f", 卖出门槛偏移+{sell_offset:.2f}"
                 # 回撤段只在触发时追加：未触发时逐字保持原有文案，避免下游按固定
                 # 格式对账时被多出来的字段打乱（分隔符照用户样例，不统一改写）。
                 if dd_parts:
