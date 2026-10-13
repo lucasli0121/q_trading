@@ -40,6 +40,15 @@ before_trading_minute = 0
 # 盘后阀门计算（当日信号 + 分钟行情 → 次日门槛偏移）的执行时刻
 after_trading_hour = 15
 after_trading_minute = 10
+[market_breadth]
+# 前一交易日跌停家数 → 全局买卖门槛偏移的分档，格式「上界:偏移」逗号分隔，上界升序。
+# 超出最后一档上界的按最后一档取值（不必写 inf）。
+# 基数来自实测（2026-09-14~10-13 共 16 个交易日，跌停 0~56，中位 10，90 分位 27）。
+# 买入门槛上调该偏移；卖出侧取负号（更容易卖），另有独立上限。
+bands = 5:0,10:0.5,20:1,30:2,9999:3
+# 卖出侧放宽幅度上限（绝对值）。买入侧最大 3.0，卖出侧取一半不到，
+# 避免市场偏移把卖出条件放宽成「见正分就抛」；设为 0 表示不设上限。
+max_sell_offset = 1.5
 [trade]
 enterprise_wechat_webhook_url=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPLACE_WITH_WEBHOOK_KEY
 wechat_webhook_url=

@@ -50,7 +50,12 @@ from strategy.base_strategy import BaseStrategy
 from trade.manager import TradeExecutionResult, TradeManager
 from trade.notifier import TradeNotifier
 from utils import tools
-from utils.market_breadth import fetch_limit_counts, resolve_market_offset
+from utils.market_breadth import (
+    MAX_SELL_OFFSET,
+    fetch_limit_counts,
+    parse_bands,
+    resolve_market_offset,
+)
 import exchange_calendars as xcals
 from workflow.base_workflow import BaseWorkflow
 
@@ -231,6 +236,9 @@ class StrategyWorkflow(BaseWorkflow):
         self._market_offset_date: str = ""
         self._market_buy_offset: float = 0.0
         self._market_sell_offset: float = 0.0
+        # 涨跌停分档（惰性读 cfg，见 _load_market_breadth_config）；None 表示尚未加载
+        self._market_bands: tuple[tuple[float, float], ...] | None = None
+        self._market_max_sell_offset: float = MAX_SELL_OFFSET
         self._scheduler: Any = None
         self._service_name: str = ""  # 当前 workflow 微服务名称
         # ---- 配置对账（热更新）状态 ----
@@ -3192,6 +3200,14 @@ class StrategyWorkflow(BaseWorkflow):
             resistance_breaks: int = int(result.get("resistance_break_count", 0) or 0)
             if not (buy_valve or sell_valve or support_breaks or resistance_breaks):
                 continue
+            buy_counts: list[int] = [
+                int(x) for x in (result.get("support_break_counts") or [])
+            ]
+            sell_counts: list[int] = [
+                int(x) for x in (result.get("resistance_break_counts") or [])
+            ]
+            buy_tier: int = int(result.get("buy_tier", 0) or 0)
+            sell_tier: int = int(result.get("sell_tier", 0) or 0)
             items.append(
                 {
                     "stock_code": code,
@@ -3201,8 +3217,12 @@ class StrategyWorkflow(BaseWorkflow):
                     "support_break_count": support_breaks,
                     "resistance_break_count": resistance_breaks,
                     "reason": (
-                        f"买入后跌破S1 {support_breaks}次(阈值{min_breaks})；"
-                        f"卖出后站上R1 {resistance_breaks}次"
+                        f"买入后破位 S1/S2/S3="
+                        f"{'/'.join(str(c) for c in buy_counts) or '0'}次"
+                        f"(阈值{min_breaks}，最深S{buy_tier} ⇒ 买入门槛+{buy_valve:.1f})；"
+                        f"卖出后站上 R1/R2/R3="
+                        f"{'/'.join(str(c) for c in sell_counts) or '0'}次"
+                        f"(最深R{sell_tier} ⇒ 卖出门槛+{sell_valve:.1f})"
                     ),
                 }
             )
@@ -3237,6 +3257,36 @@ class StrategyWorkflow(BaseWorkflow):
                 return day.strftime("%Y-%m-%d")
         return trade_date
 
+    def _load_market_breadth_config(self) -> tuple[tuple[tuple[float, float], ...], float]:
+        """读取 ``cfg/stock.cfg`` 的 ``[market_breadth]`` 分档（只读一次，惰性加载）。
+
+        分档是**主观标定**（依赖当时的跌停家数分布），所以做成配置项，部署机上
+        直接改 ``cfg/stock.cfg`` 即可调参，不必重新打包。段不存在 / 解析失败时
+        回退到代码里的默认分档（`utils/market_breadth.DEFAULT_BANDS`）。
+
+        :return: ``(bands, max_sell_offset)``
+        """
+        from configparser import ConfigParser
+
+        from utils.market_breadth import DEFAULT_BANDS
+        from utils.tools import resource_path
+
+        try:
+            cp = ConfigParser()
+            cp.read(resource_path("cfg/stock.cfg"), encoding="utf-8")
+            if not cp.has_section("market_breadth"):
+                return DEFAULT_BANDS, MAX_SELL_OFFSET
+            bands = parse_bands(cp.get("market_breadth", "bands", fallback=""))
+            cap = cp.getfloat(
+                "market_breadth", "max_sell_offset", fallback=MAX_SELL_OFFSET
+            )
+            return bands, cap
+        except Exception as exc:  # pragma: no cover - 配置读取兜底
+            self.logger.warning(
+                "读取 market_breadth 配置失败，使用默认分档: %s", exc
+            )
+            return DEFAULT_BANDS, MAX_SELL_OFFSET
+
     def _resolve_market_offset(self, trade_date: str) -> tuple[float, float]:
         """盘前解析市场级门槛偏移（按交易日缓存，避免每个策略重复拉取）。
 
@@ -3250,6 +3300,16 @@ class StrategyWorkflow(BaseWorkflow):
         if self._market_offset_date == trade_date:
             return self._market_buy_offset, self._market_sell_offset
 
+        if self._market_bands is None:
+            self._market_bands, self._market_max_sell_offset = (
+                self._load_market_breadth_config()
+            )
+            self.logger.info(
+                "涨跌停分档: %s（卖出侧上限 %.1f）",
+                ",".join(f"<={u:g}:{o:g}" for u, o in self._market_bands),
+                self._market_max_sell_offset,
+            )
+
         prev_date: str = self._previous_trading_day(trade_date)
         limit_up, limit_down, error = fetch_limit_counts(prev_date.replace("-", ""))
         if limit_down is None:
@@ -3259,7 +3319,9 @@ class StrategyWorkflow(BaseWorkflow):
             )
             buy_offset, sell_offset = 0.0, 0.0
         else:
-            buy_offset, sell_offset = resolve_market_offset(limit_down)
+            buy_offset, sell_offset = resolve_market_offset(
+                limit_down, self._market_bands, self._market_max_sell_offset
+            )
             self.logger.info(
                 "盘前市场宽度：源交易日 %s 涨停 %s 家 / 跌停 %d 家 ⇒ "
                 "买入门槛 %+.1f、卖出门槛 %+.1f",

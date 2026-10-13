@@ -682,13 +682,17 @@ class BaseStrategy(ABC):
     """是否启用盘后个股阀门。关闭时 `buy_threshold_offset` 恒返回市场偏移部分。"""
 
     VALVE_STEP: float = 1.0
-    """阀门触发一次的上调幅度（10 分制）。"""
+    """阀门**单档**的上调幅度（10 分制）；实际幅度 = `VALVE_STEP × 最深触发档序号`
+    （破 S1 ⇒ 1×、破 S2 ⇒ 2×、破 S3 ⇒ 3×，档位不叠加）。"""
 
     VALVE_MIN_BREAKS: int = 2
-    """判定「反复跌穿/站上」所需的最少分钟数。"""
+    """判定「反复跌穿/站上」所需的最少分钟数（各档同一阈值）。"""
 
     VALVE_MAX: float = 5.0
     """单侧阀门上限，避免异常数据把门槛抬到不可达。"""
+
+    SR_LEVEL_KEYS: tuple[str, ...] = ("s1", "s2", "s3", "r1", "r2", "r3")
+    """枢轴点的六个档位键（浅 → 深），阀门计算与入库共用同一顺序。"""
 
     def set_daily_valves(
         self, valves: dict[str, dict[str, Any]], trade_date: str = ""
@@ -758,9 +762,10 @@ class BaseStrategy(ABC):
     ) -> dict[str, Any]:
         """盘后计算单只股票当日阀门（语义见 strategy/valve.py 模块 docstring）。
 
-        基础实现 = 「当日分钟缓存 + 上一交易日枢轴点 S1/R1」：
-        买入信号后收盘价跌破 S1 达 `VALVE_MIN_BREAKS` 次 → 次日买入门槛 +`VALVE_STEP`；
-        卖出信号后收盘价站上 R1 达同样次数 → 次日卖出门槛 +`VALVE_STEP`。
+        基础实现 = 「当日分钟缓存 + 上一交易日枢轴点 S1/S2/S3、R1/R2/R3」：
+        买入信号后收盘价**跌破的最深支撑档**决定次日买入门槛上调幅度
+        （破 S1 ⇒ +`VALVE_STEP`，破 S2 ⇒ +2×、破 S3 ⇒ +3×）；
+        卖出信号后站上的最深阻力档决定次日卖出门槛上调幅度，口径对称。
 
         数据不足（无分钟缓存 / 取不到日K）时返回空字典 —— 调用方按「无阀门」处理。
         阀门是**附加收紧项**，缺失时不该改变原有门槛（fail-open），否则一次取数
@@ -786,29 +791,32 @@ class BaseStrategy(ABC):
                 continue
         if not points:
             return {}
-        support, resistance = self._daily_sr_levels(code, trade_date)
+        levels: dict[str, float] = self._daily_sr_levels(code, trade_date)
         from strategy.valve import compute_stock_valve
 
         result: dict[str, Any] = compute_stock_valve(
             points,
             buy_signal_times,
             sell_signal_times,
-            support=support,
-            resistance=resistance,
+            support=levels["s1"],
+            resistance=levels["r1"],
             step=self.VALVE_STEP,
             min_breaks=self.VALVE_MIN_BREAKS,
             max_valve=self.VALVE_MAX,
+            support_tiers=[levels["s1"], levels["s2"], levels["s3"]],
+            resistance_tiers=[levels["r1"], levels["r2"], levels["r3"]],
         )
-        result["support"] = round(float(support), 4)
-        result["resistance"] = round(float(resistance), 4)
+        for key in self.SR_LEVEL_KEYS:
+            result[key] = round(float(levels[key]), 4)
         return result
 
-    def _daily_sr_levels(self, code: str, trade_date: str) -> tuple[float, float]:
-        """取当日枢轴点的 S1 支撑位与 R1 阻力位（基于上一交易日日线）。
+    def _daily_sr_levels(self, code: str, trade_date: str) -> dict[str, float]:
+        """取当日枢轴点的三档支撑位与三档阻力位（基于上一交易日日线）。
 
-        :return: ``(s1, r1)``；取数/计算失败时返回 ``(0.0, 0.0)``
-        （0 会被 `count_level_breaks` 判为无效点位，等价于不做判定）
+        :return: ``{"s1","s2","s3","r1","r2","r3"}``；取数/计算失败时六项全为
+            ``0.0``（0 会被 `count_level_breaks` 判为无效点位，等价于不做判定）
         """
+        empty: dict[str, float] = {key: 0.0 for key in self.SR_LEVEL_KEYS}
         from factor.in_day_support_resistance import InDaySRFactor
 
         klines: pd.DataFrame
@@ -818,18 +826,18 @@ class BaseStrategy(ABC):
             self.logger.warning(
                 "[%s] 阀门取日K失败 code=%s: %s", self.user_strategy_name, code, exc
             )
-            return 0.0, 0.0
+            return empty
         if klines is None or klines.empty:
-            return 0.0, 0.0
+            return empty
         try:
             points = InDaySRFactor().pivot_points(klines)
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.warning(
                 "[%s] 阀门算枢轴点失败 code=%s: %s", self.user_strategy_name, code, exc
             )
-            return 0.0, 0.0
+            return empty
         if points is None or points.empty:
-            return 0.0, 0.0
+            return empty
         last = points.iloc[-1]
 
         def _to_float(value: Any) -> float:
@@ -841,7 +849,7 @@ class BaseStrategy(ABC):
                 return 0.0
             return result
 
-        return _to_float(last.get("s1", 0.0)), _to_float(last.get("r1", 0.0))
+        return {key: _to_float(last.get(key, 0.0)) for key in self.SR_LEVEL_KEYS}
 
     # ---- 涨跌停幅度与阈值 ----
 

@@ -1,17 +1,26 @@
 """盘后个股阀门（daily valve）计算。
 
-语义（2026-10-13 定稿）：
+语义（2026-10-13 定稿，同日扩展为多档位）：
 
-- 当日出现 **买入信号** 后，若该股在当日剩余分钟里 **收盘价跌破当日 S1 支撑位**
+- 当日出现 **买入信号** 后，若该股在当日剩余分钟里 **收盘价跌破当日支撑位**
   达到 ``VALVE_MIN_BREAKS`` 次（默认 2），说明「买了就破位」，次日该股
-  **买入门槛上调** ``VALVE_STEP``（默认 +1.0 分）—— 即更难买入。
-- 当日出现 **卖出信号** 后，若该股在当日剩余分钟里 **收盘价重新站上当日 R1 阻力位**
-  达到同样的次数，说明「卖了就反弹」（卖飞），次日该股 **卖出门槛上调** ``VALVE_STEP``
-  —— 即更难卖出。两侧口径对称：**信号之后出现不利走势 → 抬高该侧门槛**。
-- 两侧独立；未触发时为 0。每日重新计算、**不累积**（「每日的阀门值可能不一样」）。
+  **买入门槛上调**。
+- 支撑位分三档（``S1 / S2 / S3``，越深离枢轴点越远），**按触达的最深档决定
+  上调幅度**：只破 S1 ⇒ ``+1×step``；破到 S2 ⇒ ``+2×step``；破到 S3 ⇒
+  ``+3×step``。档位**不叠加** —— 价格单调下行时「跌破 S3」的那些分钟必然
+  也同时跌破 S1/S2，逐档相加等于把同一分钟数重复计三次。
+- 卖出侧对称：卖出信号后价格反复 **站上 R1 / R2 / R3**（卖飞），次日该股
+  **卖出门槛上调**，档位倍数同理。
+- 两侧独立；未触发时为 0。每日重新计算、**不累积**（「每日的阀门值可能
+  不一样」）。
 
-支撑/阻力位取 **上一交易日日线** 的经典枢轴点（``InDaySRFactor`` 的 s1 / r1），
-与 swing 策略盘中判定用的是同一套点位，避免两处口径漂移。
+支撑/阻力位取 **上一交易日日线** 的经典枢轴点（``InDaySRFactor`` 的
+s1..s3 / r1..r3），与 swing 策略盘中判定用的是同一套点位，避免两处口径漂移。
+
+档位可达性提醒：``InDaySRFactor`` 的三档是昨日振幅 ``D`` 的 1/3、2/3、1 倍，
+价格落在昨日区间 ``[L, H]`` 内时 ``|price − pivot| <= 2D/3``，
+因此**触及 S3/R3 必然意味着突破昨日低点/高点**。S3 命中本身就是「创昨日新低
+（新高）」，给它最高档加重是有依据的，不是拍脑袋。
 
 本模块只做纯计算（不读配置、不发请求、不写库），便于单测与回测复用。
 符号约定：``buy_valve`` / ``sell_valve`` 均为 **非负** 的「抬高幅度」，
@@ -83,15 +92,55 @@ def _earliest_time(times: Iterable[str]) -> str:
     return min(values) if values else ""
 
 
+def _valid_tiers(tiers: Sequence[float] | None, fallback: float) -> list[float]:
+    """归一化档位表：过滤无效点位（0 / NaN / 非数），按入参顺序保留。
+
+    档位表为空（或全无效）时回退到单档 ``fallback``；fallback 也无效则返回空表
+    （等价于该侧不做判定）。
+    """
+    values: list[float] = []
+    for level in tiers or ():
+        if _is_valid_level(level):
+            values.append(float(level))
+    if not values and _is_valid_level(fallback):
+        values = [float(fallback)]
+    return values
+
+
+def _deepest_tier_breaks(
+    minute_points: Sequence[tuple[str, float]],
+    after_time: str,
+    tiers: Sequence[float],
+    below: bool,
+    min_breaks: int,
+) -> tuple[int, list[int]]:
+    """逐档统计穿破分钟数，返回 ``(最深触发档序号, 各档计数)``。
+
+    档序号从 1 开始（1 = 最浅档，即 S1/R1）；``0`` 表示**没有任何档**达到
+    ``min_breaks``。因为价格单调下行时 ``count(S1) >= count(S2) >= count(S3)``，
+    直接取「最后一个满足阈值的档」即为最深触发档。
+    """
+    counts: list[int] = [
+        count_level_breaks(minute_points, after_time, level, below) for level in tiers
+    ]
+    depth: int = 0
+    for index, count in enumerate(counts, start=1):
+        if count >= min_breaks:
+            depth = index
+    return depth, counts
+
+
 def compute_stock_valve(
     minute_points: Sequence[tuple[str, float]],
     buy_signal_times: Sequence[str],
     sell_signal_times: Sequence[str],
-    support: float,
-    resistance: float,
+    support: float = 0.0,
+    resistance: float = 0.0,
     step: float = DEFAULT_STEP,
     min_breaks: int = DEFAULT_MIN_BREAKS,
     max_valve: float = DEFAULT_MAX_VALVE,
+    support_tiers: Sequence[float] | None = None,
+    resistance_tiers: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """计算单只股票当日的阀门。
 
@@ -101,40 +150,46 @@ def compute_stock_valve(
     :param minute_points: 当日分钟序列 ``[(create_time, close), ...]``
     :param buy_signal_times: 当日买入信号时间列表
     :param sell_signal_times: 当日卖出信号时间列表
-    :param support: 当日 S1 支撑位（来自上一交易日枢轴点）
-    :param resistance: 当日 R1 阻力位
-    :param step: 触发一次上调的幅度
-    :param min_breaks: 判定「反复」所需的最少穿破分钟数
-    :param max_valve: 阀门上限（避免单日累计过大）
-    :return: ``{"buy_valve", "sell_valve", "support_break_count",
-        "resistance_break_count", "step"}``
+    :param support: 单档支撑位（``support_tiers`` 缺失时作为唯一的 S1 使用）
+    :param resistance: 单档阻力位（``resistance_tiers`` 缺失时作为唯一的 R1 使用）
+    :param step: 单档触发一次的上调幅度；实际幅度 = ``step × 最深档序号``
+    :param min_breaks: 判定「反复穿破」所需的最少分钟数（各档同一阈值）
+    :param max_valve: 单侧阀门上限（避免单日累计过大）
+    :param support_tiers: 多档支撑位（浅 → 深，即 S1/S2/S3）；给定时优先于 ``support``
+    :param resistance_tiers: 多档阻力位（浅 → 深，即 R1/R2/R3）
+    :return: ``{"buy_valve", "sell_valve", "buy_tier", "sell_tier",
+        "support_break_count", "resistance_break_count",
+        "support_break_counts", "resistance_break_counts", "step"}``
     """
     step = abs(float(step))
     max_valve = abs(float(max_valve))
     min_breaks = max(int(min_breaks), 1)
 
+    sup_tiers: list[float] = _valid_tiers(support_tiers, support)
+    res_tiers: list[float] = _valid_tiers(resistance_tiers, resistance)
+
     buy_anchor: str = _earliest_time(buy_signal_times)
     sell_anchor: str = _earliest_time(sell_signal_times)
 
-    support_breaks: int = count_level_breaks(
-        minute_points, buy_anchor, support, below=True
+    buy_depth, buy_counts = _deepest_tier_breaks(
+        minute_points, buy_anchor, sup_tiers, below=True, min_breaks=min_breaks
     )
-    resistance_breaks: int = count_level_breaks(
-        minute_points, sell_anchor, resistance, below=False
+    sell_depth, sell_counts = _deepest_tier_breaks(
+        minute_points, sell_anchor, res_tiers, below=False, min_breaks=min_breaks
     )
 
-    buy_valve: float = 0.0
-    if support_breaks >= min_breaks:
-        buy_valve = min(step, max_valve)
-
-    sell_valve: float = 0.0
-    if resistance_breaks >= min_breaks:
-        sell_valve = min(step, max_valve)
+    buy_valve: float = min(step * buy_depth, max_valve) if buy_depth else 0.0
+    sell_valve: float = min(step * sell_depth, max_valve) if sell_depth else 0.0
 
     return {
         "buy_valve": round(buy_valve, 4),
         "sell_valve": round(sell_valve, 4),
-        "support_break_count": int(support_breaks),
-        "resistance_break_count": int(resistance_breaks),
+        "buy_tier": int(buy_depth),
+        "sell_tier": int(sell_depth),
+        # 单值字段保留「最浅档（S1/R1）」口径，与历史入库字段兼容
+        "support_break_count": int(buy_counts[0]) if buy_counts else 0,
+        "resistance_break_count": int(sell_counts[0]) if sell_counts else 0,
+        "support_break_counts": [int(c) for c in buy_counts],
+        "resistance_break_counts": [int(c) for c in sell_counts],
         "step": step,
     }
