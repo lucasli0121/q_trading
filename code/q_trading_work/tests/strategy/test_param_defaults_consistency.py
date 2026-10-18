@@ -78,6 +78,15 @@ PARAM_MAPS: dict[type, tuple[str, dict[tuple[str, str], str]]] = {
             ("buy", "quiet_volume_score"): "BUY_QUIET_VOLUME_SCORE",
             ("buy", "volume_weight"): "VOLUME_WEIGHT",
             ("buy", "partner_weight"): "PARTNER_WEIGHT",
+            ("buy", "shape_enabled"): "SHAPE_ENABLED",
+            ("buy", "shape_max_offset"): "SHAPE_MAX_OFFSET",
+            ("buy", "shape_min_segments"): "SHAPE_MIN_SEGMENTS",
+            ("buy", "shape_seq_enabled"): "SHAPE_SEQ_ENABLED",
+            ("buy", "shape_seq_max_offset"): "SHAPE_SEQ_MAX_OFFSET",
+            ("buy", "shape_seq_days"): "SHAPE_SEQ_DAYS",
+            ("buy", "shape_ma_period"): "SHAPE_MA_PERIOD",
+            ("buy", "shape_dive_score"): "SHAPE_DIVE_SCORE",
+            ("buy", "shape_seq_rules"): "SHAPE_SEQ_RULES",
             # match.min_score 与 buy.min_score 映射到同一个 MIN_SCORE，apply_params
             # 中 buy 后写、以其为准，故此处只登记 buy 一侧。
             ("buy", "min_score"): "MIN_SCORE",

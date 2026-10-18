@@ -18,7 +18,8 @@ from unittest.mock import patch
 from app_context import AppContext
 from core.user_strategy_cache import UserStrategyCache
 from strategy.volume_expansion_strategy import (
-    DEFAULT_VOLUME_MODE,
+    DEFAULT_BUY_VOLUME_MODE,
+    DEFAULT_MATCH_VOLUME_MODE,
     MODE_MOMENTUM,
     MODE_REVERSION,
     PARTNER_FACTORS,
@@ -30,9 +31,10 @@ USID: str = "test-volume-expansion-us"
 BAR_DAY: str = "2026-09-25"
 
 # 测试基线参数：显式传入可跳过三级回退中的网络查询。
-# 方向固定为 momentum —— 多数用例按「放量达标即选中」的直觉编写，reversion 分支
-# 由 test_is_match_strategy_reversion_mode 单独覆盖，类属性默认方向由
-# test_default_volume_mode_is_reversion 断言。注意这**不等于**类属性默认值。
+# 选股方向显式写成 momentum（与类属性默认值一致），多数用例按「放量达标即选中」编写；
+# reversion 分支由 test_is_match_strategy_reversion_mode 单独覆盖。
+# **买入侧不传 volume_mode** ⇒ 走类属性默认 reversion（与选股方向相反），因此所有买入
+# 用例都要构造「缩量达标」（成交量分 <= quiet 阈值）的场景，别照放量的直觉写。
 TEST_PARAMS: dict[str, Any] = {
     "match": {
         "volume_days": 20,
@@ -109,6 +111,11 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
         self._purge_minute_cache()
         with cache._lock:
             cache._highest_price_snapshot.clear()
+        # 买入信号价基准与连续跌破计数是本类**唯一会跨用例残留**的实例状态
+        # （本类用 setUpClass 共享同一个策略实例）。上一轮用例留下的基准会让
+        # 下一轮的止损计数从半途开始，表现为「单跑通过、整类跑失败」。
+        self.strategy._buy_signal_prices.clear()
+        self.strategy._below_buy_signal_counts.clear()
 
     def tearDown(self) -> None:
         UserStrategyCache().set_redis_enabled(True)
@@ -166,30 +173,92 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
             )
         self.assertEqual(strategy.MATCH_PARTNER_FACTOR, "boll_sr")
 
-    def test_default_volume_mode_is_reversion(self) -> None:
-        """类属性默认方向 = 实测方向 reversion（回测依据见模块 docstring）。"""
-        self.assertEqual(DEFAULT_VOLUME_MODE, MODE_REVERSION)
-        self.assertEqual(VolumeExpansionStrategy.MATCH_VOLUME_MODE, DEFAULT_VOLUME_MODE)
+    def test_default_volume_modes_split_by_stage(self) -> None:
+        """默认方向按阶段分离：选股 momentum、买入 reversion，且两者不共用常量。"""
+        self.assertEqual(DEFAULT_MATCH_VOLUME_MODE, MODE_MOMENTUM)
+        self.assertEqual(DEFAULT_BUY_VOLUME_MODE, MODE_REVERSION)
+        self.assertEqual(VolumeExpansionStrategy.MATCH_VOLUME_MODE, MODE_MOMENTUM)
+        self.assertEqual(VolumeExpansionStrategy.BUY_VOLUME_MODE, MODE_REVERSION)
+        # 共用同一个「默认方向」常量时，改一侧会静默带走另一侧
+        self.assertNotEqual(
+            VolumeExpansionStrategy.MATCH_VOLUME_MODE,
+            VolumeExpansionStrategy.BUY_VOLUME_MODE,
+        )
 
     def test_invalid_volume_mode_falls_back(self) -> None:
-        """非法方向必须回退到默认值，且与默认方向同源（不能各写一遍）。"""
+        """非法方向回退到**本阶段**的默认值，且与默认方向同源（不各写一遍）。"""
         with self.assertLogs("strategy.volume_expansion_strategy", level="WARNING"):
             strategy = VolumeExpansionStrategy(
                 user_strategy_id=USID,
-                user_strategy_params={"match": {"volume_mode": "whatever"}},
+                user_strategy_params={
+                    "match": {"volume_mode": "whatever"},
+                    "buy": {"volume_mode": "whatever_else"},
+                },
             )
-        self.assertEqual(strategy.MATCH_VOLUME_MODE, DEFAULT_VOLUME_MODE)
+        self.assertEqual(strategy.MATCH_VOLUME_MODE, DEFAULT_MATCH_VOLUME_MODE)
+        self.assertEqual(strategy.BUY_VOLUME_MODE, DEFAULT_BUY_VOLUME_MODE)
 
-    def test_buy_side_empty_follows_match(self) -> None:
-        """买入侧搭配因子/模式为空时跟随日线配置（不是空串）。"""
+    def test_buy_partner_factor_empty_follows_match(self) -> None:
+        """买入侧搭配因子为空时仍跟随日线配置（这一条跟随语义保留）。"""
+        strategy = VolumeExpansionStrategy(
+            user_strategy_id=USID,
+            user_strategy_params={"match": {"partner_factor": "ma"}},
+        )
+        self.assertEqual(strategy._partner_name(True), "ma")
+
+    def test_buy_volume_mode_does_not_follow_match(self) -> None:
+        """买入方向不再跟随选股：match 无论设成什么，买入侧都保持 reversion。"""
+        for match_mode in (MODE_REVERSION, MODE_MOMENTUM):
+            with self.subTest(match_mode=match_mode):
+                strategy = VolumeExpansionStrategy(
+                    user_strategy_id=USID,
+                    user_strategy_params={"match": {"volume_mode": match_mode}},
+                )
+                self.assertEqual(strategy.MATCH_VOLUME_MODE, match_mode)
+                self.assertEqual(strategy.BUY_VOLUME_MODE, MODE_REVERSION)
+
+    def test_buy_volume_mode_empty_falls_back_to_reversion(self) -> None:
+        """显式空串解析为买入侧默认 reversion，而不是选股方向。
+
+        这是「空 = 跟随 match」被废止后的关键行为：配置写空值不再把买入方向翻转。
+        """
         strategy = VolumeExpansionStrategy(
             user_strategy_id=USID,
             user_strategy_params={
-                "match": {"partner_factor": "ma", "volume_mode": MODE_REVERSION}
+                "match": {"volume_mode": MODE_MOMENTUM},
+                "buy": {"volume_mode": ""},
             },
         )
-        self.assertEqual(strategy._partner_name(True), "ma")
-        self.assertEqual(strategy.BUY_VOLUME_MODE or strategy.MATCH_VOLUME_MODE, MODE_REVERSION)
+        self.assertEqual(strategy.BUY_VOLUME_MODE, MODE_REVERSION)
+
+    def test_stage_modes_are_independent_end_to_end(self) -> None:
+        """同一实例上：日线放量被选中，但盘中放量买不进、缩量才买得进。"""
+        strategy = VolumeExpansionStrategy(
+            user_strategy_id=USID, user_strategy_params=TEST_PARAMS
+        )
+        with patch.object(strategy, "_partner_score", return_value=5.0):
+            # 选股 momentum：6.0 >= 4.0 达标 → 选中
+            with patch.object(
+                strategy, "_volume_detail", return_value={"score": 6.0, "reason": []}
+            ):
+                matched, _ = strategy.is_match_strategy(make_window(40))
+        self.assertTrue(matched)
+
+        self._feed_minutes(25)
+        loud = {"score": 6.0, "vol_ratio": 1.5, "reason": []}
+        quiet = {"score": 1.0, "vol_ratio": 0.8, "reason": []}
+        with patch.object(strategy, "_partner_score", return_value=5.0):
+            # 买入 reversion：同一分数（放量）不达标 → 买不进
+            with patch.object(strategy, "_volume_detail", return_value=loud):
+                loud_matched, loud_extra = strategy._check_buy_conditions(
+                    "002050.SZ", make_bar()
+                )
+            # 缩量（<= quiet 阈值）才买得进
+            with patch.object(strategy, "_volume_detail", return_value=quiet):
+                quiet_matched, _ = strategy._check_buy_conditions("002050.SZ", make_bar())
+        self.assertFalse(loud_matched)
+        self.assertIn("reversion", loud_extra["reason"])
+        self.assertTrue(quiet_matched)
 
     def test_min_score_shared_between_match_and_buy(self) -> None:
         """min_score 在 match / buy 两节同名，buy 节存在时以其为准。"""
@@ -440,10 +509,13 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
         self.assertIn("当前价格异常", extra["reason"])
 
     def test_buy_branch_signal_contract(self) -> None:
-        """两道门槛都通过 → BUY，且 extra 满足 workflow 的字段契约。"""
+        """两道门槛都通过 → BUY，且 extra 满足 workflow 的字段契约。
+
+        买入侧默认 reversion，所以这里构造的是「缩量达标」（2.0 <= quiet 阈值 4.0）。
+        """
         self._feed_minutes(25)
         with patch.object(
-            self.strategy, "_volume_detail", return_value={"score": 6.5, "reason": []}
+            self.strategy, "_volume_detail", return_value={"score": 2.0, "reason": []}
         ), patch.object(self.strategy, "_partner_score", return_value=7.5):
             matched, extra = self.strategy._check_buy_conditions("002050.SZ", make_bar())
         self.assertTrue(matched)
@@ -460,7 +532,7 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
         """成交量达标但搭配因子给负分 → 不买（搭配因子是否决项）。"""
         self._feed_minutes(25)
         with patch.object(
-            self.strategy, "_volume_detail", return_value={"score": 10.0, "reason": []}
+            self.strategy, "_volume_detail", return_value={"score": 2.0, "reason": []}
         ), patch.object(self.strategy, "_partner_score", return_value=-10.0):
             matched, extra = self.strategy._check_buy_conditions("002050.SZ", make_bar())
         self.assertFalse(matched)
@@ -483,7 +555,7 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
         with patch.object(
             self.strategy, "_get_minute_cache", return_value=[]
         ) as mocked, patch.object(
-            self.strategy, "_volume_detail", return_value={"score": 9.0, "reason": []}
+            self.strategy, "_volume_detail", return_value={"score": 2.0, "reason": []}
         ), patch.object(self.strategy, "_partner_score", return_value=9.0):
             matched, _ = self.strategy._check_buy_conditions("002050.SZ", make_bar())
         self.assertFalse(matched)
@@ -516,9 +588,15 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
         self.assertIn("放量下跌", extra["reason"])
         self.assertIn("破支撑", extra["reason"])
 
-    def test_sell_triggers_on_drawdown(self) -> None:
-        """其它分项都不成立时，仅回撤超限也应触发卖出。"""
+    def test_sell_triggers_on_buy_signal_break(self) -> None:
+        """买入信号价止损：连续 3 个分钟 bar 低于买入信号价 ⇒ 直接卖出。
+
+        2026-10-14 取代原「自持仓最高点回撤」—— 原口径的基准在恒传空持仓的
+        实时链路里退化成「最近 2 个交易日最高价」，买缩量回调股时会变成
+        买入即接近卖出条件。硬止损不并入分值累加，分值/星级取固定等效分。
+        """
         self._feed_minutes(25)
+        self.strategy.set_buy_signal_price("002050.SZ", 30.5)
         with patch.object(
             self.strategy,
             "_volume_detail",
@@ -527,15 +605,26 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
             self.strategy, "_partner_score", return_value=0.0
         ), patch.object(
             self.strategy, "_vwap_deviation", return_value=0.0
-        ), patch.object(
-            self.strategy, "_resolve_highest_price", return_value=35.0
         ):
+            self.assertFalse(
+                self.strategy._check_sell_conditions(
+                    "002050.SZ", {}, make_bar(price=30.4)
+                )[0]
+            )
+            self.assertFalse(
+                self.strategy._check_sell_conditions(
+                    "002050.SZ", {}, make_bar(price=30.4)
+                )[0]
+            )
             matched, extra = self.strategy._check_sell_conditions(
-                "002050.SZ", {}, make_bar(price=30.0)
+                "002050.SZ", {}, make_bar(price=30.4)
             )
         self.assertTrue(matched)
-        self.assertIn("回撤", extra["reason"])
-        self.assertAlmostEqual(extra["drawdown"], -14.29, places=1)
+        self.assertEqual(extra["signal"], "SELL")
+        self.assertAlmostEqual(extra["score"], -6.0, places=2)
+        self.assertAlmostEqual(extra["star"], 3.0, places=1)
+        self.assertIn("买入信号价止损", extra["reason"])
+        self.assertIn("连续3次", extra["reason"])
 
     def test_sell_marks_divergence(self) -> None:
         """缩量上涨（量比 < 1 且当根收红）应计入量价背离。"""
@@ -640,20 +729,25 @@ class TestVolumeExpansionStrategy(unittest.TestCase):
         self.assertFalse(matched)
         self.assertNotIn("账户回撤", extra["reason"])
 
-    def test_sell_position_buy_time_used(self) -> None:
-        """有持仓信息时用真实 buy_time 作为回撤基准（不被最近 2 日覆盖）。"""
+    def test_sell_ignores_position_buy_time(self) -> None:
+        """止损基准是买入信号价，与持仓 buy_time / 持仓最高价无关（2026-10-14）。
+
+        原实现用 buy_time 定位「持仓期间最高价」以算回撤，恒传空持仓时退化成
+        「最近 2 个交易日最高价」。改为买入信号价基准后，卖出判定不应再调用
+        `_resolve_highest_price`（那是一次多余的服务端查询）。
+        """
         self._feed_minutes(25)
         with patch.object(
             self.strategy,
             "_resolve_highest_price",
-            return_value=30.0,
+            return_value=999.0,
         ) as mocked:
             self.strategy._check_sell_conditions(
                 "002050.SZ",
                 {"cost_price": 20.0, "buy_time": "2026-09-01 09:35:00"},
                 make_bar(),
             )
-        self.assertEqual(mocked.call_args[0][1][:10], "2026-09-01")
+        mocked.assert_not_called()
 
 
 if __name__ == "__main__":

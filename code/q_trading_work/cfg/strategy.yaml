@@ -68,11 +68,12 @@ volume_expansion_strategy:
   match:
     # 成交量因子窗口（因子内部下限 5）：日线取数窗口 40 根，留足均线/斜率所需历史
     volume_days: 20
-    # 成交量方向：reversion=缩量看多（实测方向，当前默认：把放量当否决条件）；
-    # momentum=放量看多（因子原始语义）。正式回测（2026-06-01~09-30）momentum
-    # 12 笔 / −9.14%、reversion 265 笔 / +8.69%。见
-    # CODE_检查报告_2026-09-29_成交量策略回测结果.md
-    volume_mode: reversion
+    # 选股方向：momentum=放量看多（因子原始语义，2026-10-11 起为本阶段默认），
+    # reversion=缩量看多。选股方向与买入方向**各自独立、默认值相反**，
+    # 组合语义见 strategy/volume_expansion_strategy.py 模块 docstring 第三节。
+    # 注意：日频回测只走「选股」这一条路径 ⇒ 回测口径随本项变化
+    # （2026-09-29 快照：momentum 17 笔 −16.24%、reversion 293 笔 +8.69%）
+    volume_mode: momentum
     # reversion 模式下的「缩量」上限：成交量打分 <= 此值才允许买入。
     # 默认 4.0 = 因子自身的 BUY 阈值，即「因子判 BUY/STRONG_BUY 的一律不买」
     quiet_volume_score: 4.0
@@ -95,14 +96,51 @@ volume_expansion_strategy:
     volume_score: 4.0
     # 空 = 跟随 match.partner_factor
     partner_factor: ""
-    # 空 = 跟随 match.volume_mode
-    volume_mode: ""
+    # 买入方向：reversion=缩量看多（2026-10-11 起为本阶段默认），momentum=放量看多。
+    # **不再支持「空 = 跟随 match.volume_mode」**：两层方向本就相反，写成空值会被解析为
+    # 买入侧默认值 reversion，而不是选股方向
+    volume_mode: reversion
     quiet_volume_score: 4.0
     partner_min_score: 0.0
     min_score: 5.0
     # 成交量侧与搭配侧权重：成交量为主、搭配做确认
     volume_weight: 0.6
     partner_weight: 0.4
+    # 日内形态：形态分换算成买入门槛偏移（正 = 更难买），口径同 buy_threshold_offset。
+    # 不做 combined 的加减项：BASE_SCORE == MIN_SCORE == 5.0，两道门槛通过时
+    # combined 恒 >= 5.0，减分等于硬否决、加分不改变判定。
+    # 规则表默认空（形态恒中性），见 factor/intraday_shape_factor.py
+    shape_enabled: true
+    # 形态最差（0 分）时抬高门槛的幅度；0 = 不影响门槛
+    shape_max_offset: 1.0
+    # 前几段走完才判分：2 = 11:30 后生效（前两段符号此时定型）
+    shape_min_segments: 2
+    # 跨日形态序列：昨日及更早的日形态（冲高回落 / 低开低走 / …）连弱时压低买入预期。
+    # 读归档 parquet，目录取 stock.cfg 的 [local_hq] root；root 为空即自动关闭。
+    # 该层是隔夜已定型的信息，盘中随时可用，不受「前 2 段走完」限制。
+    shape_seq_enabled: true
+    # 跨日层最差（形态分 0）时抬高门槛的幅度；0 = 只观测、不影响门槛（默认）
+    shape_seq_max_offset: 0.0
+    # 回看多少个交易日
+    shape_seq_days: 5
+    # 跨日趋势判据的均线周期：回看窗口内「收盘价低于/高于 N 日均线」计次。
+    # 只影响日线序列读取长度（shape_seq_days + N - 1 天），不影响其它编码。
+    shape_ma_period: 5
+    # 当日「早盘见高 + 从峰值回撤 ≥2.5%」的形态分修正：负 = 更难买，0 = 不参与。
+    # 这是「9:30–10:30 冲高、随后一路下跌」的直接判据，与开盘缺口无关。
+    shape_dive_score: 0.0
+    # 跨日规则表（默认全空 = 不改变任何判定）。六个键全部可选，语法：
+    #   shape_seq_rules:
+    #     weak_streak: {2: -1.0, 3: -2.0}       # 连续弱势天数下限 -> 形态分修正
+    #     prev_day: {"低开低走": -1.0}            # 昨日形态 -> 形态分修正
+    #     sequence: {"低开低走|高开低走": -1.5}     # 标签串（昨日在前）-> 修正
+    #     below_ma: {3: -1.0}                    # 收盘低于N日均线次数下限 -> 修正
+    #     above_ma: {3: +1.0}                    # 收盘高于N日均线次数下限 -> 修正
+    #     lower_high: {3: -1.0}                  # 最高价低于前日次数下限 -> 修正
+    #     higher_high: {3: +1.0}                 # 最高价高于前日次数下限 -> 修正
+    # 启用前先看 _shape_stats.py 的「连续弱势」「昨日形态」「低于均线次数」
+    # 「高点低于前日次数」四张统计表。
+    shape_seq_rules: {}
   sell:
     # 分钟数据最少条数；实际门槛同样取与因子窗口的较大值
     min_minutes: 20

@@ -167,7 +167,8 @@ STRATEGY_FIELDS: dict[str, list[tuple[str, str, str]]] = {
         (
             "match",
             "volume_mode",
-            "成交量方向：reversion=缩量看多（当前默认）/ momentum=放量看多",
+            "选股方向：momentum=放量看多（默认）/ reversion=缩量看多；"
+            "与买入方向相互独立，日频回测只走本项",
         ),
         (
             "match",
@@ -193,12 +194,58 @@ STRATEGY_FIELDS: dict[str, list[tuple[str, str, str]]] = {
         ),
         ("buy", "volume_score", "分钟级成交量打分门槛（momentum 模式）"),
         ("buy", "partner_factor", "搭配因子，空 = 跟随 match.partner_factor"),
-        ("buy", "volume_mode", "成交量方向，空 = 跟随 match.volume_mode"),
+        ("buy", "volume_mode", "买入方向：reversion=缩量看多（默认）/ momentum=放量看多；不跟随 match.volume_mode"),
         ("buy", "quiet_volume_score", "缩量上限（reversion 模式）"),
         ("buy", "partner_min_score", "搭配因子门槛（>=）"),
         ("buy", "min_score", "买入综合分门槛（10 分制）"),
         ("buy", "volume_weight", "成交量侧权重（成交量为主、搭配做确认）"),
         ("buy", "partner_weight", "搭配侧权重"),
+        (
+            "buy",
+            "shape_enabled",
+            "日内形态是否计算（形态分换算成买入门槛偏移，正 = 更难买）",
+        ),
+        (
+            "buy",
+            "shape_max_offset",
+            "形态最差（0 分）时抬高买入门槛的幅度（10 分制）；0 = 不影响门槛",
+        ),
+        (
+            "buy",
+            "shape_min_segments",
+            "前几段走完才判分：2 = 11:30 后生效（前两段符号此时定型）",
+        ),
+        (
+            "buy",
+            "shape_seq_enabled",
+            "跨日形态序列是否参与（昨日及更早的日形态，读归档 parquet）",
+        ),
+        (
+            "buy",
+            "shape_seq_max_offset",
+            "跨日形态层最差时抬高买入门槛的幅度（10 分制）；0 = 只观测不影响门槛",
+        ),
+        (
+            "buy",
+            "shape_seq_days",
+            "跨日形态回看多少个交易日",
+        ),
+        (
+            "buy",
+            "shape_ma_period",
+            "跨日趋势判据的均线周期：回看窗口内收盘价低于/高于 N 日均线计次",
+        ),
+        (
+            "buy",
+            "shape_dive_score",
+            "当日早盘见高且从峰值回撤 >=2.5% 时的形态分修正（负 = 更难买，0 = 不参与）",
+        ),
+        (
+            "buy",
+            "shape_seq_rules",
+            "跨日规则表（weak_streak / prev_day / sequence / below_ma / above_ma / "
+            "lower_high / higher_high），默认空 = 不改变判定",
+        ),
         ("sell", "min_minutes", "分钟数据最少条数（实际门槛取与因子窗口的较大值）"),
         ("sell", "max_score", "卖出分阈值：累计负分 <= 此值触发卖出"),
         (
