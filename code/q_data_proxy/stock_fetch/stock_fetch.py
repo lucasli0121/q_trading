@@ -627,7 +627,7 @@ class StockFetch(FetchBase):
             agg_preclose = first_rec.get("preclose", 0.0)
             change_percent = 0.0
             if agg_preclose > 0:
-                change_percent = first_rec.get("change_percent", round((agg_price - agg_preclose) / agg_preclose * 100, 2))
+                change_percent = first_rec.get("change_percent", round((agg_price - agg_preclose) / agg_preclose, 2))
             change_amount = first_rec.get("change_amount", round(agg_price - agg_preclose, 2))
             # 从末条记录取名称、原始 code
             name = last_rec.get("name", "")

@@ -390,9 +390,13 @@ const blacklist = {
 
 /* ============================================================ 系统消息 */
 const systemMessage = {
-  /** 当前用户可收的系统消息 —— GET /api/system_message/user_messages */
+  /** 当前用户可收的系统消息（每条带 is_read）—— GET /api/system_message/user_messages */
   userMessages: (silent) =>
-    req({ url: '/api/system_message/user_messages', silent }).then((d) => d || [])
+    req({ url: '/api/system_message/user_messages', silent }).then((d) => d || []),
+
+  /** 标记单条消息已读（幂等）—— POST /api/system_message/read */
+  markRead: (id) =>
+    req({ url: '/api/system_message/read', method: 'POST', data: { id } })
 };
 
 /* ============================================================ 组合查询（页面级复用） */

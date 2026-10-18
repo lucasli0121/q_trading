@@ -51,13 +51,97 @@
 
 .bell-badge {
   position: absolute;
-  right: 18rpx;
-  top: 20rpx;
-  width: 16rpx;
-  height: 16rpx;
-  border-radius: 50%;
+  right: 10rpx;
+  top: 14rpx;
+  min-width: 30rpx;
+  height: 30rpx;
+  padding: 0 7rpx;
+  box-sizing: border-box;
+  border-radius: var(--metric-radius-full);
   background-color: var(--color-market-up);
   border: 2rpx solid var(--color-bg-elevated);
+  color: var(--color-text-on-brand);
+  font-size: 18rpx;
+  line-height: 26rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ============================================ 系统消息面板 */
+.msg-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 901;
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-surface);
+  border-radius: var(--metric-radius-lg) var(--metric-radius-lg) 0 0;
+  border-top: var(--metric-border-width) solid var(--color-border-default);
+}
+
+.msg-panel-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.msg-panel-close {
+  width: 56rpx;
+  height: 56rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28rpx;
+  color: var(--color-text-tertiary);
+}
+
+.msg-panel-bd {
+  /* flex-basis 用 auto（不是 0），让短列表按内容收高、长列表被 max-height 卡住后滚动 */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 60vh;
+}
+
+/* 分区标题行（未读消息 / 历史消息） */
+.msg-sec {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--metric-space-xs) var(--metric-space-lg);
+  background-color: var(--color-bg-subtle);
+}
+
+.msg-row {
+  display: flex;
+  align-items: flex-start;
+  padding: var(--metric-space-md) var(--metric-space-lg);
+  border-bottom: var(--metric-border-width) solid var(--color-border-divider);
+}
+
+.msg-row:last-child { border-bottom: none; }
+
+/* 未读圆点：只有未读项渲染，已读项整行换成普通标题样式 */
+.msg-dot {
+  width: 12rpx;
+  height: 12rpx;
+  margin-top: 14rpx;
+  margin-right: var(--metric-space-sm);
+  border-radius: 50%;
+  background-color: var(--color-market-up);
+  flex-shrink: 0;
+}
+
+.msg-content {
+  margin-top: 6rpx;
+  font-size: var(--metric-font-size-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 /* ---------------------------------------------------------- 统计卡 2×2 */

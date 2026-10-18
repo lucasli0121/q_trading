@@ -52,15 +52,18 @@ Page({
     strategies: [],
     strategyEmpty: false,
 
-    // 通知
-    hasNewMessage: false,
+    // 通知：未读数与面板状态（is_read 由后端维护，见 applyMessages）
+    unreadCount: 0,
+    unreadText: '0',
+    msgPanelVisible: false,
+    msgRows: [],
+    msgEmpty: false,
     signalMode: 'idle', // 信号通道状态：ws / poll / idle
     systemRunning: true
   },
 
   onLoad() {
     theme.applyTo(this);
-    this._seenMsgIds = {};
     this._timers = [];
     if (!auth.guard()) return;
     this.loadAll(true);
@@ -128,12 +131,57 @@ Page({
       .catch(() => [])
       .then((list) => {
         this._messages = list || [];
-        const hasNew = (this._messages || []).some((m) => {
-          const id = String((m && m.id) || '');
-          return id && !this._seenMsgIds[id];
-        });
-        this.setData({ hasNewMessage: hasNew });
+        this.applyMessages();
       });
+  },
+
+  /**
+   * 按服务端返回的 is_read 刷新角标与面板。
+   * 已读状态由后端维护（system_message_tbl.read_user_ids），本地不再记「见过的消息 ID」，
+   * 否则退出重进 / 换设备都会把同一批消息重新算成未读。
+   */
+  applyMessages() {
+    const msgs = this._messages || [];
+    const unread = msgs.filter((m) => !(m && m.is_read));
+    const patch = {
+      unreadCount: unread.length,
+      unreadText: unread.length > 99 ? '99+' : String(unread.length)
+    };
+    // 面板开着时同步重绘，避免出现「角标已清、列表还标着未读」的不一致
+    if (this.data.msgPanelVisible) patch.msgRows = this.buildMsgRows();
+    this.setData(patch);
+  },
+
+  /**
+   * 把消息列表摊平成面板行：分区标题行 + 消息行。
+   * 摊平而不是嵌套 wx:for，是为了让 wx:key 落在每一行上，避免列表复用错位。
+   * @returns {Array} [{key, type:'section'|'item', ...}]
+   */
+  buildMsgRows() {
+    const msgs = this._messages || [];
+    const unread = msgs.filter((m) => !(m && m.is_read));
+    const history = msgs.filter((m) => !!(m && m.is_read));
+    const rows = [];
+    [
+      { title: '未读消息', items: unread, read: false },
+      { title: '历史消息', items: history, read: true }
+    ].forEach((sec) => {
+      if (!sec.items.length) return;
+      rows.push({ key: `sec-${sec.title}`, type: 'section', title: sec.title, count: sec.items.length });
+      sec.items.forEach((m, i) => {
+        const id = String((m && m.id) || '');
+        rows.push({
+          key: `msg-${id}-${i}`,
+          type: 'item',
+          id,
+          read: sec.read,
+          title: String((m && m.title) || '系统消息'),
+          content: String((m && m.message) || ''),
+          time: fmt.shortTime(m && m.create_time, 16)
+        });
+      });
+    });
+    return rows;
   },
 
   /* ==================================================== 统计卡 */
@@ -324,32 +372,34 @@ Page({
   /* ==================================================== 通知 / 信号 */
 
   onBell() {
-    const msgs = this._messages || [];
-    msgs.forEach((m) => {
-      const id = String((m && m.id) || '');
-      if (id) this._seenMsgIds[id] = 1;
+    // 铃铛只负责开面板，不再「一开就算全读」：已读要用户逐条点开
+    return this.loadMessages().then(() => {
+      const rows = this.buildMsgRows();
+      this.setData({
+        msgPanelVisible: true,
+        msgRows: rows,
+        msgEmpty: !rows.length
+      });
     });
-    this.setData({ hasNewMessage: false });
+  },
 
-    if (!msgs.length) {
-      ui.toast('暂无系统消息');
-      return;
-    }
-    // 逐条列出：标题 / 时间 / 内容
-    const lines = msgs
-      .map((m) => {
-        const title = String(m.title || '系统消息');
-        const time = fmt.shortTime(m.create_time, 16);
-        const content = String(m.message || '');
-        return `【${title}】${time}\n${content}`;
+  closeMsgPanel() {
+    this.setData({ msgPanelVisible: false });
+  },
+
+  /** 点开单条消息 → 标记已读 → 本地同步读数与分区 */
+  onMsgTap(e) {
+    const id = String((e && e.currentTarget && e.currentTarget.dataset.id) || '');
+    if (!id) return;
+    const target = (this._messages || []).find((m) => String((m && m.id) || '') === id);
+    if (!target || target.is_read) return; // 已读的不再发请求，也不重复分区
+    api.systemMessage
+      .markRead(id)
+      .then(() => {
+        target.is_read = true;
+        this.applyMessages();
       })
-      .join('\n\n');
-    ui.confirm({
-      title: `系统消息（${msgs.length}）`,
-      content: lines,
-      confirmText: '我知道了',
-      cancelText: '关闭'
-    });
+      .catch(() => ui.error('标记已读失败'));
   },
 
   startSignalChannel() {

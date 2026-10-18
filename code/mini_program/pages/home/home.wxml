@@ -11,7 +11,7 @@
     </view>
     <view slot="right" class="bell" bindtap="onBell">
       <view class="bell-icon"></view>
-      <view wx:if="{{hasNewMessage}}" class="bell-badge"></view>
+      <view wx:if="{{unreadCount > 0}}" class="bell-badge">{{unreadText}}</view>
     </view>
   </q-navbar>
 
@@ -125,4 +125,41 @@
 
     <view style="height: 24rpx;"></view>
   </scroll-view>
+
+  <!-- ============================================ 系统消息面板 -->
+  <!-- 未读在上、历史在下；只有未读项可点，点开即调 /api/system_message/read 置为已读 -->
+  <view wx:if="{{msgPanelVisible}}" class="scrim" bindtap="closeMsgPanel"></view>
+  <view wx:if="{{msgPanelVisible}}" class="msg-panel">
+    <view class="msg-panel-hd">
+      <text class="t-lg t-bold">系统消息</text>
+      <view class="msg-panel-close" bindtap="closeMsgPanel">✕</view>
+    </view>
+    <scroll-view class="msg-panel-bd" scroll-y>
+      <view wx:if="{{msgEmpty}}" class="mini-empty">暂无系统消息</view>
+      <block wx:else>
+        <block wx:for="{{msgRows}}" wx:key="key">
+          <view wx:if="{{item.type === 'section'}}" class="msg-sec">
+            <text class="t-xs t-medium c-second upper">{{item.title}}</text>
+            <text class="t-xs c-tertiary">{{item.count}}</text>
+          </view>
+          <view
+            wx:else
+            class="msg-row"
+            data-id="{{item.id}}"
+            bindtap="onMsgTap"
+            hover-class="{{item.read ? '' : 'list-row-hover'}}"
+          >
+            <view wx:if="{{!item.read}}" class="msg-dot"></view>
+            <view class="flex1">
+              <view class="row between">
+                <text class="t-sm ellipsis {{item.read ? 'c-second' : 't-bold c-primary'}}">{{item.title}}</text>
+                <text class="t-xs c-tertiary" style="margin-left: 12rpx;">{{item.time}}</text>
+              </view>
+              <view class="msg-content {{item.read ? 'c-tertiary' : 'c-second'}}">{{item.content}}</view>
+            </view>
+          </view>
+        </block>
+      </block>
+    </scroll-view>
+  </view>
 </view>
