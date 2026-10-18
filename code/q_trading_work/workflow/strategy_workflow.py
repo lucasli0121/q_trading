@@ -246,6 +246,12 @@ class StrategyWorkflow(BaseWorkflow):
         self._market_max_sell_offset: float = MAX_SELL_OFFSET
         # 极端利空禁买联动的跌停家数阈值（`<=0` = 关闭联动，只保留门槛偏移）
         self._market_stop_buy_limit_down: float = DEFAULT_STOP_BUY_LIMIT_DOWN
+        # ---- 盘中买入门槛缓存（2026-10-14）----
+        # key = f"{user_strategy_id}:{code}" -> (上一次符合买入条件的价格, 该时刻)。
+        # 只在本端内存里，不落库：被抑制的买点也要写进来（「依然缓存」），
+        # 而落库的信号恰恰不含被抑制的那些，用服务端 latest 查不出这个语义。
+        # 不作跨日清理：隔夜必然超过窗口，判定时自动放行。
+        self._last_buy_probe: dict[str, tuple[float, "datetime"]] = {}
         self._scheduler: Any = None
         self._service_name: str = ""  # 当前 workflow 微服务名称
         # ---- 配置对账（热更新）状态 ----
@@ -2220,10 +2226,11 @@ class StrategyWorkflow(BaseWorkflow):
 
     # ---- 交易信号记录 ----
 
-    def _load_signal_filter_config(self) -> tuple[float, int]:
-        """从配置文件加载信号风暴过滤参数。
+    def _load_signal_filter_config(self) -> tuple[float, int, float]:
+        """从配置文件加载信号过滤参数（`cfg/stock.cfg [signal_filter]`）。
 
-        :return: (price_change_threshold(%), time_gap_minutes(分钟))
+        :return: (price_change_threshold(%), time_gap_minutes(分钟),
+                  min_trade_interval_minutes(分钟，0 = 关闭))
         """
         try:
             from configparser import ConfigParser
@@ -2236,9 +2243,13 @@ class StrategyWorkflow(BaseWorkflow):
             time_gap: int = int(
                 cp.get("signal_filter", "time_gap_minutes", fallback="10")
             )
-            return price_threshold, time_gap
+            # 成交间隔限制（2026-10-11）：与风暴过滤是两套机制，缺省 0 = 关闭
+            min_interval: float = float(
+                cp.get("signal_filter", "min_trade_interval_minutes", fallback="0")
+            )
+            return price_threshold, time_gap, min_interval
         except Exception:
-            return 2.0, 10
+            return 2.0, 10, 0.0
 
     def _save_trade_signal(
         self,
@@ -2252,8 +2263,18 @@ class StrategyWorkflow(BaseWorkflow):
         """保存交易信号到 /api/trade_signal/add，并推送 MQTT / 通知。
 
         卖出时通过 /api/trade_signal/latest 查询最近一次买入记录，计算 profit_rate。
-        信号风暴过滤：连续相同方向信号若 时间间隔 < time_gap_minutes
-        或 价格变化 < price_change_threshold 则抑制。
+
+        三条**互相独立**的过滤，都走同一条退出路径（返回 False，调用方不创建订单）：
+
+        1. **盘中买入门槛**（2026-10-14）：每只股票缓存上一次符合买入条件的价格与
+           时刻，本次价格跌破该价格且间隔不足 `time_gap_minutes` ⇒ 抑制本次买入。
+           被抑制的买点**仍然更新缓存**。只作用于买入，且只看本端内存缓存。
+        2. **成交间隔限制**（2026-10-11，`cfg/stock.cfg [signal_filter]`
+           `min_trade_interval_minutes`，0 = 关闭）：**不分方向** —— 距最近一条信号
+           不足该间隔即抑制。补的是风暴过滤压不住的「卖完又买回」这类跨方向高频进出；
+           跨日时 gap 必然远大于阈值，等于自动放行。
+        3. **信号风暴过滤**：连续**相同方向**信号若 时间间隔 < time_gap_minutes
+           或 价格变化 < price_change_threshold 则抑制（两个条件都要达到才放行）。
 
         **P1-15**：信号记录中不再写 `profit_amount`。
         原因是此处只能拿到「每股价差」（`price - buy_price`），把每股差价当作
@@ -2346,6 +2367,48 @@ class StrategyWorkflow(BaseWorkflow):
                     "查询用户策略 %s 名称失败: %s", user_strategy_id, exc
                 )
 
+        # 信号过滤参数一次读出，供下面三条过滤共用（原先只在查到历史信号时惰性读）
+        (
+            price_threshold,
+            time_gap_minutes,
+            min_trade_interval,
+        ) = self._load_signal_filter_config()
+
+        # ---- 盘中买入门槛（2026-10-14）----
+        # 第三条过滤，与「成交间隔限制」「信号风暴过滤」并列，共用「返 False ⇒
+        # 调用方不建订单」这条退出路径。口径：每只股票缓存**上一次符合买入条件**的
+        # 价格与时刻；本次价格跌破该价格、且间隔不足 time_gap_minutes 分钟 ⇒ 抑制
+        # 本次买入信号。**被抑制也更新缓存**，因此阴跌过程中每个买点都会把窗口清零，
+        # 不会「等满 10 分钟就补一单」；只有价格重新站上上次买点或间隔足够才放行。
+        #
+        # 与另外两条的差别：它只读本端内存缓存（`_last_buy_probe`），不查服务端 ——
+        # 被抑制的买点不落库，服务端 latest 里根本没有这些记录。只作用于买入，
+        # action 为卖出时既不判定也不写缓存。
+        if action == "买入" and price > 0:
+            probe_key: str = f"{user_strategy_id}:{code}"
+            prev_probe: tuple[float, "datetime"] | None = self._last_buy_probe.get(
+                probe_key
+            )
+            dip_blocked: bool = False
+            if prev_probe is not None and time_gap_minutes > 0:
+                prev_price: float = float(prev_probe[0])
+                prev_dt: "datetime" = prev_probe[1]
+                gap_minutes: float = (datetime.now() - prev_dt).total_seconds() / 60.0
+                if price < prev_price and gap_minutes < time_gap_minutes:
+                    dip_blocked = True
+                    self.logger.info(
+                        "盘中买入门槛: code=%s, price=%.2f 跌破上次买点 %.2f, "
+                        "间隔 %.1f 分钟 < %d 分钟, 抑制（缓存仍更新）",
+                        code,
+                        price,
+                        prev_price,
+                        gap_minutes,
+                        time_gap_minutes,
+                    )
+            self._last_buy_probe[probe_key] = (price, datetime.now())
+            if dip_blocked:
+                return False
+
         # 查询最近一次同股票+同策略的交易信号（不限方向），用于信号风暴过滤
         try:
             latest_any: Any = self._trade_signal_api.latest(strategy_id, user_strategy_id, code)
@@ -2353,9 +2416,34 @@ class StrategyWorkflow(BaseWorkflow):
                 last_action: str = str(latest_any.get("action", ""))
                 last_price: float = float(latest_any.get("trade_price", 0))
                 last_time: str = str(latest_any.get("create_time", ""))
+
+                # ---- 成交间隔限制（2026-10-11，**不分方向**）----
+                # 与下面的风暴过滤相互独立：那条只比同方向连续信号，压不住
+                # 「卖完又买回」这类跨方向的高频进出。这里用最近一条信号
+                # （不限方向）的时间判定；跨日时 gap 必然远大于阈值，等于自动放行，
+                # 因此不需要额外的「同一天」判断（回测侧 `_trade_interval_blocked` 同理）。
+                if min_trade_interval > 0 and last_time:
+                    try:
+                        last_dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
+                        trade_gap: float = (
+                            datetime.now() - last_dt
+                        ).total_seconds() / 60.0
+                        if trade_gap < min_trade_interval:
+                            self.logger.info(
+                                "交易间隔限制: code=%s, action=%s, price=%.2f, "
+                                "距上次信号 %.1f 分钟 < %.1f 分钟, 抑制",
+                                code,
+                                action,
+                                price,
+                                trade_gap,
+                                min_trade_interval,
+                            )
+                            return False
+                    except ValueError:
+                        pass
+
                 # 连续相同方向：检查时间间隔和价格变化
                 if last_action == action and last_price > 0 and price > 0:
-                    price_threshold, time_gap_minutes = self._load_signal_filter_config()
                     suppressed: bool = False
                     suppress_reasons: list[str] = []
                     # 检查时间间隔

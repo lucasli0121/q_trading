@@ -14,15 +14,17 @@ Description: 波段交易策略，适合震荡行情
     当天买入条件（_check_buy_conditions）：
         1. 不在 9:40 前 / 13:10 前（过滤开盘干扰），不在涨跌停附近
         2. (InDaySRFactor 枢轴点分 + BollSRFactor 布林带分) / 2 > 0
-        前置闸门：日线趋势向下的股票当天不做买入判定（2026-09-29 新增）
+        趋势门槛：日线趋势向下时上调买入门槛（`BaseStrategy.TREND_BUY_OFFSET`），
+        只收紧不封死（2026-10-13 由硬闸门改成门槛）
 
     当天卖出条件（_check_sell_conditions）：
         1. 位置分为负（同上两个因子等权平均），且不在涨跌停附近
-        2. 持仓回撤达 sell.drawdown_pct（默认 -6.0%）—— 计入卖出分值
+        2. 买入信号价止损：连续 3 个分钟 bar 低于买入信号价 ⇒ 直接卖出（硬止损，
+           2026-10-14 取代原「自持仓最高点回撤 sell.drawdown_pct」）
         3. 账户回撤达 risk.max_drawdown_pct（默认 -10.0%）—— 计入卖出分值
 
-    卖出判定**不受**趋势闸门影响：下跌趋势中的持仓恰恰要靠支撑位跌破与回撤
-    止损离场，把卖出一并关掉等于让持仓失去保护。
+    卖出判定**不受**趋势门槛影响：下跌趋势中的持仓恰恰要靠支撑位跌破与止损
+    离场，把卖出一并收紧等于让持仓失去保护。
 """
 
 from __future__ import annotations
@@ -94,12 +96,14 @@ class SwingTradingStrategy(BaseStrategy):
     TREND_ADX_THRESHOLD: float = 25.0  # ADX 强度门槛：达到才算「趋势确立」
     TREND_KLINE_DAYS: int = 40  # 趋势判定所需日K根数（ADX lookback = 2×周期）
 
-    # ---- 卖出回撤参数（sell）----
-    # 自持仓最高点回撤达阈值时，把 `SELL_DRAWDOWN_SCORE` 直接叠加到卖出分上
-    # （不是与两个位置因子做平均）：止损要的是「果断退出」，一条回撤理由足够
-    # 单独触发卖出，不该被「枢轴点=0、布林带=0」的中间态稀释掉。
-    SELL_DRAWDOWN_PCT: float = -6.0  # 自持仓最高点回撤阈值（%）
-    SELL_DRAWDOWN_SCORE: float = -6.0  # 触发回撤阈值时计入的卖出分值（10 分制）
+    # ---- 卖出回撤参数（sell）—— 2026-10-14 起**已不再参与判定** ----
+    # 原语义：自持仓最高点回撤达阈值时把 `SELL_DRAWDOWN_SCORE` 直接叠加到卖出分上。
+    # 替换原因：实时链路恒传空持仓（设计约定 D-1），「持仓最高价」实际退化成
+    # 「最近 2 个交易日最高价」，买缩量回调股时会变成买入即接近卖出条件。
+    # 现由 `BaseStrategy.SELL_BUY_PRICE_BREAK_*`（连续 N 个 bar 低于买入信号价）取代。
+    # 两个字段**保留**只为兼容既有 yaml / 服务端模板 / 参数一致性映射，改动它们不再有效果。
+    SELL_DRAWDOWN_PCT: float = -6.0  # 已废弃：原自持仓最高点回撤阈值（%）
+    SELL_DRAWDOWN_SCORE: float = -6.0  # 已废弃：原触发回撤阈值时计入的卖出分值
 
     # ---- 风控参数（risk）----
     # 账户级回撤阈值（%）：账户已实现权益自峰值回撤达此值时，在卖出判定中计入
@@ -301,13 +305,27 @@ class SwingTradingStrategy(BaseStrategy):
         # 趋势方向已改成门槛，这里不能再短路 —— 短路了门槛就永远没机会生效，
         # 等于把「改成门槛」退化成原来的硬闸门。
         break_max = self._break_max_r.get(code, False)
+        # 与基类同构：被熔断封锁的买入信号不能提前 return（实时链路恒传空持仓，
+        # 持仓股的卖出判定靠这条路径才跑得到），但落到卖出分支后 `extra` 会被
+        # 覆盖，所以把熔断原因单独留存、在卖出也没信号时还回去。
+        blocked_buy: dict[str, Any] | None = None
         if not break_max:
             # 如果买入条件成立就直接返回
             match, extra = self._check_buy_conditions(code, stock_data)
+            # 本类重写了 `handle_minute_bar`，基类的收尾不会自动生效，必须显式调用：
+            # 它既同步买入信号价基准（否则止损静默失效），也执行日内熔断封锁。
+            # 被熔断否决时返回 False，与「买入条件不成立」同路，落到下面走卖出判定。
+            match, extra = self._sync_signal_state(code, match, extra, stock_data)
             if match:
                 return match, extra
+            if extra.get("intraday_blocked") == "buy":
+                blocked_buy = extra
         # 如果买入条件不成立，就判断卖出条件
-        return self._check_sell_conditions(code, position, stock_data)
+        matched, extra = self._check_sell_conditions(code, position, stock_data)
+        matched, extra = self._sync_signal_state(code, matched, extra, stock_data)
+        if blocked_buy is not None and not matched:
+            return False, blocked_buy
+        return matched, extra
 
 
     def _before_minute_route(self, code: str, stock_data: dict[str, Any]) -> None:
@@ -475,7 +493,7 @@ class SwingTradingStrategy(BaseStrategy):
     def _save_sr_points(self, code: str, sr_df: pd.DataFrame) -> None:
         if sr_df.empty:
             return
-        if self._cache.redis_enabled:
+        if self._cache.redis_ready:
             redis_exec: RedisExec = AppContext().redis_exec
             value: str = sr_df.to_json(orient="records", date_format="iso")
             if redis_exec.set_key_string(self._sr_points_key(code), value, ex=self._cache.MINUTE_CACHE_TTL):
@@ -483,7 +501,7 @@ class SwingTradingStrategy(BaseStrategy):
         self._inday_sr_points[code] = sr_df
 
     def _get_sr_points(self, code: str) -> pd.DataFrame:
-        if self._cache.redis_enabled:
+        if self._cache.redis_ready:
             redis_exec: RedisExec = AppContext().redis_exec
             value: str|None = redis_exec.get_key_string(self._sr_points_key(code))
             if value:
@@ -631,12 +649,14 @@ class SwingTradingStrategy(BaseStrategy):
     ) -> tuple[bool, dict[str, Any]]:
         """检查卖出条件是否满足。
 
-        卖出分 = 位置分 + 两条回撤分项（回撤分项只在触发时叠加）：
+        卖出分 = 位置分 + 账户回撤分项：
             1. 位置分：(枢轴点分 + 布林带分) / 2，为负（< 0.0）时触发
-            2. 持仓回撤：自持仓最高点回撤超过 `SELL_DRAWDOWN_PCT` 时计入
-               `SELL_DRAWDOWN_SCORE`（10 分制负值，默认 -6.0，单独一条即可触发）
-            3. 账户回撤：账户权益自峰值回撤达 `RISK_MAX_DRAWDOWN_PCT` 时计入
+            2. 账户回撤：账户权益自峰值回撤达 `RISK_MAX_DRAWDOWN_PCT` 时计入
                `SELL_RISK_DRAWDOWN_SCORE`
+        另有一条**独立硬止损**：连续 `SELL_BUY_PRICE_BREAK_COUNT` 个分钟 bar
+        低于买入信号价 ⇒ 直接卖出（2026-10-14 取代原「自持仓最高点回撤」，
+        原口径在恒传空持仓的实时链路里会把基准退化成「最近 2 个交易日最高价」，
+        买缩量回调股时会变成买入即接近卖出条件）。
         前置闸门：涨跌停附近不卖出（封板时挂单没有意义）。
 
         :param code: 股票代码
@@ -646,17 +666,11 @@ class SwingTradingStrategy(BaseStrategy):
         """
         cost_price: float = float(position.get("cost_price", 0))
         extra: dict[str, Any] = {"code": code, "cost_price": cost_price}
-        # 有持仓取真实买入日；实时链路恒传空持仓（设计约定 D-1），退化为
-        # 「最近 2 个交易日」—— 与成交量策略同口径（见基类 `_sell_baseline_buy_time`）
-        buy_time: str = self._sell_baseline_buy_time(
-            position, str(stock_data.get("create_time", ""))
-        )
 
         try:
             current_price: float = float(stock_data.get("price", 0))
             create_time: str = str(stock_data.get("create_time", ""))
             preclose: float = float(stock_data.get("preclose", 0))
-            day_high: float = float(stock_data.get("high", 0))
 
             if current_price <= 0:
                 return False, {
@@ -714,26 +728,37 @@ class SwingTradingStrategy(BaseStrategy):
             # 位置分：枢轴点与布林带等权平均。文案里的「平均分值」就是它，保持原样。
             avg_score: float = (inday_score + boll_score) / 2
 
-            # ---- 回撤止损：独立负分项，直接叠加在位置分上（不做平均）----
-            # 止损要的是「果断退出」：一条回撤理由（-6.0）就应足够单独触发卖出，
-            # 不该被「枢轴点=0、布林带=0」的中间态稀释掉。未触发回撤时
-            # final_score 恒等于 avg_score，卖出行为与加回撤前完全一致。
+            # ---- 买入信号价止损（2026-10-14 替换原「自持仓最高点回撤」）----
+            # 基准是本次建仓的买入信号价，触发即**直接返回卖出信号**（硬止损），
+            # 不并入下面的 final_score 累加 —— 止损要的是果断退出，不该被
+            # 「枢轴点=0、布林带=0」的中间态稀释，也不该被门槛偏移二次抬高。
+            break_stop: bool
+            break_detail: dict[str, Any]
+            break_stop, break_detail = self._buy_signal_break_stop(code, current_price)
+            if break_detail:
+                extra.update(break_detail)
+            if break_stop:
+                break_score: float = self.SELL_BUY_PRICE_BREAK_SCORE
+                extra["signal"] = "SELL"
+                # 星级取固定的硬止损等效分（−6.0 ⇒ 3.0 星），不取门槛值：门槛会被
+                # 阀门与市场偏移抬高，那时星级会掉到 0，被下游推送门槛二次拦掉。
+                extra["score"] = round(break_score, 2)
+                extra["star"] = self.score_to_star(break_score)
+                extra["current_price"] = round(current_price, 2)
+                extra["create_time"] = create_time
+                extra["reason"] = (
+                    f"条件满足: 买入信号价止损，连续"
+                    f"{int(break_detail.get('break_count', 0))}次低于买入信号价"
+                    f"{float(break_detail.get('buy_signal_price', 0.0)):.2f}"
+                    f"（当前{current_price:.2f}，"
+                    f"{float(break_detail.get('below_pct', 0.0)):.2f}%）, "
+                    f"枢轴点分值:{inday_score:.2f}, 布林带分值:{boll_score:.2f},"
+                    f"平均分值:{avg_score:.2f}"
+                )
+                return True, extra
+
             final_score: float = avg_score
             dd_parts: list[str] = []
-            highest_price: float = self._resolve_highest_price(
-                code, buy_time, create_time, day_high, cost_price
-            )
-            if highest_price > 0:
-                drawdown: float = (current_price - highest_price) / highest_price * 100
-                extra["highest_price"] = round(highest_price, 2)
-                extra["drawdown"] = round(drawdown, 2)
-                if drawdown < self.SELL_DRAWDOWN_PCT:
-                    final_score += self.SELL_DRAWDOWN_SCORE
-                    dd_parts.append(
-                        f"持仓回撤{drawdown:.2f}%(最高{highest_price:.2f}→"
-                        f"{current_price:.2f}，阈值{self.SELL_DRAWDOWN_PCT:.2f}%，"
-                        f"扣{self.SELL_DRAWDOWN_SCORE:.2f}分)"
-                    )
             # 账户级回撤：账户权益自峰值回撤达阈值时分值入账（阈值 0/正数表示关闭）。
             # 这是账户级条件，对被检查的每只股票都成立（回撤超限时整体降仓）；
             # 回撤值由 workflow / 回测在调用策略前注入（见基类 `set_account_drawdown`）。

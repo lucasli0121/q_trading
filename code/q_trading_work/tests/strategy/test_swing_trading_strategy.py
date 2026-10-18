@@ -380,22 +380,25 @@ class TestSwingTrendFilter(unittest.TestCase):
         self.assertAlmostEqual(float(sr_df.iloc[0]["pivot"]), 10.0, places=6)
 
 
-class TestSwingSellDrawdown(unittest.TestCase):
-    """卖出侧回撤：个股回撤与账户回撤作为独立负分项叠加在位置分上。
+class TestSwingSellStop(unittest.TestCase):
+    """卖出侧：账户回撤分项 + 买入信号价硬止损。
 
-    两个位置因子被打桩成 0，因此触发与否完全由回撤决定 —— 这正是用户现场
-    （枢轴点 0.00、布林带 -7.50）的极端版：位置分 0 时，一条回撤理由也该卖出。
+    个股「自持仓最高点回撤」自 2026-10-14 起被移除 —— 它在恒传空持仓的实时链路
+    （设计约定 D-1）里会把基准退化成「最近 2 个交易日最高价」，买缩量回调股时
+    变成买入即接近卖出条件；改由 `BaseStrategy.SELL_BUY_PRICE_BREAK_*`
+    （连续 3 个分钟 bar 低于买入信号价）承担。本组守住三件事：
+    ① 位置分 0 且无止损时不卖；② 账户回撤分项行为不变；③ 止损触发时走硬卖出路径。
     """
 
-    USID: str = "test-swing-sell-drawdown"
+    USID: str = "test-swing-sell-stop"
 
     def _sell(
         self,
         strategy: SwingTradingStrategy,
-        highest_price: float,
         account_dd: float = 0.0,
+        price: float = 10.0,
     ):
-        """跑一次卖出判定：位置分固定 0，持仓最高价与账户回撤可控。"""
+        """跑一次卖出判定：两个位置因子打桩成 0，价格与账户回撤可控。"""
         if account_dd:
             strategy.set_account_drawdown(account_dd)
         with patch.object(InDaySRFactor, "score_with_sr", return_value=0.0), patch.object(
@@ -404,67 +407,68 @@ class TestSwingSellDrawdown(unittest.TestCase):
             strategy, "_get_sr_points", return_value=pd.DataFrame()
         ), patch.object(
             strategy, "_get_minute_cache", return_value=[]
-        ), patch.object(
-            strategy, "_resolve_highest_price", return_value=highest_price
         ):
-            return strategy._check_sell_conditions("000001", {}, _bar())
+            return strategy._check_sell_conditions("000001", {}, _bar(price=price))
 
-    def test_position_drawdown_triggers_sell(self) -> None:
-        """现价 10.0 / 持仓最高 11.0 ⇒ 回撤 -9.09%，超过 -6% 阈值 ⇒ 卖出。"""
-        strategy = _swing_strategy(self.USID)
-        matched, extra = self._sell(strategy, highest_price=11.0)
-        self.assertTrue(matched)
-        self.assertEqual(extra["signal"], "SELL")
-        self.assertAlmostEqual(extra["score"], -6.0, places=2)
-        self.assertAlmostEqual(extra["star"], 3.0, places=1)
-        # 原有文案段必须保留，回撤段追加在后面
-        self.assertIn("枢轴点分值:0.00", extra["reason"])
-        self.assertIn("平均分值:0.00", extra["reason"])
-        self.assertIn("持仓回撤", extra["reason"])
-        self.assertAlmostEqual(extra["drawdown"], -9.09, places=1)
-
-    def test_drawdown_within_threshold_keeps_original_reason(self) -> None:
-        """回撤未达阈值时不追加任何字段（卖出文案逐字与改动前一致）。"""
-        strategy = _swing_strategy(self.USID)
-        matched, extra = self._sell(strategy, highest_price=10.2)  # -1.96%
-        self.assertFalse(matched)
-        self.assertNotIn("持仓回撤", extra.get("reason", ""))
-        self.assertNotIn("账户回撤", extra.get("reason", ""))
-
-    def test_position_drawdown_threshold_is_configurable(self) -> None:
-        """阈值放宽到 -20% 后，同一回撤（-9.09%）不再触发。"""
-        strategy = _swing_strategy(self.USID)
-        strategy.SELL_DRAWDOWN_PCT = -20.0
-        matched, _extra = self._sell(strategy, highest_price=11.0)
-        self.assertFalse(matched)
+    # ---- 账户回撤分项（行为与改动前一致）----
 
     def test_account_drawdown_triggers_sell(self) -> None:
         """账户回撤 -12.5% 达默认阈值 -10% ⇒ 单独一条即可触发卖出。"""
         strategy = _swing_strategy(self.USID)
-        matched, extra = self._sell(strategy, highest_price=10.2, account_dd=-12.5)
+        matched, extra = self._sell(strategy, account_dd=-12.5)
         self.assertTrue(matched)
         self.assertAlmostEqual(extra["score"], -6.0, places=2)
         self.assertIn("账户回撤", extra["reason"])
 
     def test_account_drawdown_below_threshold_does_not_trigger(self) -> None:
         strategy = _swing_strategy(self.USID)
-        matched, _extra = self._sell(strategy, highest_price=10.2, account_dd=-9.9)
+        matched, _extra = self._sell(strategy, account_dd=-9.9)
         self.assertFalse(matched)
 
-    def test_two_drawdowns_stack(self) -> None:
-        """两条回撤理由同时成立时叠加（-6.0 + -6.0），而不是二选一。"""
+    def test_position_score_zero_does_not_sell(self) -> None:
+        """位置分 0 且无账户回撤 ⇒ 不卖（去掉个股回撤后卖出边界不变）。"""
         strategy = _swing_strategy(self.USID)
-        matched, extra = self._sell(strategy, highest_price=11.0, account_dd=-12.5)
+        matched, extra = self._sell(strategy)
+        self.assertFalse(matched)
+        self.assertNotIn("买入信号价止损", extra.get("reason", ""))
+
+    # ---- 买入信号价硬止损 ----
+
+    def test_buy_signal_break_triggers_sell(self) -> None:
+        """连续 3 个 bar 低于买入信号价 ⇒ 直接卖出，分值/星级固定。"""
+        strategy = _swing_strategy(self.USID)
+        strategy.set_buy_signal_price("000001", 10.5)
+        self.assertFalse(self._sell(strategy, price=10.4)[0])  # 第 1 次
+        self.assertFalse(self._sell(strategy, price=10.4)[0])  # 第 2 次
+        matched, extra = self._sell(strategy, price=10.4)      # 第 3 次
         self.assertTrue(matched)
-        self.assertAlmostEqual(extra["score"], -12.0, places=2)
-        self.assertIn("持仓回撤", extra["reason"])
-        self.assertIn("账户回撤", extra["reason"])
+        self.assertEqual(extra["signal"], "SELL")
+        self.assertAlmostEqual(extra["score"], -6.0, places=2)
+        self.assertAlmostEqual(extra["star"], 3.0, places=1)
+        self.assertIn("买入信号价止损", extra["reason"])
+        self.assertIn("连续3次", extra["reason"])
+        # 硬止损是独立路径，位置分文案仍原样保留
+        self.assertIn("枢轴点分值:0.00", extra["reason"])
 
-    def test_drawdown_absent_keeps_original_behaviour(self) -> None:
-        """位置分 0 且无回撤 ⇒ 不卖（加回撤不得改变原有卖出边界）。"""
+    def test_recover_to_buy_signal_resets_count(self) -> None:
+        """中途回到买入信号价（含相等）⇒ 计数清零，之前累计的次数作废。"""
         strategy = _swing_strategy(self.USID)
-        matched, _extra = self._sell(strategy, highest_price=0.0)
-        self.assertFalse(matched)
+        strategy.set_buy_signal_price("000001", 10.5)
+        self.assertFalse(self._sell(strategy, price=10.4)[0])  # 1
+        self.assertFalse(self._sell(strategy, price=10.4)[0])  # 2
+        self.assertFalse(self._sell(strategy, price=10.5)[0])  # 回到基准 ⇒ 清零
+        self.assertFalse(self._sell(strategy, price=10.4)[0])  # 重新从 1 开始
+        self.assertFalse(self._sell(strategy, price=10.4)[0])  # 2
+        self.assertTrue(self._sell(strategy, price=10.4)[0])   # 3 ⇒ 触发
+
+    def test_no_baseline_does_not_stop(self) -> None:
+        """没有买入信号价基准（未建仓）⇒ 不判定，不误卖。
+
+        价格取 −5%（未触及涨跌停闸门），确保走到止损判定本身而不是被前置闸门拦掉。
+        """
+        strategy = _swing_strategy(self.USID)
+        for _ in range(5):
+            self.assertFalse(self._sell(strategy, price=9.5)[0])
 
 
 if __name__ == "__main__":

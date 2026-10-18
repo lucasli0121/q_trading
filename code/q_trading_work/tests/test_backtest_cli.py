@@ -40,9 +40,16 @@ class TestBacktestCli(unittest.TestCase):
         # 在回测链路里真正参与打分。
         self.assertEqual(args.signal_window, 40)
         self.assertEqual(args.frequency, "daily")
-        self.assertEqual(args.buy_slip, 0.2)
+        # 2026-10-14：滑点由 0.2 降到 0.02 元 —— 0.2 元/股的往返成本（0.4 元）
+        # 对 90 元出头的成交均价约合 0.44%，而原口径中位持仓只有 5 分钟，
+        # 滑点几乎吃掉整笔的平均盈亏。
+        self.assertEqual(args.buy_slip, 0.02)
+        self.assertEqual(args.sell_slip, 0.02)
         self.assertEqual(args.fee_pct, 0.02)
         self.assertEqual(args.fee_low, 5.0)
+        # 盘中买入门槛（2026-10-14）：默认关闭，窗口默认 10 分钟（同 cfg）
+        self.assertFalse(args.buy_dip_gate)
+        self.assertEqual(args.buy_dip_gap_minutes, 10.0)
 
     def test_signal_window_default_matches_engine_config(self) -> None:
         """CLI 默认窗口必须与 BacktestConfig.signal_window 同源。

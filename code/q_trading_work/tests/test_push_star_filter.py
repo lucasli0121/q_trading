@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from mq.mqtt_client import MqttTopic
@@ -367,6 +369,98 @@ class TestProcessBarOrderGate(unittest.TestCase):
 
         self.wf._load_positions.assert_called_once()
         self.wf._reserve_buy_order.assert_called_once()
+
+
+class TestMinTradeIntervalFilter(unittest.TestCase):
+    """成交间隔限制（2026-10-11，`cfg/stock.cfg [signal_filter]`）。
+
+    与信号风暴过滤的分工：那条只比**同方向**连续信号（防同方向重复下单），
+    压不住「卖完又买回」这类跨方向的高频进出；本项不分方向，直接限制交易频率。
+
+    沿用本文件的桩：星级门槛设 0 让它不参与判定，「最近一条信号」用
+    `_trade_signal_api.latest` 打桩构造，配置读取打桩成固定返回值。
+    """
+
+    @staticmethod
+    def _last(action: str, minutes_ago: float, price: float = 10.0) -> dict[str, Any]:
+        """构造「N 分钟前的一条信号」。"""
+        return {
+            "action": action,
+            "trade_price": price,
+            "create_time": (
+                datetime.now() - timedelta(minutes=minutes_ago)
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    def _wf(self, history: dict[str, Any], min_interval: float) -> StrategyWorkflow:
+        wf: StrategyWorkflow = make_workflow()
+        wf._notifier = make_notifier(buy_min=0.0)
+        wf._trade_signal_api.latest.return_value = history
+        wf._load_signal_filter_config = MagicMock(  # type: ignore[method-assign]
+            return_value=(2.0, 10, min_interval)
+        )
+        return wf
+
+    def _save(
+        self, wf: StrategyWorkflow, action: str = "BUY", price: float = 10.0
+    ) -> bool:
+        return wf._save_trade_signal(
+            "s1", "us1", "000001.SZ",
+            {
+                "signal": action,
+                "current_price": price,
+                "score": 8.0,
+                "star": 4.0,
+                "reason": "条件满足",
+            },
+            strategy_name="强趋势策略",
+            user_strategy_name="爸爸的强趋势",
+        )
+
+    def test_disabled_when_zero(self) -> None:
+        """0 = 关闭：哪怕 1 分钟前刚有一条信号也照常放行。"""
+        wf: StrategyWorkflow = self._wf(self._last("BUY", 1), min_interval=0.0)
+        with patch("workflow.strategy_workflow.AppContext"):
+            self.assertTrue(self._save(wf))
+
+    def test_suppressed_within_interval(self) -> None:
+        """限制 30 分钟、距上次 5 分钟 ⇒ 抑制，且**不写库**（与风暴过滤同一退出路径）。"""
+        wf: StrategyWorkflow = self._wf(self._last("BUY", 5), min_interval=30.0)
+        with patch("workflow.strategy_workflow.AppContext"):
+            ok: bool = self._save(wf)
+        self.assertFalse(ok)
+        wf._trade_signal_api.add.assert_not_called()
+
+    def test_passed_beyond_interval(self) -> None:
+        wf: StrategyWorkflow = self._wf(self._last("BUY", 40), min_interval=30.0)
+        with patch("workflow.strategy_workflow.AppContext"):
+            self.assertTrue(self._save(wf))
+        wf._trade_signal_api.add.assert_called_once()
+
+    def test_applies_across_direction_unlike_storm(self) -> None:
+        """**不分方向**：上次是卖出、本次买入、间隔 1 分钟也要拦。
+
+        对照风暴过滤 —— 它要求 `last_action == action`，这种情况会放行，
+        所以两者不能互相替代。
+        """
+        wf: StrategyWorkflow = self._wf(self._last("SELL", 1), min_interval=30.0)
+        with patch("workflow.strategy_workflow.AppContext"):
+            self.assertFalse(self._save(wf, action="BUY"))
+
+    def test_empty_history_passes(self) -> None:
+        """没有历史信号 ⇒ 不判（首次交易不该被自己拦住）。"""
+        wf: StrategyWorkflow = self._wf({}, min_interval=30.0)
+        with patch("workflow.strategy_workflow.AppContext"):
+            self.assertTrue(self._save(wf))
+
+    def test_config_field_is_readable(self) -> None:
+        """新配置项必须能从 cfg 读到，缺失时回退 0（关闭）而不是抛错。"""
+        wf: StrategyWorkflow = StrategyWorkflow(pool_size=1)
+        price_threshold, time_gap, min_interval = wf._load_signal_filter_config()
+        self.assertIsInstance(price_threshold, float)
+        self.assertIsInstance(time_gap, int)
+        self.assertIsInstance(min_interval, float)
+        self.assertGreaterEqual(min_interval, 0.0)
 
 
 if __name__ == "__main__":

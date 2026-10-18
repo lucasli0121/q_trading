@@ -128,8 +128,13 @@ class VolumeExpansionFactor(BaseFactor):
         保留 dict 是为了让调用方能拿到 `reason` 明细；若将来要并入统一因子
         接口，应另加一个返回 float 的入口，而不是直接改这里的返回类型。
 
+        **`data_ok` 字段（2026-10-14 新增）**：关键输入（量比 / 斜率 / 涨跌幅 /
+        连续放量天数 / OBV）任一为 NaN 时返回 `data_ok=False`，`score` 归零。
+        调用方**必须**先看 `data_ok` 再使用 `score` —— `score=0` 与「算不出来」
+        在买入侧 reversion 模式下都会命中「极度缩量」这个最理想买点。
+
         :param stock_array: 含 close/high/low/volume 列的行情 DataFrame
-        :return: 明细字典，`score` 字段为 0~10 的综合分
+        :return: 明细字典，`score` 字段为 0~10 的综合分，`data_ok` 为输入完整性
         """
         score: float = 0.0
         reason: list[str] = []
@@ -137,12 +142,38 @@ class VolumeExpansionFactor(BaseFactor):
             return {
                 'signal': 'None', 'score': score, 'price': 0.0, 'volume': 0.0,
                 'vol_ratio': 0.0, 'reason': reason, 'consecutive': 0.0,
-                'vol_slope': 0.0, 'vol_price_align': 0,
+                'vol_slope': 0.0, 'vol_price_align': 0, 'data_ok': False,
             }
 
         df: pd.DataFrame = self.calculate(stock_array)
         row = df.iloc[-1]
         prev = df.iloc[-2]
+
+        # === 关键输入缺失（NaN）必须先拒绝，不能让它「算成 0 分」===
+        # 六项分项全部依赖区间比较（`ratio >= 3.0`、`slope > 0.0`、`obv > obv_ma` …），
+        # NaN 参与比较恒为 False ⇒ 各项都不计分 ⇒ 总分落在 0 附近。
+        # 而买入侧 reversion 模式的「量能强度」= (缩量上限 − 成交量分) / 缩量上限，
+        # **成交量分为 0 时正好给满分** ⇒ 数据缺失反倒被判成「极度缩量」这个最理想买点。
+        # 实测 405/4110 次买入信号含 NaN，落地的 5 笔全部亏损（均 −3.87%，正常组 −1.54%）。
+        # 这里显式标注 `data_ok=False`，由调用方（`_combine`）判为不达标，属 fail-closed。
+        missing: list[str] = [
+            name
+            for name, value in (
+                ("量比", row['vol_ratio_short']),
+                ("成交量斜率", row['vol_slope']),
+                ("涨跌幅", row['price_change']),
+                ("连续放量天数", row['consecutive_vol_up']),
+                ("OBV", row['obv']),
+            )
+            if value is None or pd.isna(value)
+        ]
+        if missing:
+            return {
+                'signal': 'None', 'score': 0.0, 'price': 0.0, 'volume': 0.0,
+                'vol_ratio': 0.0, 'reason': [f"数据缺失({','.join(missing)})"],
+                'consecutive': 0.0, 'vol_slope': 0.0, 'vol_price_align': 0,
+                'data_ok': False,
+            }
         price_up = row["price_change"] > 0 # 价格上涨标志
 
         # === 条件1: 成交量连续放大（满分 2.0）===
@@ -236,5 +267,9 @@ class VolumeExpansionFactor(BaseFactor):
             'reason': reason,
             'consecutive': consecutive,
             'vol_slope': slope,
-            'vol_price_align': row['vol_price_align']
+            'vol_price_align': row['vol_price_align'],
+            # 关键输入是否齐全。False 表示「算不出来」，**不等价于 0 分**：
+            # 买入侧 reversion 会把 0 分读成「极缩量」并给满分。调用方必须先用本字段
+            # 过滤，再拿 score 做门槛比较（见 `VolumeExpansionStrategy._combine`）。
+            'data_ok': True,
         }

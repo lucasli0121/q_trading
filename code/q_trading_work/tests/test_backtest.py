@@ -9,6 +9,7 @@ Description: 回测引擎测试 —— 日频回测使用真实 API 行情数据
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -47,7 +48,11 @@ class SimpleMomentumStrategy(BaseStrategy):
         if len(stock_data) < 3:
             return False, {"reason": "data too short"}
         return bool(stock_data[-1]["close"] > stock_data[-2]["close"]), {
-            "last_close": float(stock_data[-1]["close"])
+            "last_close": float(stock_data[-1]["close"]),
+            # score/star 是真实策略 extra 的固有字段（见 _check_daily_signal_at），
+            # 桩里补上才能验证「信号分值被写进 TradeResult」
+            "score": 6.0,
+            "star": 3.0,
         }
 
     def before_trading(
@@ -110,6 +115,239 @@ def _trade(
 
 
 class TestBacktestEngine(unittest.TestCase):
+    # ---- 信号分值透传（2026-10-11）----
+    # 在此之前 TradeResult 只有价格与收益率：日频路径把 is_match_strategy 的 extra
+    # 收进 `_extra` 就丢掉了，分钟路径也没采集，导出的 JSON 明细里看不到任何分值。
+
+    def test_daily_trade_records_signal_score(self) -> None:
+        """日频：选股信号的 score/star 必须落进 TradeResult。"""
+        engine = BacktestEngine(config=BacktestConfig(signal_window=5, hold_days=2))
+        df = pd.DataFrame(
+            [
+                {
+                    "create_time": f"2026-01-{i + 1:02d}",
+                    "open": 10.0 + i,
+                    "close": 10.5 + i,
+                    "high": 11.0 + i,
+                    "low": 9.5 + i,
+                    "volume": 1000,
+                }
+                for i in range(12)
+            ]
+        )
+        trade = engine._check_daily_signal_at(
+            SimpleMomentumStrategy(),
+            df,
+            "000001",
+            "SimpleMomentum",
+            i=5,
+            hold_days=2,
+            signal_window=5,
+        )
+        self.assertIsNotNone(trade)
+        assert trade is not None
+        self.assertEqual(trade.buy_score, 6.0)
+        self.assertEqual(trade.buy_star, 3.0)
+        # 日频的卖出是「持有 N 日到期」的固定卖出，不产生卖出信号
+        self.assertEqual(trade.sell_score, 0.0)
+        self.assertEqual(trade.sell_star, 0.0)
+
+    def test_minute_trade_records_both_scores(self) -> None:
+        """分钟：买入侧（可能跨日保留）与卖出侧的分值都要落进 TradeResult。"""
+        engine = BacktestEngine()
+        trade = engine._build_minute_trade(
+            "成交量放大策略",
+            "000988",
+            {"create_time": "2026-08-10 10:09:00"},
+            "2026-08-10 09:49:00",
+            104.94,
+            101.38,
+            buy_score=5.5,
+            buy_star=2.75,
+            sell_score=-6.5,
+            sell_star=3.0,
+        )
+        self.assertEqual(trade.buy_score, 5.5)
+        self.assertEqual(trade.buy_star, 2.75)
+        self.assertEqual(trade.sell_score, -6.5)
+        self.assertEqual(trade.sell_star, 3.0)
+
+    # ---- 信号风暴过滤（2026-10-11）----
+    # 与实盘 `StrategyWorkflow._save_trade_signal` 同语义：同一天内、同方向的连续
+    # 信号，距上一条通过过滤的信号不足时间间隔、或价格变化不足阈值即抑制。
+
+    def test_storm_filter_disabled_by_default(self) -> None:
+        """回测默认关闭该过滤（保持历史回测可比），实盘则常开。"""
+        engine = BacktestEngine()
+        last = {"action": "BUY", "price": 100.0, "time": "2026-08-10 09:49:00"}
+        self.assertFalse(
+            engine._storm_suppressed(last, "BUY", 100.0, "2026-08-10 09:50:00")
+        )
+
+    def test_storm_filter_suppresses_when_too_soon(self) -> None:
+        """9 分钟 < 10 分钟，且价格没动（0% < 2%）⇒ 抑制。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(storm_filter_enabled=True)
+        )
+        last = {"action": "BUY", "price": 100.0, "time": "2026-08-10 09:49:00"}
+        self.assertTrue(
+            engine._storm_suppressed(last, "BUY", 100.0, "2026-08-10 09:58:00")
+        )
+
+    def test_storm_filter_suppresses_when_price_barely_moves(self) -> None:
+        """时间够（20 分钟）但价格只动 0.5% < 2% ⇒ 仍然抑制（两个条件都要达到）。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(storm_filter_enabled=True)
+        )
+        last = {"action": "BUY", "price": 100.0, "time": "2026-08-10 09:49:00"}
+        self.assertTrue(
+            engine._storm_suppressed(last, "BUY", 100.5, "2026-08-10 10:09:00")
+        )
+
+    def test_storm_filter_passes_when_both_conditions_met(self) -> None:
+        engine = BacktestEngine(
+            config=BacktestConfig(storm_filter_enabled=True)
+        )
+        last = {"action": "BUY", "price": 100.0, "time": "2026-08-10 09:49:00"}
+        self.assertFalse(
+            engine._storm_suppressed(last, "BUY", 103.0, "2026-08-10 10:09:00")
+        )
+
+    def test_storm_filter_ignores_opposite_direction(self) -> None:
+        """只比同方向：买→卖不受这条过滤约束（实盘亦然）。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(storm_filter_enabled=True)
+        )
+        last = {"action": "BUY", "price": 100.0, "time": "2026-08-10 09:49:00"}
+        self.assertFalse(
+            engine._storm_suppressed(last, "SELL", 100.0, "2026-08-10 09:50:00")
+        )
+
+    def test_storm_filter_ignores_other_day(self) -> None:
+        """跨日不判 —— 实盘要求 `last_dt.date() == today.date()`。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(storm_filter_enabled=True)
+        )
+        last = {"action": "BUY", "price": 100.0, "time": "2026-08-10 14:57:00"}
+        self.assertFalse(
+            engine._storm_suppressed(last, "BUY", 100.0, "2026-08-11 09:31:00")
+        )
+
+    def test_storm_filter_ignores_empty_history(self) -> None:
+        engine = BacktestEngine(
+            config=BacktestConfig(storm_filter_enabled=True)
+        )
+        self.assertFalse(
+            engine._storm_suppressed({}, "BUY", 100.0, "2026-08-10 09:50:00")
+        )
+
+    # ---- 成交间隔限制（2026-10-11）----
+    # 与风暴过滤不同：这条**不分方向**，压的是「卖完又买回」这类高频进出。
+
+    def test_min_trade_interval_disabled_by_default(self) -> None:
+        engine = BacktestEngine()
+        last = datetime(2026, 8, 10, 9, 49, 0)
+        self.assertFalse(
+            engine._trade_interval_blocked(last, "2026-08-10 09:50:00")
+        )
+
+    def test_min_trade_interval_blocks_within_gap(self) -> None:
+        engine = BacktestEngine(
+            config=BacktestConfig(min_trade_interval_minutes=30)
+        )
+        last = datetime(2026, 8, 10, 9, 49, 0)
+        self.assertTrue(engine._trade_interval_blocked(last, "2026-08-10 10:00:00"))
+        # 恰好等于阈值 ⇒ 放行（判定用 <）
+        self.assertFalse(engine._trade_interval_blocked(last, "2026-08-10 10:19:00"))
+
+    def test_min_trade_interval_first_trade_of_day_passes(self) -> None:
+        """当日还没成交过（None）⇒ 直接放行。"""
+        engine = BacktestEngine(
+            config=BacktestConfig(min_trade_interval_minutes=30)
+        )
+        self.assertFalse(engine._trade_interval_blocked(None, "2026-08-10 09:31:00"))
+
+    def test_min_trade_interval_ignores_direction_unlike_storm(self) -> None:
+        """同一条「卖完 1 分钟就买回」：风暴过滤放行，间隔限制拦住。
+
+        这正是两个机制的分工 —— 风暴过滤只比同方向，所以对反向信号直接放行。
+        """
+        engine = BacktestEngine(
+            config=BacktestConfig(
+                storm_filter_enabled=True, min_trade_interval_minutes=30
+            )
+        )
+        storm_last = {
+            "action": "SELL",
+            "price": 100.0,
+            "time": "2026-08-10 09:49:00",
+        }
+        self.assertFalse(
+            engine._storm_suppressed(storm_last, "BUY", 100.0, "2026-08-10 09:50:00")
+        )
+        self.assertTrue(
+            engine._trade_interval_blocked(
+                datetime(2026, 8, 10, 9, 49, 0), "2026-08-10 09:50:00"
+            )
+        )
+
+    # ---- 资金按标的均分（2026-10-12）----
+    # 全局单一资金池下，先出现的信号会占满资金、其余标的被跳过；分片后各自独立周转。
+
+    def test_split_capital_by_code_isolates_each_stock(self) -> None:
+        """两只股票同时买入：分片后各用自己的份额，结果是一赚一亏相抵。
+
+        全局池里 A 先成交占满资金、B 的买入被跳过 ⇒ 结果完全由 A 决定（−50%）；
+        分片后 A 亏 50%、B 赚 50%，各用自己那份 ⇒ 总权益回到起点。
+        """
+        trades = [
+            TradeResult(
+                code="A", strategy_name="S", buy_date="2026-01-01",
+                sell_date="2026-01-02", buy_price=10.0, sell_price=10.0,
+                profit_pct=-50.0,
+            ),
+            TradeResult(
+                code="B", strategy_name="S", buy_date="2026-01-01",
+                sell_date="2026-01-03", buy_price=10.0, sell_price=10.0,
+                profit_pct=50.0,
+            ),
+        ]
+
+        pooled = BacktestEngine(config=BacktestConfig(initial_capital=20000.0))
+        curve = pooled._compute_equity_curve(trades, 2)
+        self.assertAlmostEqual(curve[0], 20000.0, places=2)
+        self.assertAlmostEqual(curve[-1], 10000.0, places=2)  # 只有 A 成交
+
+        split = BacktestEngine(
+            config=BacktestConfig(
+                initial_capital=20000.0, split_capital_by_code=True
+            )
+        )
+        split_curve = split._compute_equity_curve(trades, 2)
+        self.assertAlmostEqual(split_curve[0], 20000.0, places=2)
+        self.assertAlmostEqual(split_curve[-1], 20000.0, places=2)  # A、B 都成交
+
+    def test_split_capital_keeps_unused_share_idle(self) -> None:
+        """池里有标的没产生交易时，它那份资金闲置但仍计入权益（不是凭空消失）。"""
+        trades = [
+            TradeResult(
+                code="A", strategy_name="S", buy_date="2026-01-01",
+                sell_date="2026-01-02", buy_price=10.0, sell_price=10.0,
+                profit_pct=0.0,
+            ),
+        ]
+        engine = BacktestEngine(
+            config=BacktestConfig(initial_capital=30000.0, split_capital_by_code=True)
+        )
+        # 池里 3 只，只有 A 有交易 ⇒ 每份 10000，A 那份不动，另两份闲置
+        curve = engine._compute_equity_curve(trades, 3)
+        self.assertAlmostEqual(curve[0], 30000.0, places=2)
+        self.assertAlmostEqual(curve[-1], 30000.0, places=2)
+
+    def test_split_capital_defaults_off(self) -> None:
+        """默认关闭：不传参数时沿用原来的全局资金池口径。"""
+        self.assertFalse(BacktestConfig().split_capital_by_code)
+
     def test_run_daily_with_real_data(self) -> None:
         """真实日K数据回测：产生交易、买卖价格含滑点、持有天数正确。
 

@@ -81,6 +81,69 @@ class BaseStrategy(ABC):
     # 基类不做隐式拦截，避免悄悄改变已有策略的卖出行为。
     SELL_RISK_DRAWDOWN_SCORE: float = -6.0
 
+    # ---- 买入信号价止损（2026-10-14）----
+    #
+    # 语义：**连续 N 个分钟 bar 的现价都低于「买入信号价」** ⇒ 直接卖出（硬止损）。
+    # 基准是**本策略发出买入信号时的价格**，不是持仓最高价、也不是成交后的成本价。
+    #
+    # 为什么替换掉原「自持仓最高点回撤 N%」：实时链路按设计约定 D-1 恒传空持仓
+    # （见 `_sell_baseline_buy_time`），卖出侧拿不到真实买入日 ⇒ 最高价回退成
+    # 「最近 2 个交易日最高价」。买「缩量回调」类标的时，该股此刻往往已经比前两日
+    # 高点低 6% 以上，于是**买入瞬间就接近卖出条件**（实测 10-09 的 605499 / 600875
+    # 连续 6 笔卖出理由里的回撤值全是 −11.79%，一字不差，共用同一个缓存峰值）。
+    # 换成「相对买入信号价」之后，判定基准与建仓时点对齐，不再有这个偏差。
+    #
+    # 达成方式是**硬止损**（直接返回卖出信号），不并入卖出分累加 —— 止损要的是
+    # 果断退出，不该被「枢轴点分 0 / 布林带分 0」的中间态稀释，也不该被门槛偏移
+    # 二次抬高。`SELL_BUY_PRICE_BREAK_ENABLED=False` 可整体关闭。
+    SELL_BUY_PRICE_BREAK_ENABLED: bool = True
+    SELL_BUY_PRICE_BREAK_COUNT: int = 3
+    # 硬止损在日志 / 推送里**等效的卖出分值**（10 分制，取负）。它同时决定星级：
+    # star = score_to_star(本值)，默认 −6.0 ⇒ 3.0 星，与原「回撤 −6.0 分」同强度。
+    # 之所以不取「刚好跨过门槛」的分值：门槛会被阀门与市场偏移抬高，取门槛值会让
+    # 极端行情下的硬止损星级掉到 0，被下游推送星级门槛二次拦掉 —— 那时恰恰最需要卖。
+    SELL_BUY_PRICE_BREAK_SCORE: float = -6.0
+
+    # ---- 日内熔断（2026-10-14）----
+    #
+    # 要解决的问题是硬止损的**空转**：止损把仓位清零之后，「缩量回调」这个买入条件
+    # 往往仍然成立，成交间隔一到就买回同一只票、再被同一个止损打出来。v5 回测
+    # （27 组，2026-07-21~10-13）里成交量策略这个循环最严重：「止损后 2 小时内再
+    # 入场」的笔数占止损笔数的 60%~100%，其中 **93% / 81% / 80%** 又被同一条件
+    # 二次止损。止损因此只把大亏切成小亏，总亏损没有改变，笔数却涨到 2.4~2.5 倍。
+    #
+    # 熔断在**当日剩余时间里关掉该股的一侧信号**，把「一天内来回 N 次」压成
+    # 「一天最多一次」。作用域是**单只股票**，不是整条策略 —— 触发原因来自这只票
+    # 自身的走势，没理由连带停掉同策略里其它标的。
+    #
+    # 为什么熔断 ≠ 抬高门槛：抬高门槛只是「更难触发」，在阴跌行情里分值照样能
+    # 跨过来；熔断是硬否决，与门槛偏移链无关，也不会被阀门二次影响。
+    #
+    # `INTRADAY_BREAKER_ENABLED=False` 可整体关闭（对照用，见回测 CLI
+    # `--no-intraday-breaker`）。
+    INTRADAY_BREAKER_ENABLED: bool = True
+
+    # 买入侧：某股**连续** `INTRADAY_BUY_BLOCK_LOSS_SELLS` 次亏损卖出后，当日不再
+    # 对该股发买入信号（次日自动恢复，不需要显式清除）。
+    #
+    # 「亏损」的判定口径：**卖出价 < 买入信号价**。之所以不用成交成本口径 ——
+    # 策略按设计约定恒收空持仓（X1），拿不到 `cost_price`，也拿不到真实成交价；
+    # 它自己记录的「本笔建仓的买入信号价」是链路里唯一可用的建仓基准。
+    # 回测里成交价与信号价出自同一根 bar 的 `price`，两者只差滑点
+    # （0.02 元 ≈ 0.03%），因此这个代理在正负 0.03% 附近会误判，量级可忽略。
+    #
+    # 计数**跨日累计**，只在出现一笔盈利卖出（卖出价 >= 买入信号价）时清零；
+    # 「连续」因此是「连续亏损往返」而不是「当日连续亏损往返」。
+    INTRADAY_BUY_BLOCK_LOSS_SELLS: int = 3
+
+    # 卖出侧：某股**连续** `INTRADAY_SELL_BLOCK_FLY_SELLS` 次卖出后价格都涨过该次
+    # 卖出价（卖飞），则当日不再对该股发卖出信号（次日自动恢复）。
+    #
+    # 观察窗口是**当个交易日内**：卖出后到当日收盘都没涨过卖出价，视为「没卖飞」，
+    # 连续计数清零。这与盘后阀门里的 R1/R2/R3 是两套东西 —— 那个是「盘后算、
+    # 次日抬卖出门槛」，作用在日与日之间；本规则作用在当日盘中。
+    INTRADAY_SELL_BLOCK_FLY_SELLS: int = 3
+
     # 买入是否依赖「当日选股结果」。
     #
     # 基类 `handle_minute_bar` / `handle_tick_bar` 用 `_load_select_stocks()` 决定
@@ -154,6 +217,21 @@ class BaseStrategy(ABC):
         self.daily_trend_date: str = ""        # 趋势判定基于哪个交易日
         # 极端利空禁买名单（2026-10-13）：由 workflow 盘前判定后注入，**只卖不买**。
         self._buy_blocked_codes: set[str] = set()
+        # 买入信号价止损的基准与计数（2026-10-14，见 `_buy_signal_break_stop`）。
+        # **刻意不随 `before_trading` 清空** —— 持仓跨日时基准必须跟着跨日，
+        # 否则隔夜回来第一根 bar 就退化成「无基准 ⇒ 不判定」，止损在最需要它的
+        # 场景（隔夜跳空）恰好失效。清理只发生在卖出信号发出时。
+        self._buy_signal_prices: dict[str, float] = {}      # code -> 本次建仓的买入信号价
+        self._below_buy_signal_counts: dict[str, int] = {}  # code -> 连续低于次数
+        # 日内熔断状态（2026-10-14，见 `_sync_signal_state` 与常量注释）。
+        # 前两个是**计数**（跨日累计，盈利卖出清零）；后两个是**封锁日期**
+        # （记录「在哪一天被封的」，只在当天生效，次日靠日期不等自动失效）。
+        # `_sell_fly_watch` 是卖出后的观察位：code -> (卖出日期, 卖出价)。
+        self._loss_sell_streak: dict[str, int] = {}          # code -> 连续亏损卖出次数
+        self._fly_sell_streak: dict[str, int] = {}           # code -> 连续卖飞次数
+        self._buy_block_dates: dict[str, str] = {}           # code -> 买入被封锁的日期
+        self._sell_block_dates: dict[str, str] = {}          # code -> 卖出被封锁的日期
+        self._sell_fly_watch: dict[str, tuple[str, float]] = {}  # code -> (日期, 卖出价)
         self.xshg = xcals.get_calendar("XSHG", start="2020-01-01")  # 上交所交易日历，用于判断交易日
         # 先加载策略参数再注册因子，保证 init_factors 使用加载后的参数：
         # 优先级 user_strategy.strategy_params > strategy.default_params > cfg/strategy.yaml
@@ -470,11 +548,27 @@ class BaseStrategy(ABC):
         select_stocks: set[str] = self._load_select_stocks(stock_data.get("create_time", ""))
         # 如果股票在选股列表中且当前没有持仓，则检查买入条件；否则检查卖出条件。
         #
+        # 收尾统一走 `_sync_signal_state`：它既同步止损基准，也执行日内熔断的封锁
+        # 判定。被封锁的买入信号返回 False，与「没匹配到」同路，落到下面的卖出
+        # 分支上去 —— 不能在这里提前 return：实时链路恒传空持仓，持仓股的卖出
+        # 判定正是靠「买入不成立 ⇒ 继续走卖出分支」才跑得到的。
+        #
+        # 但落到卖出分支后 `extra` 会被卖出判定的结果覆盖，熔断原因就丢了，引擎
+        # 日志里只会看到「卖出条件不满足」，与「没信号」无法区分。所以单独留存，
+        # 在卖出也没信号时把它还回去（有卖出信号则以外层卖出结果为准）。
+        blocked_buy: dict[str, Any] | None = None
         if code in select_stocks and len(position) == 0:
             match, extra = self.check_minute_buy(code, stock_data)
+            match, extra = self._sync_signal_state(code, match, extra, stock_data)
             if match:
                 return match, extra
-        return self.check_minute_sell(code, position, stock_data)
+            if extra.get("intraday_blocked") == "buy":
+                blocked_buy = extra
+        matched, extra = self.check_minute_sell(code, position, stock_data)
+        matched, extra = self._sync_signal_state(code, matched, extra, stock_data)
+        if blocked_buy is not None and not matched:
+            return False, blocked_buy
+        return matched, extra
 
     def _before_minute_route(self, code: str, stock_data: dict[str, Any]) -> None:
         """分钟路由前钩子：子类可在此保存分钟缓存等。"""
@@ -483,9 +577,13 @@ class BaseStrategy(ABC):
     def handle_tick_bar(self, code: str, position: dict[str, Any], stock_data: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         """处理实时 tick 行情：按选股列表分发到买入/卖出检查。"""
         select_stocks: set[str] = self._load_select_stocks(stock_data.get("create_time", ""))
+        matched: bool
+        extra: dict[str, Any]
         if code in select_stocks:
-            return self.check_tick_buy(code, stock_data)
-        return self.check_tick_sell(code, position, stock_data)
+            matched, extra = self.check_tick_buy(code, stock_data)
+        else:
+            matched, extra = self.check_tick_sell(code, position, stock_data)
+        return self._sync_signal_state(code, matched, extra, stock_data)
 
     def check_minute_buy(self, code: str, stock_data: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         """分钟级买入检查，默认委托给子类的 _check_buy_conditions。"""
@@ -1503,6 +1601,284 @@ class BaseStrategy(ABC):
                 self.strategy_name, self.user_strategy_id, exc_info=True,
             )
             return set()
+
+    # ---- 信号收尾：买入信号价基准 + 日内熔断（2026-10-14）----
+
+    def _sync_signal_state(
+        self,
+        code: str,
+        matched: bool,
+        extra: dict[str, Any],
+        stock_data: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any]]:
+        """信号收尾：同步买卖基准与熔断状态，并执行当日封锁。
+
+        **所有重写 `handle_minute_bar` / `handle_tick_bar` 的子类都必须在返回前
+        调用本方法，并用它的返回值代替原来的 `matched, extra`。** 基类那次改动
+        不会自动覆盖子类 —— 波段策略就重写了 `handle_minute_bar`（为了做 T 的
+        买卖顺序），只在基类里接一次的结果是它的基准永远为空、止损静默失效。
+        `tests/test_buy_signal_stop.py::TestHandleMinuteBarWiring` 与
+        `tests/test_intraday_breaker.py::TestWiring` 有源码级守卫。
+
+        执行顺序是刻意的：
+
+        1. **先观察卖飞**（用本 bar 的价格对上一笔卖出价）。必须在处理本 bar 的
+           新信号之前 —— 否则同一根 bar 上「价格涨过卖出价」与「又发一个卖出
+           信号」会互相覆盖，卖飞永远数不到；
+        2. 再处理本 bar 的信号。卖出信号先判当日是否被封锁，**被封锁时直接否决、
+           且不记入任何计数**（那笔卖出没发生，记进去会让亏损计数凭空虚增）；
+        3. 买入信号同理，被封锁时不记基准；未被封锁时记基准（止损用）。
+        4. 被否决的信号**不反馈给调用方之外的任何状态**，因此不会污染计数。
+
+        :param code: 股票代码
+        :param matched: 本次是否产出信号
+        :param extra: 信号明细（`signal` 取值 BUY / SELL）
+        :param stock_data: 当前行情（取价格与交易日）
+        :return: (是否放行本次信号, 明细)；被熔断否决时返回 (False, extra)
+        """
+        self._observe_sell_fly(code, stock_data)
+        if not matched:
+            return False, extra
+        if str(extra.get("signal", "")) == "SELL":
+            if self.intraday_sell_blocked(code, stock_data):
+                extra["intraday_blocked"] = "sell"
+                extra["reason"] = (
+                    f"{self.user_strategy_name},{code} 当日卖出被日内熔断封锁"
+                    f"（连续 {int(self._fly_sell_streak.get(str(code), 0))} 次卖飞）"
+                )
+                return False, extra
+            # 判定盈亏要用基准，所以必须在清除基准之前做。
+            self._note_sell_outcome(code, stock_data)
+            # 卖出信号即作废基准：下一笔建仓必须重新记录，否则它会拿上一笔的
+            # 买点当止损基准（回测里同一只票在区间内会反复买卖几十次）。
+            self._clear_buy_signal_price(code)
+            return True, extra
+        if self.intraday_buy_blocked(code, stock_data):
+            extra["intraday_blocked"] = "buy"
+            extra["reason"] = (
+                f"{self.user_strategy_name},{code} 当日买入被日内熔断封锁"
+                f"（连续 {int(self._loss_sell_streak.get(str(code), 0))} 次亏损卖出）"
+            )
+            return False, extra
+        self._record_buy_signal_price(code, stock_data)
+        return True, extra
+
+    # ---- 日内熔断（2026-10-14）----
+
+    def intraday_buy_blocked(self, code: str, stock_data: dict[str, Any]) -> bool:
+        """当日是否已封锁该股的买入信号（见 `INTRADAY_BUY_BLOCK_LOSS_SELLS`）。"""
+        return self._intraday_blocked(code, self._buy_block_dates, stock_data)
+
+    def intraday_sell_blocked(self, code: str, stock_data: dict[str, Any]) -> bool:
+        """当日是否已封锁该股的卖出信号（见 `INTRADAY_SELL_BLOCK_FLY_SELLS`）。"""
+        return self._intraday_blocked(code, self._sell_block_dates, stock_data)
+
+    def _intraday_blocked(
+        self, code: str, dates: dict[str, str], stock_data: dict[str, Any]
+    ) -> bool:
+        """封锁只在**设置它的那个交易日**内生效，跨日靠日期不等自动失效。
+
+        取不到交易日时不封锁（fail-open）：宁可漏熔断一次，也不要因为行情缺时间
+        字段就把某只票整天锁死。
+
+        :param code: 股票代码
+        :param dates: 封锁表（买入或卖出）
+        :param stock_data: 当前行情
+        :return: 是否封锁
+        """
+        if not self.INTRADAY_BREAKER_ENABLED:
+            return False
+        today: str = self._bar_date(stock_data)
+        if not today:
+            return False
+        return dates.get(str(code), "") == today
+
+    def _note_sell_outcome(self, code: str, stock_data: dict[str, Any]) -> None:
+        """记录一笔卖出的结果：更新亏损计数与卖飞观察位。
+
+        只有**有建仓基准**的卖出才算一笔卖出结果。策略收空持仓（X1），无法知道
+        自己是否真的持有；实时链路与回测都会对未持仓的股票跑一遍卖出判定
+        （波段策略尤其如此，它把整个池当交易域），那些信号不会成交。用
+        「有没有基准」区分它们：有基准说明此前发过买入信号且尚未卖出平掉，
+        这笔卖出才对应一次真实往返。
+
+        没有基准的信号既**不计数也不清零**。把它当盈利卖出会错误地打断「连续亏损」
+        的累计，当亏损卖出会凭空虚增计数。
+
+        :param code: 股票代码
+        :param stock_data: 当前行情
+        """
+        if not self.INTRADAY_BREAKER_ENABLED:
+            return
+        key: str = str(code)
+        reference: float = float(self._buy_signal_prices.get(key, 0.0) or 0.0)
+        price: float = self._bar_price(stock_data)
+        if reference <= 0 or price <= 0:
+            return
+        today: str = self._bar_date(stock_data)
+        if price < reference:
+            streak: int = int(self._loss_sell_streak.get(key, 0)) + 1
+            self._loss_sell_streak[key] = streak
+            required: int = max(int(self.INTRADAY_BUY_BLOCK_LOSS_SELLS), 1)
+            if streak >= required:
+                # 用 `>=` 而不是 `==`：封锁次日解除后计数仍然 ≥ 阈值，此时再亏一笔
+                # 必须重新封锁，否则「跨日累计」会退化成「只封锁第一次」。
+                self._buy_block_dates[key] = today
+                if streak == required:
+                    # 只在**首次达到阈值**那一刻记一条：被否决的买入信号每分钟都会
+                    # 重现，在否决处打日志会刷满整天。
+                    self.logger.info(
+                        "[%s] 日内熔断：%s 连续 %d 次亏损卖出 ⇒ 当日不再买入该股",
+                        self.user_strategy_name, key, streak,
+                    )
+        else:
+            self._loss_sell_streak[key] = 0
+        if today:
+            # 没有交易日时**不挂观察位**：观察位要靠「日期相同」判断是否同日，
+            # 空日期会让它跟任何一天都「同日」，从而在隔天错误地判出卖飞。
+            # 计数本身照做（封锁靠日期比较，空日期下 `_intraday_blocked` fail-open）。
+            self._sell_fly_watch[key] = (today, price)
+
+    def _observe_sell_fly(self, code: str, stock_data: dict[str, Any]) -> None:
+        """观察上一笔卖出之后价格有没有涨过卖出价（卖飞），维护连续计数。
+
+        - 当日价格涨过卖出价（严格 `>`，与「突破」语义一致）⇒ 记一次卖飞，
+          连续计数 +1，达到阈值即封锁当日卖出。观察位在第一次突破时消费掉，
+          同一笔卖出只计一次。
+        - 跨日仍未涨过 ⇒ 视为「没卖飞」，连续计数清零。
+        - 缺少交易日或价格信息时**不判定也不清零**：数据不全不该改写累计状态。
+
+        :param code: 股票代码
+        :param stock_data: 当前行情
+        """
+        if not self.INTRADAY_BREAKER_ENABLED:
+            return
+        key: str = str(code)
+        watched: tuple[str, float] | None = self._sell_fly_watch.get(key)
+        if not watched:
+            return
+        watch_date, sell_price = watched
+        today: str = self._bar_date(stock_data)
+        price: float = self._bar_price(stock_data)
+        if not today or price <= 0:
+            return
+        if today != watch_date:
+            self._sell_fly_watch.pop(key, None)
+            self._fly_sell_streak[key] = 0
+            return
+        if price > sell_price:
+            self._sell_fly_watch.pop(key, None)
+            streak: int = int(self._fly_sell_streak.get(key, 0)) + 1
+            self._fly_sell_streak[key] = streak
+            required: int = max(int(self.INTRADAY_SELL_BLOCK_FLY_SELLS), 1)
+            if streak >= required:
+                # 与买入侧同理用 `>=`：封锁次日解除后计数仍 ≥ 阈值，再卖飞一笔要
+                # 重新封锁。日志只在首次达到阈值时打，避免刷屏。
+                self._sell_block_dates[key] = today
+                if streak == required:
+                    self.logger.info(
+                        "[%s] 日内熔断：%s 连续 %d 次卖飞 ⇒ 当日不再卖出该股",
+                        self.user_strategy_name, key, streak,
+                    )
+
+    @staticmethod
+    def _bar_date(stock_data: dict[str, Any]) -> str:
+        """从行情里取交易日（YYYY-MM-DD）；取不到时返回空串。"""
+        raw: Any = stock_data.get("create_time", stock_data.get("date", ""))
+        return str(raw or "")[:10]
+
+    @staticmethod
+    def _bar_price(stock_data: dict[str, Any]) -> float:
+        """从行情里取成交参考价；取不到或非正数时返回 0.0。"""
+        try:
+            return float(stock_data.get("price", stock_data.get("close", 0)) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _record_buy_signal_price(self, code: str, stock_data: dict[str, Any]) -> None:
+        """记录本次建仓的买入信号价（**只在没有记录时写**）。
+
+        只在无记录时写是刻意的：`handle_minute_bar` 判断「是否查买入条件」用的是
+        `len(position) == 0`，而实时链路按设计约定恒传空持仓 ⇒ 持仓期间仍会不断
+        判出买入信号。若每次都覆盖，基准会被持仓途中的新买点反复改写 —— 而
+        「缩量回调」类买点恰恰出现在下跌途中，基准会被越压越低，止损随之失效。
+        基准的语义定为「**最近一次建仓的买入信号价**」，卖出信号发出时清除。
+
+        :param code: 股票代码
+        :param stock_data: 当前分钟行情，价格取 `price`（缺失时回退 `close`）
+        """
+        key: str = str(code)
+        if key in self._buy_signal_prices:
+            return
+        try:
+            price: float = float(
+                stock_data.get("price", stock_data.get("close", 0)) or 0.0
+            )
+        except (TypeError, ValueError):
+            return
+        if price > 0:
+            self._buy_signal_prices[key] = price
+            self._below_buy_signal_counts[key] = 0
+
+    def set_buy_signal_price(self, code: str, price: float) -> None:
+        """外部注入买入信号价（实盘成交后由 workflow 调用）。
+
+        策略自己记录已够用；本接口是给「进程重启后基准丢失」留的补写入口 ——
+        重启会清掉内存里的 `_buy_signal_prices`，此时止损退化为「无基准、不判定」
+        （fail-open，不会误卖）。注意本接口**不做持久化**，若要做到重启不丢，
+        需要由调用方从服务端最近一条买入信号回填。
+
+        :param code: 股票代码
+        :param price: 买入信号价（<=0 时忽略）
+        """
+        key: str = str(code)
+        value: float = float(price or 0.0)
+        if value > 0:
+            self._buy_signal_prices[key] = value
+            self._below_buy_signal_counts[key] = 0
+
+    def _clear_buy_signal_price(self, code: str) -> None:
+        """清除某只股票的买入信号价与连续跌破计数（发出卖出信号时调用）。"""
+        key: str = str(code)
+        self._buy_signal_prices.pop(key, None)
+        self._below_buy_signal_counts.pop(key, None)
+
+    def _buy_signal_break_stop(
+        self, code: str, current_price: float
+    ) -> tuple[bool, dict[str, Any]]:
+        """连续 `SELL_BUY_PRICE_BREAK_COUNT` 个 bar 低于买入信号价 ⇒ 硬止损。
+
+        计数规则：本次现价 **低于** 基准 ⇒ 计数 +1；现价 **不低于** 基准 ⇒ 计数清零。
+        达到次数即返回 True（由调用方直接产卖出信号，不再并入分值）。
+        每次调用算「一次」，调用频率 = 分钟 bar 频率。
+
+        fail-open 的三种情形（一律不触发，宁可不止损也不误卖）：
+        ① `SELL_BUY_PRICE_BREAK_ENABLED=False`；② 没有该股的买入信号价基准
+        （从未建仓 / 进程重启后丢失）；③ 现价或基准非正数。
+
+        :param code: 股票代码
+        :param current_price: 当前分钟价格
+        :return: (是否触发止损, 明细)，明细含 break_count / buy_signal_price
+        """
+        if not self.SELL_BUY_PRICE_BREAK_ENABLED:
+            return False, {}
+        key: str = str(code)
+        reference: float = float(self._buy_signal_prices.get(key, 0.0) or 0.0)
+        price: float = float(current_price or 0.0)
+        if reference <= 0 or price <= 0:
+            return False, {}
+        if price >= reference:
+            self._below_buy_signal_counts[key] = 0
+            return False, {}
+        count: int = int(self._below_buy_signal_counts.get(key, 0)) + 1
+        self._below_buy_signal_counts[key] = count
+        detail: dict[str, Any] = {
+            "break_count": count,
+            "buy_signal_price": round(reference, 2),
+            "below_pct": round((price - reference) / reference * 100, 2),
+        }
+        required: int = max(int(self.SELL_BUY_PRICE_BREAK_COUNT), 1)
+        return count >= required, detail
 
     # ---- 卖出侧通用基准（持仓最高价 / 回撤口径）----
 

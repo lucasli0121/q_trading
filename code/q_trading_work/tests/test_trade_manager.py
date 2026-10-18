@@ -208,8 +208,9 @@ class TestTradeManager(unittest.TestCase):
     def test_load_cost_config_from_real_cfg(self) -> None:
         """从真实 cfg/stock.cfg 读取成本配置（语义：滑点元、费率%、最低手续费元）。"""
         config = TradeManager._load_cost_config(resource_path("cfg/stock.cfg"))
-        self.assertEqual(config.buy_slippage, 0.2)
-        self.assertEqual(config.sell_slippage, 0.2)
+        # 2026-10-14：滑点 0.2 → 0.02 元，与回测 CLI 默认值保持一致
+        self.assertEqual(config.buy_slippage, 0.02)
+        self.assertEqual(config.sell_slippage, 0.02)
         self.assertEqual(config.fee_pct, 0.02)
         self.assertEqual(config.fee_low, 5.0)
 

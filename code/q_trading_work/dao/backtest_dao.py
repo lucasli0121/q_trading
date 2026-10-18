@@ -250,4 +250,11 @@ def _trade_to_dict(trade: Any) -> dict[str, Any]:
         "buy_price": getattr(trade, "buy_price", 0.0),
         "sell_price": getattr(trade, "sell_price", 0.0),
         "profit_pct": getattr(trade, "profit_pct", 0.0),
+        # 信号分值（2026-10-11 新增）：随 trades 明细写进服务端 result_data，
+        # 界面与导出都能看出每笔是几分触发的。日频卖出是「持有 N 日到期」，
+        # 不产生卖出信号 ⇒ sell_score / sell_star 恒为 0.0。
+        "buy_score": getattr(trade, "buy_score", 0.0),
+        "buy_star": getattr(trade, "buy_star", 0.0),
+        "sell_score": getattr(trade, "sell_score", 0.0),
+        "sell_star": getattr(trade, "sell_star", 0.0),
     }

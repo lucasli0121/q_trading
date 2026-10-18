@@ -29,6 +29,15 @@ from api.strategy import StrategyApi
 from api.user_strategy import UserStrategyApi
 from app_context import AppContext
 from dao.backtest_dao import BacktestDao
+from dao.local_hq_dao import (
+    KIND_DAY,
+    KIND_MINUTE,
+    MODE_OFF,
+    MODE_ONLY,
+    VALID_MODES,
+    LocalHqDao,
+    LocalHqError,
+)
 from strategy.base_strategy import MarketDataFetchError
 from trade.manager import TradeManager
 
@@ -107,6 +116,76 @@ class BacktestConfig:
     # 判定口径与汇总的 `max_drawdown_pct` 同源 —— 都基于 `_compute_equity_curve`
     # 的「可用现金 + 持仓成本」权益。
     max_drawdown_pct: float | None = None
+    # ---- 信号风暴过滤（2026-10-11）----
+    # 与实盘 `StrategyWorkflow._save_trade_signal` 同语义：**同一天内、同方向**的连续
+    # 信号，若「距上一条通过过滤的信号 < storm_time_gap_minutes」**或**「价格变化 <
+    # storm_price_change_pct」则被抑制（两个条件都得达到才放行），不产生成交。
+    # 实盘该过滤常开，参数在 `cfg/stock.cfg [signal_filter]`（默认 10 分钟 / 2.0%）；
+    # 回测默认 **关闭**以免历史回测数字失去可比性，用 CLI `--storm-filter` 显式开启。
+    #
+    # 只在分钟频生效：日频同一股票一天只有一个信号，同方向连续信号必然跨日，
+    # 而该过滤（与实盘一致）只比同一天，所以日频天然不会被触发。
+    storm_filter_enabled: bool = False
+    storm_time_gap_minutes: float = 10.0
+    storm_price_change_pct: float = 2.0
+    # 任意两次**成交**之间的最小间隔（分钟）。0 = 关闭（默认）。
+    #
+    # 与上面的「信号风暴过滤」是**两个不同机制**，别混：
+    #   风暴过滤 —— 只对**同方向**连续信号生效（防同一方向重复下单），
+    #                因此压不住「刚卖出又买回」这种跨方向的高频进出；
+    #   本开关   —— 不分方向，直接限制成交频率，才是「每次买卖间隔」的语义。
+    min_trade_interval_minutes: float = 0.0
+    # ---- 盘中买入门槛（2026-10-14）----
+    # 每只股票缓存**上一次符合买入条件**的价格与时刻（`_buy_dip_blocked` 的 probe）。
+    # 本次价格跌破该价格、且距上一次不足 `buy_dip_gap_minutes` 分钟时，本次买入信号
+    # 被抑制。**被抑制也更新缓存**，于是阴跌过程中每来一个买点都会把窗口清零，
+    # 不会出现「等满 10 分钟就补一单」；只有价格重新站上上次买点（或间隔足够）
+    # 才放行。只作用于买入，卖出不受影响；跨日缓存必然超过窗口，等于自动放行。
+    #
+    # 与实盘同语义（`StrategyWorkflow._save_trade_signal` 的 `_last_buy_probe`），
+    # 窗口值与 `cfg/stock.cfg [signal_filter] time_gap_minutes` 同源。
+    # 默认关闭，用 CLI `--buy-dip-gate` 显式开启（与其余过滤保持同一约定）。
+    buy_dip_gate_enabled: bool = False
+    # 窗口分钟数；<= 0 视为关闭
+    buy_dip_gap_minutes: float = 10.0
+    # 资金按标的均分（2026-10-12）：开启后把 `initial_capital` 平均分给回测涉及的
+    # 每只股票（`universe_size` 只），各自独立周转、互不挤占。
+    #
+    # 关闭时是「全局单一资金池」：先出现的信号占满资金、其余标的的信号被大量跳过 ——
+    # 实测 6 只持仓池 413 笔信号只有 255 笔成交，且同一只票单跑成交 36 笔、进池后
+    # 只剩 14 笔。那种结果既不反映各标的自身表现，也会随标的顺序漂移。
+    split_capital_by_code: bool = False
+    # ---- 每日门槛复算（2026-10-13）----
+    # 实盘的「盘后个股阀门 → 次日门槛」链路不在策略内部，而在 `StrategyWorkflow`：
+    # 盘后按当日信号时间 + 分钟缓存算阀门入库，次日盘前注入。回测没有这条链路，
+    # 因此在 `_run_minute_inner` 里就地复刻一份同样口径的（见 `_inject_daily_gates`）。
+    #
+    # 默认**关闭**以免历史回测数字失去可比性：开启后同一份数据的结果会变，
+    # 只有显式打开才说明「这是带门槛的结果」。
+    #
+    # 注意：日线趋势门槛（TREND_GATE_ENABLED）**不**受本开关控制 ——
+    # 它在策略 `before_trading` 中自行判定，回测调 `before_trading` 时即已生效。
+    enable_daily_gates: bool = False
+    # 涨跌停家数 CSV（列：date,limit_up,limit_down；date 为 YYYYMMDD）。
+    #
+    # 非空即启用「市场级门槛偏移」与「极端利空禁买」。CSV 查不到的交易日按
+    # 「取数失败」处理（偏移 0、不触发禁买），与实盘 fail-open 一致 ——
+    # 真实可得区间只有最近约 30 个交易日（akshare 限制），更早的日期在 CSV 里
+    # 是空值，因此回测前半段这段机制天然不生效。
+    market_breadth_csv: str = ""
+    # ---- 本地归档行情（2026-10-15）----
+    # 服务端日/周/月K 与分钟统一只保留 90 天，其中分钟没有回源路径，出窗即永久
+    # 丢失。q_trading_archive 把这些数据按日转存成 parquet，开启后回测改读本地：
+    # 区间不再被 90 天窗口锁死，且跨时段重跑结果可复现 —— 服务端会对缺失区间
+    # 回源补齐，同一历史区间的返回内容会随时间变化，本地文件不会。
+    #
+    # root 为空即完全不启用，行为与改动前一致。cfg/stock.cfg 的 [local_hq] 节
+    # 提供默认值，CLI 参数（--local-hq-dir / --local-hq-mode）优先级更高。
+    local_hq_root: str = ""
+    # off / prefer / only，语义见 dao/local_hq_dao.py 的模块说明。
+    #   prefer：本地覆盖完整才用本地；覆盖不足则整体回落 HTTP
+    #   only  ：覆盖不足或读取失败直接中止回测，绝不静默降级成空表
+    local_hq_mode: str = MODE_OFF
 
 
 @dataclass
@@ -123,6 +202,13 @@ class TradeResult:
     # 原始买入价（不含滑点/手续费）。回撤重放需要按新的卖出日重新计算有效价与收益率，
     # 而 `_calc_trade_result` 的入参是原始价，因此必须留一份原始值（见 _apply_drawdown_exit）。
     buy_price_raw: float = 0.0
+    # 信号分值（10 分制）与星级（score/2 夹到 0~5），取自触发信号那根 K 线的 extra。
+    # 买入侧两条路径（日频选股 / 分钟触发）都能拿到；卖出侧只有分钟频有信号 ——
+    # 日频是「持有 N 日到期」的固定卖出，不产生信号 ⇒ sell_score / sell_star 恒为 0.0。
+    buy_score: float = 0.0
+    buy_star: float = 0.0
+    sell_score: float = 0.0
+    sell_star: float = 0.0
 
 
 @dataclass
@@ -244,6 +330,34 @@ class BacktestEngine:
         self._market_api: MarketApi = MarketApi(self._admin_client)
         self._pool_api: PoolApi = PoolApi(self._admin_client)
         self._stock_info_api: StockInfoApi = StockInfoApi(self._admin_client)
+
+        # ---- 本地归档行情读取器（None = 未启用，取数全走 HTTP）----
+        # 模式非法时直接报错而不是退化成 off：写错了模式的意图一定是想用本地数据，
+        # 静默退回 HTTP 会得到「看起来正常但来源不对」的回测结果。
+        if self.config.local_hq_mode not in VALID_MODES:
+            raise ValueError(
+                f"local_hq_mode 非法: {self.config.local_hq_mode!r}，可选 {VALID_MODES}"
+            )
+        if self.config.local_hq_root and self.config.local_hq_mode == MODE_OFF:
+            self.logger.warning(
+                "配置了 local_hq_root=%s 但 local_hq_mode=off，本地归档不会被读取",
+                self.config.local_hq_root,
+            )
+        self._local_hq: LocalHqDao | None = (
+            LocalHqDao(self.config.local_hq_root)
+            if self.config.local_hq_root and self.config.local_hq_mode != MODE_OFF
+            else None
+        )
+        if self._local_hq is not None:
+            self.logger.info(
+                "本地归档行情已启用: root=%s mode=%s",
+                self.config.local_hq_root,
+                self.config.local_hq_mode,
+            )
+        # 涨跌停分档配置惰性缓存（None = 尚未读取，见 _market_bands_config）
+        self._market_bands_cache: tuple[
+            tuple[tuple[float, float], ...], float, float
+        ] | None = None
 
     # ---- 静态工具 ----
 
@@ -413,6 +527,54 @@ class BacktestEngine:
         )
         raise MarketDataFetchError(error_msg) from last_exc
 
+    def _try_local_kline(
+        self, code: str, start_date: str, end_date: str
+    ) -> list[dict[str, Any]] | None:
+        """尝试从本地归档取 K 线。
+
+        返回 None 表示「本次不用本地，调用方继续走 HTTP」；返回列表（可能为空）
+        表示本地已覆盖该区间，以本地为准。空列表意味着这只股票在这段时间里确实
+        没有记录（停牌、未上市，或归档时它的行情没被订阅到），而不是取数失败。
+
+        为什么本地覆盖完整时不再回落 HTTP：逐只股票混用两个来源，会让同一次
+        回测里一部分数据来自本地、一部分来自服务端，而服务端对缺失区间会回源
+        补齐，返回内容随调用时间变化，结果就不可复现了。
+
+        :raises LocalHqError: local_hq_mode=only 且本地覆盖不足
+        """
+        dao = self._local_hq
+        if dao is None:
+            return None
+
+        kind = KIND_MINUTE if self.config.frequency == "minute" else KIND_DAY
+        # 分钟频率传进来的起点带时分，覆盖判断按自然日做
+        start, end = start_date[:10], end_date[:10]
+
+        ok, reason = dao.coverage(kind, start, end)
+        if not ok:
+            dao.stats.coverage_miss += 1
+            message = f"本地 {kind} 归档未覆盖 {start} ~ {end}：{reason}"
+            if self.config.local_hq_mode == MODE_ONLY:
+                # fail-closed：宁可中止，也不产出一条来源不完整的回测记录
+                raise LocalHqError(message + "（local_hq_mode=only）")
+            self.logger.warning("%s，整体回落服务端 HTTP", message)
+            return None
+
+        records = dao.get_kline(kind, code, start, end)
+        if records:
+            dao.stats.local_hits += 1
+            return records
+
+        dao.stats.local_empty += 1
+        self.logger.info(
+            "本地 %s 归档无 %s 记录（%s ~ %s），按无数据处理",
+            kind,
+            code,
+            start,
+            end,
+        )
+        return []
+
     def _fetch_stock_data(
         self, code: str, start_date: str, end_date: str
     ) -> pd.DataFrame:
@@ -421,24 +583,36 @@ class BacktestEngine:
         取数失败（接口异常）按配置重试；重试后仍失败抛 `MarketDataFetchError`，
         由上层中止整个回测。接口正常返回空列表表示「无数据」，返回空表即可。
 
+        启用本地归档（`local_hq_root`）时优先读本地 parquet，命中判断见
+        `_try_local_kline`。
+
         :param code: 股票代码
         :param start_date: 开始日期
         :param end_date: 结束日期
         :return: K线 DataFrame，至少包含 open/close/create_time 列
         :raises MarketDataFetchError: 行情接口重试后仍失败
+        :raises LocalHqError: local_hq_mode=only 且本地覆盖不足
         """
         freq_label: str = "分钟" if self.config.frequency == "minute" else "日"
 
-        def _fetch() -> Any:
-            if self.config.frequency == "minute":
-                return self._market_api.get_minute_kline(
+        # 本地优先。返回 None 表示「本次不用本地」，继续走服务端。
+        local_records = self._try_local_kline(code, start_date, end_date)
+
+        if local_records is None:
+
+            def _fetch() -> Any:
+                if self.config.frequency == "minute":
+                    return self._market_api.get_minute_kline(
+                        code=code, start=start_date, end=end_date
+                    )
+                return self._market_api.get_day_kline(
                     code=code, start=start_date, end=end_date
                 )
-            return self._market_api.get_day_kline(
-                code=code, start=start_date, end=end_date
-            )
 
-        raw: Any = self._call_market_api(f"{code} {freq_label}K", _fetch)
+            raw: Any = self._call_market_api(f"{code} {freq_label}K", _fetch)
+        else:
+            raw = local_records
+
         if not raw:
             # 接口正常但无数据：不是取数失败，由调用方按「无数据」处理
             self.logger.info("%s %sK线无数据: %s~%s", code, freq_label, start_date, end_date)
@@ -783,6 +957,7 @@ class BacktestEngine:
             trades=all_trades,
             benchmark_df=benchmark_df,
             strategy_name=strategy_name,
+            universe_size=len(codes),
         )
         summary.drawdown_exit_trades = exit_trades
 
@@ -805,7 +980,9 @@ class BacktestEngine:
             configured = float(getattr(strategy, "RISK_MAX_DRAWDOWN_PCT", 0.0) or 0.0)
         return float(configured or 0.0)
 
-    def _drawdown_at(self, trades: list[TradeResult], day: str) -> float | None:
+    def _drawdown_at(
+        self, trades: list[TradeResult], day: str, universe_size: int = 0
+    ) -> float | None:
         """计算 `day` 当日的账户已实现权益自峰值回撤（%）；无法判定时返回 None。
 
         只统计 `sell_date <= day` 的交易，它们才是已结算的。口径与 `_compute_summary`
@@ -823,7 +1000,7 @@ class BacktestEngine:
         ]
         if not closed:
             return None
-        curve: list[float] = self._compute_equity_curve(closed)
+        curve: list[float] = self._compute_equity_curve(closed, universe_size)
         peak: float = max(curve)
         if peak <= 0:
             return None
@@ -940,7 +1117,7 @@ class BacktestEngine:
             window.to_dict(orient="records"),
         )
         try:
-            matched, _extra = strategy.is_match_strategy(window_data)
+            matched, extra = strategy.is_match_strategy(window_data)
         except Exception as exc:
             self.logger.debug("%s is_match_strategy 异常: %s", code, exc)
             return None
@@ -975,6 +1152,8 @@ class BacktestEngine:
             sell_price=result["sell_price"],
             profit_pct=result["profit_pct"],
             buy_price_raw=buy_price_raw,
+            buy_score=float(extra.get("score", 0.0) or 0.0),
+            buy_star=float(extra.get("star", 0.0) or 0.0),
         )
 
     def _run_minute_inner(
@@ -1013,6 +1192,19 @@ class BacktestEngine:
         # code -> 跨交易日持仓状态（in_position/cost_price/buy_time）
         position_states: dict[str, dict[str, Any]] = {}
 
+        # ---- 每日门槛复算状态（2026-10-13）----
+        # 与实盘 `StrategyWorkflow` 同口径：个股阀门**盘后算、次日盘前生效**，
+        # 因此跨日传递 `pending_valves`；市场偏移与禁买看**前一交易日**的跌停家数。
+        gates_enabled: bool = bool(self.config.enable_daily_gates)
+        breadth: dict[str, int] = (
+            self._load_market_breadth(self.config.market_breadth_csv)
+            if (gates_enabled or self.config.market_breadth_csv)
+            else {}
+        )
+        pending_valves: dict[str, dict[str, Any]] = {}
+        prev_day: str = ""
+        prev_limit_down: int | None = None
+
         # 逐日模拟：每天盘前 before_trading + select，再查询当日分钟K线进行策略判断
         for day in self._iter_trading_days(strategy, start_date, end_date):
             # 0. 注入账户当前回撤（账户级量，策略自己拿不到）——
@@ -1020,7 +1212,16 @@ class BacktestEngine:
             #    会据此计入 risk.drawdown_score 分值（达阈值即卖出，不冻结开新仓）。
             if hasattr(strategy, "set_account_drawdown"):
                 strategy.set_account_drawdown(
-                    self._drawdown_at(all_trades, day) or 0.0
+                    self._drawdown_at(all_trades, day, len(codes)) or 0.0
+                )
+
+            # 0.5 注入前一日算出的门槛（个股阀门 + 市场偏移 + 极端利空禁买）。
+            #     实盘由 `StrategyWorkflow._apply_daily_gates` 在盘前完成，回测就地复刻。
+            #     必须在 `before_trading`/`select` 之前：精选流里的 `add_daily_trend`
+            #     是增量写入，晚注入不会覆盖，但门槛要在当日第一根K线前就位。
+            if gates_enabled:
+                self._inject_daily_gates(
+                    strategy, pending_valves, prev_day, prev_limit_down
                 )
 
             # 1. 盘前准备
@@ -1042,16 +1243,28 @@ class BacktestEngine:
             codes_today: list[str] = list(dict.fromkeys(matched_codes + held_codes))
             if not codes_today:
                 self.logger.debug("%s 无候选股票且无持仓，跳过", day)
+                # 仍要推进「前一交易日」：否则下一日的市场偏移会错用更早的跌停家数
+                prev_day, prev_limit_down = day, breadth.get(day.replace("-", ""))
                 continue
 
             day_start: str = f"{day} 09:30:00"
             day_end: str = f"{day} 15:00:00"
 
+            # 当日各股票的买卖**信号**时间（阀门复算用）。注意记的是信号而非成交：
+            # 实盘阀门取自「已写库的交易信号」，与是否真的建仓无关（回测也按 X1 传空持仓）。
+            day_signals: dict[str, dict[str, list[str]]] = {}
+
             # 3. 查询当日分钟K线，调用 handle_minute_bar 进行策略判断
             for code in codes_today:
                 state: dict[str, Any] = position_states.setdefault(
                     code,
-                    {"in_position": False, "cost_price": 0.0, "buy_time": ""},
+                    {
+                        "in_position": False,
+                        "cost_price": 0.0,
+                        "buy_time": "",
+                        "buy_score": 0.0,
+                        "buy_star": 0.0,
+                    },
                 )
                 all_trades.extend(
                     self._run_minute_for_stock(
@@ -1062,8 +1275,20 @@ class BacktestEngine:
                         signal_window,
                         strategy_name,
                         state,
+                        day_signals.setdefault(code, {"buy": [], "sell": []})
+                        if gates_enabled
+                        else None,
                     )
                 )
+
+            # 3.5 盘后复算当日个股阀门，供次日盘前注入。必须赶在下面对
+            #     `clear_minute_day(day)` 之前 —— `compute_daily_valve` 依赖当日分钟缓存。
+            if gates_enabled:
+                pending_valves = self._compute_daily_valves(
+                    strategy, codes_today, day, day_signals
+                )
+            prev_day = day
+            prev_limit_down = breadth.get(day.replace("-", ""))
 
             # 释放当日分钟行情内存快照：长周期回测逐日累计会占用大量内存，
             # 且跨日数据本就不应复用（缓存 key 含日期）
@@ -1082,10 +1307,210 @@ class BacktestEngine:
             trades=all_trades,
             benchmark_df=benchmark_df,
             strategy_name=strategy_name,
+            universe_size=len(codes),
         )
 
         self._print_summary(summary)
         return all_trades, summary
+
+    # ---- 每日门槛复算（2026-10-13，实盘 StrategyWorkflow 同口径）----
+
+    def _load_market_breadth(self, csv_path: str) -> dict[str, int]:
+        """读取涨跌停家数 CSV → ``{YYYYMMDD: limit_down}``。
+
+        只收有值的行：akshare 的跌停池接口只覆盖最近约 30 个交易日，CSV 里更早的
+        日期 `limit_down` 为空。这些日期缺席 ⇒ 市场偏移 0、不触发禁买，
+        与实盘「取不到按不限制兜底」的 fail-open 语义一致。
+
+        :param csv_path: CSV 路径（列 ``date,limit_up,limit_down``；date 为 YYYYMMDD）
+        :return: 日期 → 跌停家数；路径为空/不存在/解析失败时返回空字典
+        """
+        if not csv_path:
+            return {}
+        from pathlib import Path
+
+        path = Path(csv_path)
+        if not path.exists():
+            self.logger.warning(
+                "涨跌停家数 CSV 不存在: %s ⇒ 市场偏移与极端利空禁买关闭", csv_path
+            )
+            return {}
+        counts: dict[str, int] = {}
+        try:
+            import csv as _csv
+
+            with path.open("r", encoding="utf-8-sig", newline="") as fh:
+                for row in _csv.DictReader(fh):
+                    raw_date: str = str(row.get("date", "") or "").strip()
+                    raw_down: str = str(row.get("limit_down", "") or "").strip()
+                    if not raw_date or not raw_down:
+                        continue
+                    try:
+                        counts[raw_date] = int(float(raw_down))
+                    except (TypeError, ValueError):
+                        continue
+        except Exception as exc:  # noqa: BLE001 - defensive
+            self.logger.warning(
+                "解析涨跌停家数 CSV 失败(%s): %s ⇒ 市场偏移与禁买关闭", csv_path, exc
+            )
+            return {}
+        if counts:
+            self.logger.info(
+                "涨跌停家数已加载 %d 个交易日（%s ~ %s）",
+                len(counts), min(counts), max(counts),
+            )
+        else:
+            self.logger.warning("涨跌停家数 CSV 无有效数据(%s) ⇒ 市场偏移与禁买关闭", csv_path)
+        return counts
+
+    def _market_bands_config(
+        self,
+    ) -> tuple[tuple[tuple[float, float], ...], float, float]:
+        """读取 ``cfg/stock.cfg [market_breadth]`` → ``(分档, 卖出侧上限, 禁买阈值)``。
+
+        只读一次并缓存。与实盘 `StrategyWorkflow._load_market_breadth_config` 同源，
+        保证回测里的市场偏移幅度与实盘一致（否则两边的「+1.0 分」含义不同）。
+        配置缺失/非法一律回退代码默认值（`DEFAULT_BANDS` 等）。
+        """
+        if self._market_bands_cache is not None:
+            return self._market_bands_cache
+        from pathlib import Path
+
+        from utils.market_breadth import (
+            DEFAULT_BANDS,
+            DEFAULT_STOP_BUY_LIMIT_DOWN,
+            MAX_SELL_OFFSET,
+            parse_bands,
+        )
+
+        bands: tuple[tuple[float, float], ...] = DEFAULT_BANDS
+        cap: float = MAX_SELL_OFFSET
+        stop: float = DEFAULT_STOP_BUY_LIMIT_DOWN
+        try:
+            cfg_path: Path = Path(__file__).resolve().parent.parent / "cfg" / "stock.cfg"
+            cp: ConfigParser = ConfigParser()
+            if cfg_path.exists() and cp.read(str(cfg_path), encoding="utf-8"):
+                if cp.has_section("market_breadth"):
+                    parsed = parse_bands(cp.get("market_breadth", "bands", fallback=""))
+                    if parsed:
+                        bands = parsed
+                    cap = cp.getfloat(
+                        "market_breadth", "max_sell_offset", fallback=MAX_SELL_OFFSET
+                    )
+                    stop = cp.getfloat(
+                        "market_breadth",
+                        "stop_buy_limit_down",
+                        fallback=DEFAULT_STOP_BUY_LIMIT_DOWN,
+                    )
+        except Exception as exc:  # noqa: BLE001 - defensive
+            self.logger.warning("读取 market_breadth 配置失败，使用默认分档: %s", exc)
+        self._market_bands_cache = (bands, float(cap), float(stop))
+        return self._market_bands_cache
+
+    def _inject_daily_gates(
+        self,
+        strategy: Any,
+        valves: dict[str, dict[str, Any]],
+        prev_day: str,
+        prev_limit_down: int | None,
+    ) -> None:
+        """盘前注入「个股阀门 + 市场偏移 + 禁买名单」（实盘 `_apply_daily_gates` 同口径）。
+
+        :param strategy: 策略实例
+        :param valves: 前一交易日盘后算出的阀门 ``{code: {"buy_valve","sell_valve"}}``
+        :param prev_day: 阀门来源交易日 YYYY-MM-DD（仅日志）
+        :param prev_limit_down: 前一交易日跌停家数；None = 取数失败（不偏移、不禁买）
+        """
+        from utils.market_breadth import resolve_market_offset
+
+        bands, max_sell, stop_buy = self._market_bands_config()
+
+        if valves:
+            strategy.set_daily_valves(valves, prev_day)
+        else:
+            strategy.clear_daily_valves()
+
+        buy_offset, sell_offset = resolve_market_offset(prev_limit_down, bands, max_sell)
+        strategy.set_market_offset(buy_offset, sell_offset)
+        if buy_offset or sell_offset:
+            self.logger.info(
+                "回测盘前市场宽度：源交易日 %s 跌停 %s 家 ⇒ 买入门槛 %+.1f、卖出门槛 %+.1f",
+                prev_day or "-", prev_limit_down, buy_offset, sell_offset,
+            )
+
+        # 极端利空禁买：前一交易日跌停家数 > stop_buy **且** 该股阀门达 VALVE_STOP_TIER 档
+        # （跌破 S3）。fail-open 分支与实盘一致：开关关闭 / 阈值关闭 / 数据缺失 / 未超阈值。
+        if (
+            not getattr(strategy, "BLOCK_BUY_ENABLED", True)
+            or stop_buy <= 0
+            or prev_limit_down is None
+            or prev_limit_down <= stop_buy
+        ):
+            strategy.clear_buy_blocked()
+            return
+        stop_value: float = float(getattr(strategy, "VALVE_STOP_TIER", 3)) * float(
+            getattr(strategy, "VALVE_STEP", 1.0)
+        )
+        if stop_value <= 0:
+            strategy.clear_buy_blocked()
+            return
+        blocked: list[str] = []
+        for code, record in valves.items():
+            try:
+                buy_valve: float = abs(float(record.get("buy_valve", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                continue
+            if buy_valve >= stop_value:
+                blocked.append(code)
+        strategy.set_buy_blocked(blocked)
+        if blocked:
+            self.logger.warning(
+                "回测极端利空禁买：前一交易日跌停 %s 家 > %.0f 家，"
+                "且 %d 只跌破 S3 ⇒ 当日只卖不买（%s）",
+                prev_limit_down, stop_buy, len(blocked),
+                ",".join(sorted(blocked)[:10]),
+            )
+
+    def _compute_daily_valves(
+        self,
+        strategy: Any,
+        codes: list[str],
+        day: str,
+        signals: dict[str, dict[str, list[str]]],
+    ) -> dict[str, dict[str, Any]]:
+        """盘后复算当日个股阀门（实盘 `daily_after_trading` 同口径）。
+
+        只保留「买入或卖出阀门非 0」的股票 —— 阀门为 0 不会改变任何门槛，
+        存进次日名单只会多刷日志。返回的字典直接喂给 `set_daily_valves`。
+
+        调用点必须在 `clear_minute_day(day)` 之前：`compute_daily_valve` 依赖当日
+        分钟缓存。单只计算异常按「无阀门」跳过，不中断整轮回测。
+        """
+        valves: dict[str, dict[str, Any]] = {}
+        for code in codes:
+            bucket: dict[str, list[str]] | None = signals.get(code)
+            if not bucket or not (bucket.get("buy") or bucket.get("sell")):
+                continue
+            try:
+                result: dict[str, Any] = strategy.compute_daily_valve(
+                    code, day, bucket["buy"], bucket["sell"]
+                )
+            except Exception as exc:  # noqa: BLE001 - defensive
+                self.logger.warning("回测盘后阀门计算失败 code=%s: %s", code, exc)
+                continue
+            if not result:
+                continue
+            buy_valve: float = float(result.get("buy_valve", 0.0) or 0.0)
+            sell_valve: float = float(result.get("sell_valve", 0.0) or 0.0)
+            if not (buy_valve or sell_valve):
+                continue
+            valves[code] = {"buy_valve": buy_valve, "sell_valve": sell_valve}
+            self.logger.debug(
+                "回测盘后阀门 %s %s: 买+%.1f / 卖+%.1f", day, code, buy_valve, sell_valve
+            )
+        if valves:
+            self.logger.info("回测盘后阀门 %s：%d 只触发门槛上调", day, len(valves))
+        return valves
 
     def _select_candidates(
         self,
@@ -1251,6 +1676,7 @@ class BacktestEngine:
         signal_window: int,
         strategy_name: str,
         state: dict[str, Any] | None = None,
+        signal_times: dict[str, list[str]] | None = None,
     ) -> list[TradeResult]:
         """分钟回测单只股票单个交易日：按 StrategyWorkflow 模式处理分钟K线。
 
@@ -1268,7 +1694,13 @@ class BacktestEngine:
         """
         trades: list[TradeResult] = []
         if state is None:
-            state = {"in_position": False, "cost_price": 0.0, "buy_time": ""}
+            state = {
+                "in_position": False,
+                "cost_price": 0.0,
+                "buy_time": "",
+                "buy_score": 0.0,
+                "buy_star": 0.0,
+            }
         try:
             df: pd.DataFrame = self._fetch_stock_data(code, start_date, end_date)
             if df.empty or len(df) < signal_window:
@@ -1289,6 +1721,20 @@ class BacktestEngine:
             in_position: bool = bool(state["in_position"])
             cost_price: float = float(state["cost_price"])
             buy_time: str = str(state["buy_time"])
+            # 建仓信号的分值必须随持仓跨日保留：买入与卖出可能不在同一天，
+            # 只在 SELL 分支现取 extra 会丢掉买入那根 K 线的分值。
+            buy_score: float = float(state.get("buy_score", 0.0))
+            buy_star: float = float(state.get("buy_star", 0.0))
+            # 当日已**通过**风暴过滤的最近一条信号（用于同方向连续信号的抑制判定）。
+            # 只在本日内有效 —— 与实盘一致，跨日不判；因此不需要跨日保留。
+            last_signal: dict[str, Any] = {}
+            # 当日最近一次**成交**时间（成交间隔限制用，0 = 关闭）。同样只需日内维护：
+            # 跨日的第一次成交隔夜远超任何合理阈值，天然放行。
+            last_trade_at: datetime | None = None
+            # 当日该股票的上一次**买点**（价格 + 时刻），供盘中买入门槛判定。
+            # 它记录的不是「上一次成交」而是「上一次符合买入条件」，被抑制的买点也会
+            # 写进来（见下方调用点），否则窗口不会被刷新、压不住阴跌中的连续买点。
+            last_buy_probe: dict[str, Any] = {}
 
             # 当日所有分钟K线均参与策略判断（与 StrategyWorkflow handle_bar 一致）
             for i in range(len(df)):
@@ -1305,6 +1751,46 @@ class BacktestEngine:
                     continue
 
                 signal_type: str = str(extra.get("signal", ""))
+                # 信号风暴过滤（与实盘同语义）。被抑制的信号既不成交、也不更新
+                # last_signal —— 实盘里被抑制的信号同样不写库，于是下一次仍与更早
+                # 那条「通过过滤」的信号比较（抑制会延续）。默认关闭，见 BacktestConfig。
+                bar_time: str = str(
+                    current_bar.get("create_time", current_bar.get("date", ""))
+                )
+                bar_price: float = float(
+                    current_bar.get("price", current_bar.get("close", 0)) or 0.0
+                )
+                if self._storm_suppressed(
+                    last_signal, signal_type, bar_price, bar_time
+                ):
+                    continue
+                # 成交间隔限制（不分方向，用来压「卖完又买回」）。被跳过的信号同样不
+                # 更新 last_signal，避免它参与后续的风暴过滤比较。
+                if self._trade_interval_blocked(last_trade_at, bar_time):
+                    continue
+                # 盘中买入门槛（2026-10-14）：只作用于买入。被抑制时**仍然更新**
+                # last_buy_probe（这就是「依然缓存」），因此下一次判定以最新买点为基准，
+                # 阴跌过程中每个买点都会把窗口清零。被抑制的信号同样不更新 last_signal
+                # （与另外两条过滤一致：实盘里它不写库，也就不参与后续风暴比较）。
+                if signal_type == "BUY":
+                    dip_blocked: bool = self._buy_dip_blocked(
+                        last_buy_probe, bar_price, bar_time
+                    )
+                    last_buy_probe.update(price=bar_price, time=bar_time)
+                    if dip_blocked:
+                        continue
+                last_signal.update(action=signal_type, price=bar_price, time=bar_time)
+                # 记录已通过过滤的信号时间（供盘后阀门复算，见 enable_daily_gates）。
+                # 位置选在过滤之后：实盘阀门取自「已写库的交易信号」，被抑制的信号
+                # 同样不写库，两边口径一致。与是否真的建仓无关 —— 回测按 X1 传空持仓，
+                # 实盘的买入信号也照写不误。
+                if signal_times is not None:
+                    slot: str = "buy" if signal_type == "BUY" else (
+                        "sell" if signal_type == "SELL" else ""
+                    )
+                    if slot:
+                        signal_times.setdefault(slot, []).append(bar_time)
+
                 if signal_type == "BUY" and not in_position:
                     # 买入：以当前分钟价格成交建仓
                     buy_price_raw: float = float(
@@ -1316,7 +1802,10 @@ class BacktestEngine:
                     buy_time = str(
                         current_bar.get("create_time", current_bar.get("date", ""))
                     )
+                    buy_score = float(extra.get("score", 0.0) or 0.0)
+                    buy_star = float(extra.get("star", 0.0) or 0.0)
                     in_position = True
+                    last_trade_at = self._bar_datetime(bar_time) or last_trade_at
                 elif signal_type == "SELL" and in_position:
                     # 卖出：以当前分钟价格成交平仓
                     sell_price_raw: float = float(
@@ -1331,12 +1820,19 @@ class BacktestEngine:
                         buy_time,
                         cost_price,
                         sell_price_raw,
+                        buy_score=buy_score,
+                        buy_star=buy_star,
+                        sell_score=float(extra.get("score", 0.0) or 0.0),
+                        sell_star=float(extra.get("star", 0.0) or 0.0),
                     )
                     if trade is not None:
                         trades.append(trade)
                     in_position = False
                     cost_price = 0.0
                     buy_time = ""
+                    buy_score = 0.0
+                    buy_star = 0.0
+                    last_trade_at = self._bar_datetime(bar_time) or last_trade_at
                 else:
                     self.logger.debug(
                         "%s 信号与持仓状态不匹配，跳过: signal=%s, in_position=%s",
@@ -1349,6 +1845,8 @@ class BacktestEngine:
             state["in_position"] = in_position
             state["cost_price"] = cost_price
             state["buy_time"] = buy_time
+            state["buy_score"] = buy_score
+            state["buy_star"] = buy_star
         except MarketDataFetchError:
             # 取数失败必须中止整个回测，不能被「单只股票异常」的兜底吞掉
             raise
@@ -1383,6 +1881,169 @@ class BacktestEngine:
             return False, extra
         return True, extra
 
+    def _storm_suppressed(
+        self,
+        last_signal: dict[str, Any],
+        action: str,
+        price: float,
+        bar_time: str,
+    ) -> bool:
+        """信号风暴过滤：判定本条信号是否应被抑制。
+
+        与实盘 `StrategyWorkflow._save_trade_signal` 同语义，逐条对应：
+
+        | 实盘 | 这里 |
+        | --- | --- |
+        | 查最近一次同股票+同策略信号（不限方向） | `last_signal` |
+        | `last_action == action`（连续同方向） | 同 |
+        | `last_dt.date() == today.date()`（只比同日） | 时间戳前 10 位相同 |
+        | `gap < time_gap_minutes` → 抑制 | 同 |
+        | `change_pct < price_threshold` → 抑制 | 同 |
+        | 被抑制的信号不写库（不进下一次比较） | 被抑制时不更新 `last_signal` |
+
+        两个条件都要达到才放行（任一不满足即抑制），与配置注释
+        「需同时满足以下条件才发出新信号」一致。
+
+        :param last_signal: 当日最近一条**通过过滤**的信号（空字典表示还没有）
+        :param action: 本次信号方向（BUY / SELL）
+        :param price: 本次信号价格
+        :param bar_time: 本次信号时间（YYYY-MM-DD HH:MM:SS）
+        :return: True 表示抑制（不成交）
+        """
+        if not self.config.storm_filter_enabled or not last_signal:
+            return False
+        if str(last_signal.get("action", "")) != action:
+            return False
+        last_price = float(last_signal.get("price", 0.0) or 0.0)
+        last_time = str(last_signal.get("time", "") or "")
+        if last_price <= 0 or price <= 0 or not last_time:
+            return False
+        # 只比同一天：跨日不判（实盘亦然）
+        if last_time[:10] != bar_time[:10]:
+            return False
+        try:
+            gap_minutes: float = (
+                datetime.strptime(bar_time[:19], "%Y-%m-%d %H:%M:%S")
+                - datetime.strptime(last_time[:19], "%Y-%m-%d %H:%M:%S")
+            ).total_seconds() / 60.0
+        except ValueError:
+            return False
+        change_pct: float = abs(price - last_price) / last_price * 100
+
+        reasons: list[str] = []
+        if gap_minutes < self.config.storm_time_gap_minutes:
+            reasons.append(
+                f"间隔={gap_minutes:.1f}分钟 < {self.config.storm_time_gap_minutes}分钟"
+            )
+        if change_pct < self.config.storm_price_change_pct:
+            reasons.append(
+                f"涨幅={change_pct:.2f}% < {self.config.storm_price_change_pct}%"
+            )
+        if not reasons:
+            return False
+        self.logger.info(
+            "信号风暴过滤: code 略, action=%s, price=%.2f, last_price=%.2f, "
+            "last_time=%s, %s, 抑制",
+            action,
+            price,
+            last_price,
+            last_time,
+            ", ".join(reasons),
+        )
+        return True
+
+    @staticmethod
+    def _bar_datetime(bar_time: str) -> datetime | None:
+        """把分钟 K 线时间解析成 datetime；解析不了返回 None。"""
+        try:
+            return datetime.strptime(bar_time[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+    def _trade_interval_blocked(
+        self, last_trade_at: datetime | None, bar_time: str
+    ) -> bool:
+        """任意两次**成交**之间的最小间隔（分钟）；0 表示关闭。
+
+        与 `_storm_suppressed` 的区别：那条只对**同方向**连续信号生效，回测里
+        成交序列天然是买、卖交替的，所以它几乎不会触发；本开关不分方向，
+        用来压住「卖完 1 分钟又买回」这类高频进出。
+
+        `last_trade_at` 只在单日内维护：跨日的第一次成交天然满足间隔（隔夜远超
+        任何合理阈值），不必跨日保留。
+
+        :param last_trade_at: 当日最近一次成交的时间，None 表示当日还没成交过
+        :param bar_time: 本次信号时间（YYYY-MM-DD HH:MM:SS）
+        :return: True 表示该信号因间隔不足被跳过
+        """
+        if self.config.min_trade_interval_minutes <= 0 or last_trade_at is None:
+            return False
+        now: datetime | None = self._bar_datetime(bar_time)
+        if now is None:
+            return False
+        gap_minutes: float = (now - last_trade_at).total_seconds() / 60.0
+        if gap_minutes < self.config.min_trade_interval_minutes:
+            self.logger.info(
+                "交易间隔限制: 距上次成交 %.1f 分钟 < %.1f 分钟，跳过该信号",
+                gap_minutes,
+                self.config.min_trade_interval_minutes,
+            )
+            return True
+        return False
+
+    def _buy_dip_blocked(
+        self, probe: dict[str, Any], price: float, bar_time: str
+    ) -> bool:
+        """盘中买入门槛：本次买点是否因「跌破上一次买点且间隔不足」被抑制。
+
+        判定顺序（全部满足才抑制）：
+
+        1. 开关打开且窗口 > 0；
+        2. `probe` 里有上一次符合买入条件的价格与时刻；
+        3. 本次价格 **严格低于** 上一次的价格；
+        4. 距上一次的间隔 **小于** 窗口分钟数。
+
+        调用方在判定之后**无论结果都更新 `probe`**（被抑制也缓存），这是本机制的
+        关键：否则每次被抑制都不会刷新窗口，等于只是「10 分钟内最多一单」，压不住
+        阴跌过程中的连续买点。
+
+        跨日不必特判：`probe` 在 `_run_minute_for_stock` 里按股票、按交易日维护，
+        天然跨日清零；即便保留，隔夜间隔也远超窗口。
+
+        :param probe: 当日该股票的上一次买点（含 price / time），空字典表示还没有
+        :param price: 本次买点价格
+        :param bar_time: 本次买点时间（YYYY-MM-DD HH:MM:SS）
+        :return: True 表示抑制本次买入信号
+        """
+        if not self.config.buy_dip_gate_enabled:
+            return False
+        gap_window: float = float(self.config.buy_dip_gap_minutes or 0.0)
+        if gap_window <= 0 or price <= 0 or not probe:
+            return False
+        prev_price: float = float(probe.get("price", 0.0) or 0.0)
+        prev_time: str = str(probe.get("time", "") or "")
+        if prev_price <= 0 or not prev_time:
+            return False
+        # 未跌破：放行
+        if price >= prev_price:
+            return False
+        prev_dt: datetime | None = self._bar_datetime(prev_time)
+        now_dt: datetime | None = self._bar_datetime(bar_time)
+        if prev_dt is None or now_dt is None:
+            return False
+        gap_minutes: float = (now_dt - prev_dt).total_seconds() / 60.0
+        if gap_minutes >= gap_window:
+            return False
+        self.logger.info(
+            "盘中买入门槛: 价格 %.2f 跌破上次买点 %.2f，间隔 %.1f 分钟 < %.1f 分钟，"
+            "抑制本次买入（缓存仍更新）",
+            price,
+            prev_price,
+            gap_minutes,
+            gap_window,
+        )
+        return True
+
     def _build_minute_trade(
         self,
         strategy_name: str,
@@ -1391,8 +2052,16 @@ class BacktestEngine:
         buy_time: str,
         cost_price: float,
         sell_price_raw: float,
+        buy_score: float = 0.0,
+        buy_star: float = 0.0,
+        sell_score: float = 0.0,
+        sell_star: float = 0.0,
     ) -> TradeResult:
-        """根据买入/卖出分钟数据生成一笔交易记录。"""
+        """根据买入/卖出分钟数据生成一笔交易记录。
+
+        `buy_score` / `buy_star` 来自建仓那根 K 线的信号（可能已跨日保留在 state 里），
+        `sell_score` / `sell_star` 来自平仓那根。
+        """
         result = self._calc_trade_result(
             buy_price=cost_price, sell_price=sell_price_raw
         )
@@ -1407,6 +2076,10 @@ class BacktestEngine:
             buy_price=result["buy_price"],
             sell_price=result["sell_price"],
             profit_pct=result["profit_pct"],
+            buy_score=buy_score,
+            buy_star=buy_star,
+            sell_score=sell_score,
+            sell_star=sell_star,
         )
 
     # ---- 汇总计算 ----
@@ -1416,6 +2089,7 @@ class BacktestEngine:
         trades: list[TradeResult],
         benchmark_df: pd.DataFrame,
         strategy_name: str,
+        universe_size: int = 0,
     ) -> BacktestSummary:
         """根据交易记录和基准数据计算回测汇总指标。
 
@@ -1459,7 +2133,7 @@ class BacktestEngine:
         summary.max_loss = round(min(profits), 2)
 
         # 资金曲线：顺序执行每笔交易
-        equity_curve: list[float] = self._compute_equity_curve(trades)
+        equity_curve: list[float] = self._compute_equity_curve(trades, universe_size)
         summary.final_capital = round(equity_curve[-1], 2) if equity_curve else self.config.initial_capital
         total_return = (
             (summary.final_capital - summary.initial_capital)
@@ -1495,7 +2169,9 @@ class BacktestEngine:
 
         return summary
 
-    def _compute_equity_curve(self, trades: list[TradeResult]) -> list[float]:
+    def _compute_equity_curve(
+        self, trades: list[TradeResult], universe_size: int = 0
+    ) -> list[float]:
         """计算权益曲线：事件驱动、资金受限的资金管理模型。
 
         按买入/卖出日期推进时间轴：
@@ -1503,10 +2179,29 @@ class BacktestEngine:
         - 卖出时释放本金并按 profit_pct 结算盈亏；
         - 可用资金不足时跳过后续买入信号，避免“串行全仓复利”虚高收益。
 
+        **资金按标的均分（`split_capital_by_code`）**：开启后把初始资金平均分给
+        `universe_size` 只股票（未传时退化为「产生过交易的股票数」），每只独立周转、
+        互不挤占。关闭时是「全局单一资金池」—— 先出现的信号会把资金占满，其余标的的
+        信号被大量跳过，结果既不反映各标的自身表现、也随标的顺序漂移。
+
         :param trades: 交易记录列表（自动按买入日期排序）
+        :param universe_size: 回测涉及的股票数（仅分片模式使用；<=0 时按 trades 里的 code 数）
         :return: 权益曲线列表（初始资金 + 每个事件后的权益值）
         """
         position_pct: float = self.config.position_size_pct
+        split: bool = self.config.split_capital_by_code
+        codes: list[str] = sorted({t.code for t in trades})
+
+        free_cash: float = self.config.initial_capital
+        free_by_code: dict[str, float] = {}
+        if split:
+            parts: int = max(int(universe_size) or len(codes), 1)
+            share: float = self.config.initial_capital / parts
+            for code in codes:
+                free_by_code[code] = share
+            # 没产生交易的标的（universe_size 更大时）那份一直闲置，但仍计入权益
+            free_cash -= share * len(codes)
+
         ordered: list[TradeResult] = sorted(
             trades, key=lambda t: (t.buy_date, t.sell_date)
         )
@@ -1518,22 +2213,40 @@ class BacktestEngine:
             events.append((trade.sell_date, 1, idx))
         events.sort(key=lambda e: (e[0], e[1]))
 
-        free_cash: float = self.config.initial_capital
-        open_invested: dict[int, float] = {}
-        equity: list[float] = [free_cash]
+        # 交易序号 -> (代码, 占用资金)；持仓按成本计价
+        open_invested: dict[int, tuple[str, float]] = {}
+        equity: list[float] = [free_cash + sum(free_by_code.values())]
 
         for _date, event_type, idx in events:
+            trade: TradeResult = ordered[idx]
             if event_type == 1:  # 卖出：结算盈亏并释放本金
-                invested = open_invested.pop(idx, None)
-                if invested is not None:
-                    free_cash += invested * (1 + ordered[idx].profit_pct / 100)
+                entry = open_invested.pop(idx, None)
+                if entry is not None:
+                    code, invested = entry
+                    proceeds: float = invested * (1 + trade.profit_pct / 100)
+                    if split:
+                        free_by_code[code] += proceeds
+                    else:
+                        free_cash += proceeds
             else:  # 买入：划出资金
-                if idx in open_invested or free_cash <= 1e-9:
+                if idx in open_invested:
                     continue
-                invested = min(free_cash * position_pct, free_cash)
-                free_cash -= invested
-                open_invested[idx] = invested
-            equity.append(free_cash + sum(open_invested.values()))
+                available: float = (
+                    free_by_code.get(trade.code, 0.0) if split else free_cash
+                )
+                if available <= 1e-9:
+                    continue
+                invested = min(available * position_pct, available)
+                if split:
+                    free_by_code[trade.code] -= invested
+                else:
+                    free_cash -= invested
+                open_invested[idx] = (trade.code, invested)
+            equity.append(
+                free_cash
+                + sum(free_by_code.values())
+                + sum(amount for _, amount in open_invested.values())
+            )
 
         return equity
 

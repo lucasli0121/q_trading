@@ -37,7 +37,7 @@ class MinCloseDeclineFactor(BaseFactor):
         即先见顶后见底，否则返回 0.0。
 
         :param stocks: 结构化 np.ndarray 或 pd.DataFrame，含 high/close 字段
-        :return: 跌幅百分比（非负值）
+        :return: 跌幅百分比（**负值**，越负跌幅越深；先见低后见顶时返回 0.0）
         """
         if len(stocks) < self.days:
             return 0.0

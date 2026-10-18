@@ -90,6 +90,20 @@ class UserStrategyCache(metaclass=Singleton):
         except Exception:  # pragma: no cover - 配置缺失等异常场景
             return False
 
+    @property
+    def redis_ready(self) -> bool:
+        """当前是否**允许**对 Redis 读写（含 `set_redis_enabled(False)` 的显式关闭）。
+
+        与 `redis_enabled` 的区别：那个只回答「配置里启用了没有」，回测里
+        `set_redis_enabled(False)` 之后它**仍然是 True**。因此凡是「要不要真的读写
+        Redis」的判断都必须用本属性。
+
+        反例（2026-10-14 修）：波段策略的 sr_points 缓存直接操作 `RedisExec`，
+        判断写的是 `redis_enabled`，于是回测关闭 Redis 后照样读写实盘共用实例，
+        上一轮残留的点位会被下一轮读到。缓存的读写口必须统一走这里。
+        """
+        return self._redis_ready()
+
     def _redis(self) -> Any:
         """返回全局 Redis 执行器（懒加载，避免与 AppContext 形成导入环）。"""
         from app_context import AppContext

@@ -135,10 +135,10 @@ class TestSwingStarOutput(unittest.TestCase):
         return strategy
 
     def _sell_inputs(self) -> tuple[dict[str, object], dict[str, object]]:
-        """构造一条会触发回撤止损的卖出输入。
+        """构造一条会触发卖出的输入：价格 140 → 100，技术分被打成深度负值。
 
-        价格从 140 跌到 100（回撤 −28.6%，远低于阈值 −6%），
-        于是 `SELL_DRAWDOWN_SCORE = −6.0` 必然入账。
+        2026-10-14 起「持仓回撤」分项已由买入信号价止损取代，这里靠账户回撤
+        扣分把总分推低，从而驱动同一段 star 折算代码。
         """
         stock_data: dict[str, object] = {
             "code": "600183.SH",
@@ -156,15 +156,20 @@ class TestSwingStarOutput(unittest.TestCase):
         return position, stock_data
 
     def test_sell_star_stays_in_range_at_extreme_score(self) -> None:
-        """技术分 −6.25 + 回撤 −6.0 = −12.25 ⇒ 星级必须夹到 5.0，而不是 6.1。"""
+        """技术分 −6.25 + 账户回撤扣分 −12.0 = −18.25 ⇒ 星级必须夹到 5.0，而不是 9.1。
+
+        原用例靠「持仓回撤 −6.0」把分值打到越界区；该项已由买入信号价止损取代
+        （见 `BaseStrategy.SELL_BUY_PRICE_BREAK_*`），改用更深的账户回撤扣分构造
+        同样的越界场景 —— 本用例守的是 star 折算的夹取，与分值来源无关。
+        """
         strategy = self._make_strategy()
+        strategy.account_drawdown_pct = -15.0
+        strategy.SELL_RISK_DRAWDOWN_SCORE = -12.0
         position, stock_data = self._sell_inputs()
 
         with (
-            mock.patch.object(strategy, "_sell_baseline_buy_time", return_value="2026-10-09 09:35:00"),
             mock.patch.object(strategy, "_get_minute_cache", return_value=[{"close": 100.0}]),
             mock.patch.object(strategy, "_get_sr_points", return_value=pd.DataFrame()),
-            mock.patch.object(strategy, "_resolve_highest_price", return_value=140.0),
             mock.patch.object(swing_module, "InDaySRFactor") as inday_cls,
             mock.patch.object(swing_module, "BollSRFactor") as boll_cls,
         ):
@@ -176,7 +181,7 @@ class TestSwingStarOutput(unittest.TestCase):
             )
 
         self.assertTrue(triggered)
-        self.assertAlmostEqual(float(extra["score"]), -12.25, places=2)
+        self.assertAlmostEqual(float(extra["score"]), -18.25, places=2)
         self.assertEqual(extra["star"], 5.0)
 
     def test_sell_star_includes_account_drawdown(self) -> None:
@@ -186,10 +191,8 @@ class TestSwingStarOutput(unittest.TestCase):
         position, stock_data = self._sell_inputs()
 
         with (
-            mock.patch.object(strategy, "_sell_baseline_buy_time", return_value="2026-10-09 09:35:00"),
             mock.patch.object(strategy, "_get_minute_cache", return_value=[{"close": 100.0}]),
             mock.patch.object(strategy, "_get_sr_points", return_value=pd.DataFrame()),
-            mock.patch.object(strategy, "_resolve_highest_price", return_value=140.0),
             mock.patch.object(swing_module, "InDaySRFactor") as inday_cls,
             mock.patch.object(swing_module, "BollSRFactor") as boll_cls,
         ):
