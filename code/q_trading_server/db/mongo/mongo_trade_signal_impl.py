@@ -42,6 +42,28 @@ class MongoTradeSignalImpl:
             else:
                 query["create_time"] = {"$lte": end_time}
 
+    @staticmethod
+    def _build_star_filter(query: dict[str, Any], min_star: float, max_star: float) -> None:
+        """向 query 中添加 star 星级区间过滤
+
+        star 是数值字段（0~5，一位小数），数值比较不受 collation 影响，
+        两端都用 0 表示不限（沿用项目里 limit=0 表示不限制的写法）。
+        需要精确匹配某个星级时，把上下界设成同一个值即可。
+        注意：因为 0 被用作「不限」的哨兵值，无法用它筛出 star == 0 的记录，
+        而 star == 0 表示尚未打星，没有查询价值。
+
+        :param query: 查询条件字典（原地修改）
+        :param min_star: 最低星级（含），0 表示不限
+        :param max_star: 最高星级（含），0 表示不限
+        """
+        star_cond: dict[str, float] = {}
+        if min_star > 0:
+            star_cond["$gte"] = min_star
+        if max_star > 0:
+            star_cond["$lte"] = max_star
+        if star_cond:
+            query["star"] = star_cond
+
     def add_signal(self, data: dict[str, Any]) -> tuple[bool, str | None]:
         """添加一条交易信号记录
 
@@ -170,6 +192,8 @@ class MongoTradeSignalImpl:
         action: str = "",
         start_time: str = "",
         end_time: str = "",
+        min_star: float = 0.0,
+        max_star: float = 0.0,
         skip: int = 0,
         limit: int = 0,
     ) -> tuple[bool, Any | None]:
@@ -180,6 +204,8 @@ class MongoTradeSignalImpl:
         :param action: 买卖方向（可选）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
+        :param min_star: 最低星级（含），0 表示不限（可选）
+        :param max_star: 最高星级（含），0 表示不限（可选）
         :param skip: 分页跳过条数
         :param limit: 分页限制条数，0 表示不限制
         :return: (ok, records_or_None)
@@ -195,6 +221,7 @@ class MongoTradeSignalImpl:
             if action:
                 query["action"] = action
             self._build_time_filter(query, start_time, end_time)
+            self._build_star_filter(query, min_star, max_star)
             return self.mongo_exec.query_by_condition(
                 table=self.trade_signal_table,
                 condition=query,
@@ -249,6 +276,8 @@ class MongoTradeSignalImpl:
         action: str = "",
         start_time: str = "",
         end_time: str = "",
+        min_star: float = 0.0,
+        max_star: float = 0.0,
         skip: int = 0,
         limit: int = 0,
     ) -> tuple[bool, Any | None]:
@@ -258,6 +287,8 @@ class MongoTradeSignalImpl:
         :param action: 买卖方向（可选）
         :param start_time: 开始时间 YYYY-MM-DD HH:MM:SS（可选）
         :param end_time: 结束时间 YYYY-MM-DD HH:MM:SS（可选）
+        :param min_star: 最低星级（含），0 表示不限（可选）
+        :param max_star: 最高星级（含），0 表示不限（可选）
         :param skip: 分页跳过条数
         :param limit: 分页限制条数，0 表示不限制
         :return: (ok, records_or_None)
@@ -271,6 +302,7 @@ class MongoTradeSignalImpl:
             if action:
                 query["action"] = action
             self._build_time_filter(query, start_time, end_time)
+            self._build_star_filter(query, min_star, max_star)
             return self.mongo_exec.query_by_condition(
                 table=self.trade_signal_table,
                 condition=query,

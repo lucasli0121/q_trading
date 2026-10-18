@@ -35,6 +35,8 @@ class TradeSignalDao:
     profit_amount: float
     action: str
     reason: str # 买卖信号原因
+    score: float # 打分
+    star: float # 星级，最大5星，保留一位小数
     create_time: str
 
     def __init__(
@@ -48,6 +50,8 @@ class TradeSignalDao:
         profit_amount: float = 0.0,
         action: str = "",
         reason: str = "",
+        score: float = 0.0,
+        star: float = 0.0,
         create_time: str = ""
     ) -> None:
         """初始化信号对象。"""
@@ -60,6 +64,8 @@ class TradeSignalDao:
         self.profit_amount = profit_amount
         self.action = action
         self.reason = reason
+        self.score = score
+        self.star = star
         self.create_time = create_time
 
     def from_db(self, data: dict[str, Any]) -> None:
@@ -73,6 +79,8 @@ class TradeSignalDao:
         self.profit_amount = float(data.get("profit_amount", 0.0) or 0.0)
         self.action = str(data.get("action", ""))
         self.reason = str(data.get("reason", ""))
+        self.score = float(data.get("score", 0.0) or 0.0)
+        self.star = float(data.get("star", 0.0) or 0.0)
         self.create_time = str(data.get("create_time", ""))
 
     def to_db(self) -> dict[str, Any]:
@@ -86,5 +94,7 @@ class TradeSignalDao:
             "profit_amount": self.profit_amount,
             "action": self.action,
             "reason": self.reason,
+            "score": self.score,
+            "star": self.star,
             "create_time": self.create_time,
         }

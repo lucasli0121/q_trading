@@ -60,6 +60,12 @@ class UserPreferenceRequest(BaseModel):
     wx_push_url: str = Field(default="", description="企业微信推送链接")
     enable_phone_text: bool = Field(default=False, description="是否手机短信推送")
     phone: str = Field(default="", description="推送手机号")
+    push_buy_min_star: float = Field(
+        default=0.0, description="买入信号推送的最小星级，取值 0~5，保留一位小数，0 表示不限"
+    )
+    push_sell_min_star: float = Field(
+        default=0.0, description="卖出信号推送的最小星级，取值 0~5，保留一位小数，0 表示不限"
+    )
 
 
 class UserPreferenceResponse(BaseModel):
@@ -71,6 +77,12 @@ class UserPreferenceResponse(BaseModel):
     wx_push_url: str = Field(default="", description="企业微信推送链接")
     enable_phone_text: bool = Field(default=False, description="是否手机短信推送")
     phone: str = Field(default="", description="推送手机号")
+    push_buy_min_star: float = Field(
+        default=0.0, description="买入信号推送的最小星级，取值 0~5，保留一位小数，0 表示不限"
+    )
+    push_sell_min_star: float = Field(
+        default=0.0, description="卖出信号推送的最小星级，取值 0~5，保留一位小数，0 表示不限"
+    )
     update_time: str = Field(default="", description="更新时间")
 
 
@@ -433,6 +445,8 @@ class TradeSignalCreateRequest(BaseModel):
     profit_amount: float = Field(default=0.0, description="收益金额")
     action: str = Field(default="", description="买卖方向: 买入/卖出")
     reason: str = Field(default="", description="买卖信号原因")
+    score: float = Field(default=0.0, description="打分")
+    star: float = Field(default=0.0, description="星级，最大 5 星，保留一位小数")
 
 
 class TradeSignalItem(BaseModel):
@@ -446,6 +460,8 @@ class TradeSignalItem(BaseModel):
     profit_amount: float = Field(default=0.0, description="收益金额")
     action: str = Field(default="", description="买卖方向: 买入/卖出")
     reason: str = Field(default="", description="买卖信号原因")
+    score: float = Field(default=0.0, description="打分")
+    star: float = Field(default=0.0, description="星级，最大 5 星，保留一位小数")
     create_time: str = Field(default="", description="创建时间")
 
 
@@ -459,6 +475,11 @@ class SystemMessageCreateRequest(BaseModel):
     user_ids: list[str] = Field(default_factory=list, description="推送目标用户 ID 列表，为空表示广播给所有用户")
 
 
+class SystemMessageReadRequest(BaseModel):
+    """标记系统消息已读请求"""
+    id: str = Field(..., description="系统消息 ID")
+
+
 class SystemMessageItem(BaseModel):
     """系统消息响应"""
     id: str = Field(default="", description="记录 ID")
@@ -467,6 +488,8 @@ class SystemMessageItem(BaseModel):
     create_id: str = Field(default="", description="创建者用户 ID")
     user_ids: list[str] = Field(default_factory=list, description="推送目标用户 ID 列表，为空表示广播")
     create_time: str = Field(default="", description="创建时间")
+    is_read: bool = Field(default=False, description="当前用户是否已读；已读即归入历史消息")
+    read_count: int = Field(default=0, description="已读用户数")
 
 
 # ==================== 每日个股阀门 ====================
