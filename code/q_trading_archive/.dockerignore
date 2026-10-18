@@ -1,0 +1,23 @@
+# 构建上下文里不该出现的东西。
+# 真实配置含 mongo 凭据，即使 Dockerfile 只 COPY requirements.txt，
+# 它仍会被打进发送给 daemon 的上下文里。
+.git
+.gitignore
+.gitattributes
+
+cfg/stock.cfg
+.state.json
+
+data/
+log/
+dist/
+build/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+*.tar.gz
+*.log
+.venv/
+venv/
+tests/

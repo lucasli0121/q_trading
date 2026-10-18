@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 真实配置与凭据（模板见 cfg/stock.cfg.example）
+cfg/stock.cfg
+
+# 归档产物与进度
+data/
+.state.json
+
+# 常驻进程的 PID 文件
+*.pid
+
+# 日志
+log/
+*.log
+
+# 打包
+dist/
+build/
+# 交付物：单个 88 MB，入库会把仓库撑爆
+q_trading_archive-*-bin.tar.gz

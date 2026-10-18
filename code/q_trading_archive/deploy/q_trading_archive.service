@@ -1,0 +1,45 @@
+# q_trading_archive systemd 单元
+#
+# 安装：
+#   sudo cp deploy/q_trading_archive.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now q_trading_archive
+#
+# 程序自身会把明细写进 log/archive.log，这里的 stdout 只承载启动期输出，
+# 用 journalctl -u q_trading_archive 查看。
+
+[Unit]
+Description=q_trading_archive 行情归档（只读 mongo，按日转存 parquet）
+Documentation=file:/home/lucasli/q_trading_archive/DEPLOY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lucasli
+Group=lucasli
+WorkingDirectory=/home/lucasli/q_trading_archive
+
+# --daemon：启动时先补跑一次，之后每日按 cfg/stock.cfg 的 schedule_* 触发
+ExecStart=/home/lucasli/q_trading_archive/q_trading_archive --daemon
+
+Restart=always
+RestartSec=30
+
+# 单次归档失败不会让进程退出（调度里吞异常后等下次触发），
+# 所以这个超时只用于停机时的优雅退出。
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# 归档是 IO 密集而非 CPU 密集。与策略引擎同机部署时让出优先级，
+# 避免盘后归档把行情订阅的线程挤掉。
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+# 只读 mongo，不需要任何额外能力
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

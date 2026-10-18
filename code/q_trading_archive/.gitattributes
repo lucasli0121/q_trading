@@ -1,0 +1,16 @@
+# 构建脚本会被 Linux 容器执行。Windows 上编辑后若按 CRLF 检出，
+# bash 会在第一个多行函数定义处报 syntax error，而报错位置看起来靠后，
+# 容易被误判成别的问题。这里钉死行尾。
+#
+# 已入库的文件需要 git add --renormalize . 才会应用新规则。
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Dockerfile.* text eol=lf
+*.spec      text eol=lf
+*.cfg       text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.py        text eol=lf
+
+*.parquet   binary
+*.tar.gz    binary

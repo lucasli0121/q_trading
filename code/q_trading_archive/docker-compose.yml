@@ -1,0 +1,17 @@
+version: '3.4'
+
+services:
+  q_trading_archive:
+    image: q_trading_archive:latest
+    container_name: q_trading_archive
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    # 常驻，每日按 cfg/stock.cfg 的 [archive] schedule_* 触发
+    command: ["--daemon"]
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # 配置、进度位与 parquet 产物都落在宿主机目录，容器重建不丢
+      - ../q_trading_archive:/q_trading_archive
