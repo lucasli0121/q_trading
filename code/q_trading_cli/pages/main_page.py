@@ -9,7 +9,7 @@ Description: 主页面 — 严格按 home.html 原型实现仪表盘布局
     - 顶部标题栏
     - 统计卡片（策略总数、运行中策略、股票池数量、今日信号数）
       今日信号数：打开页面时先查询数据库初始化，之后接收 MQ 消息实时累加
-    - 系统累计收益概览图表（系统总收益曲线按 daily_average_rates 取日均值，
+    - 系统累计收益概览图表（系统总收益曲线 = 各用户策略收益率之和，
       数据点走 executions/range 按窗口查询；右上角下拉框可叠加一条单策略对比曲线）
       + 近期运行状态
     - 近期更新策略表格
@@ -22,8 +22,9 @@ Description: 主页面 — 严格按 home.html 原型实现仪表盘布局
 收益率口径（两处展示共用 core.holdings，改动前先读该模块头部）：
     执行记录里的 current_return_rate 只含**已实现**盈利（后端 manager.py:
     current_profit / initial_amount），直接展示会漏掉持仓浮盈。所以：
-      · 收益曲线：每个点取当天全部执行记录 current_return_rate 的算术平均
-        （只含已实现）；只有代表「当前」的末点覆盖成各策略「含浮盈」收益率的平均
+      · 收益曲线：每个点 = 各用户策略收益率之和 —— 单个策略当天的取值是它当天
+        全部记录 current_return_rate 之和，当天没交易的策略沿用最近一次的取值
+        （只含已实现）；只有代表「当前」的末点覆盖成各策略「含浮盈」收益率之和
         —— 历史持仓的实时价无法回溯；
       · 近期更新策略表：每个策略取最新一条执行记录，同样叠加未实现。
     未实现盈亏一律由实时价与成本价现算，不取持仓里的 profit_rate / profit_amount
@@ -43,15 +44,17 @@ from colors.theme import resolve_mode_from_prefs
 from components import custom_tabs
 from core.concurrency import PollingTask, run_blocking
 from core.holdings import (
-    average_current_rate_pct,
     collect_position_codes,
     current_rate_pct_with_fallback,
+    average_current_rate_pct,
     current_return_rate_pct,
     daily_average_rates,
     execution_day,
     fetch_price_map,
     last_execution_day,
     latest_execution_map,
+    strategy_levels_before,
+    strategy_levels_on_days,
     unrealized_profit,
 )
 from core.routes import route_for_page_key
@@ -559,30 +562,64 @@ def _build_topbar(
                 ui.element("span").classes("w-2 h-2 rounded-full inline-block").style("background-color: var(--qs-negative);")
                 ui.label("交易系统运行中").classes("text-sm").style("color: var(--qs-muted);")
 
-            # ---- 通知铃铛：红点提示新系统消息，点击弹出消息列表 ----
-            # 已读消息 ID 集合，用于判断是否有新消息
-            seen_msg_ids: set[str] = set()
+            # ---- 通知铃铛：按服务端未读数亮角标，点击弹出消息列表 ----
+            # 已读状态由服务端维护（system_message_tbl.read_user_ids）。前端不再自己记
+            # 「见过的消息 ID」：那种做法只活在本会话内存里，刷新页面后红点会重新亮起，
+            # 换端登录也读不到同一份已读历史。
 
-            def _on_notif_click() -> None:
-                """点击通知按钮：弹出系统消息对话框。"""
-                # 标记当前所有消息为已读
+            def _fetch_notif_messages() -> list[dict[str, Any]]:
+                """查询当前用户的系统消息（在线程池中执行）。
+
+                :return: 消息列表（每条带 is_read）；查询失败返回空列表
+                """
                 try:
-                    msgs: list[dict[str, Any]] = AppContext().system_message_api.user_messages()
-                    for m in msgs:
-                        mid: str = str(m.get("id", ""))
-                        if mid:
-                            seen_msg_ids.add(mid)
-                except Exception:  # noqa: BLE001
-                    msgs = []
-                # 隐藏红点
-                notif_badge.set_visibility(False)
-                # 弹出对话框
-                _show_message_dialog(msgs)
+                    return list(AppContext().system_message_api.user_messages() or [])
+                except Exception:
+                    logger.debug("查询系统消息失败", exc_info=True)
+                    return []
 
-            def _show_message_dialog(msgs: list[dict[str, Any]]) -> None:
-                """展示系统消息对话框。
+            def _count_unread(msgs: list[dict[str, Any]]) -> int:
+                """统计未读消息条数。
 
                 :param msgs: 系统消息列表
+                :return: is_read 为假的消息条数
+                """
+                return sum(1 for m in msgs if not m.get("is_read", False))
+
+            def _sync_badge(msgs: list[dict[str, Any]]) -> None:
+                """按服务端未读数刷新铃铛角标。
+
+                :param msgs: 系统消息列表
+                """
+                unread: int = _count_unread(msgs)
+                notif_badge.set_text(str(unread))
+                notif_badge.set_visibility(unread > 0)
+
+            async def _update_notif_badge() -> None:
+                """定时轮询：按服务端未读数刷新角标。"""
+                _sync_badge(await run_blocking(_fetch_notif_messages))
+
+            async def _on_notif_click() -> None:
+                """点击通知按钮：拉取消息并弹出列表。"""
+                _show_message_dialog(await run_blocking(_fetch_notif_messages))
+
+            def _mark_message_read(message_id: str) -> None:
+                """把单条消息标记为已读（失败只记日志，不打断界面）。
+
+                :param message_id: 系统消息 ID
+                """
+                try:
+                    AppContext().system_message_api.mark_read(message_id)
+                except Exception:
+                    logger.warning("标记系统消息已读失败: %s", message_id, exc_info=True)
+
+            def _show_message_dialog(msgs: list[dict[str, Any]]) -> None:
+                """展示系统消息对话框：未读在上、历史在下，点开单条即置为已读。
+
+                「已读」与「历史」是同一个状态（后端 is_read），所以列表按 is_read 分两段：
+                未读段带圆点、点击后调接口标记已读并原地刷新；历史段置灰，仅供查阅。
+
+                :param msgs: 已拉取的系统消息列表
                 """
                 with ui.dialog() as dialog, ui.card().style(
                     "background-color: var(--qs-surface); border: 1px solid var(--qs-border); "
@@ -596,30 +633,116 @@ def _build_topbar(
                         ui.button(icon="close", on_click=dialog.close).props("flat round dense").style(
                             "color: var(--qs-muted);"
                         )
-                    # 消息列表
-                    with ui.column().classes("w-full gap-0").style("max-height: 60vh; overflow-y: auto;"):
-                        if not msgs:
-                            with ui.row().classes("w-full items-center justify-center").style("padding: 48px 0;"):
-                                ui.icon("notifications_none").style("color: var(--qs-icon-muted); font-size: 48px;")
-                            with ui.row().classes("w-full items-center justify-center").style("padding-bottom: 24px;"):
-                                ui.label("暂无系统消息").classes("text-sm").style("color: var(--qs-faint);")
-                        else:
-                            for idx, msg in enumerate(msgs):
-                                title: str = str(msg.get("title", ""))
-                                content: str = str(msg.get("message", ""))
-                                create_time: str = str(msg.get("create_time", ""))[:16]
-                                # 分隔线（非首条）
-                                if idx > 0:
-                                    ui.separator().style("background-color: var(--qs-border);")
-                                with ui.column().classes("w-full gap-1").style("padding: 16px 24px;"):
-                                    with ui.row().classes("w-full items-center justify-between"):
-                                        ui.label(title).classes("text-sm font-semibold").style(
-                                            "color: var(--qs-text);"
-                                        )
-                                        ui.label(create_time).classes("text-xs").style("color: var(--qs-faint);")
-                                    ui.label(content).classes("text-sm").style(
-                                        "color: var(--qs-muted); white-space: pre-wrap; word-break: break-all;"
+                    # 消息列表容器（标记已读后原地重绘，不重新打开对话框）
+                    body: ui.column = ui.column().classes("w-full gap-0").style(
+                        "max-height: 60vh; overflow-y: auto;"
+                    )
+                    # 当前展示的数据。点开单条后重新拉一次，避免只改本地副本导致与服务端不一致
+                    state: dict[str, list[dict[str, Any]]] = {"msgs": list(msgs)}
+
+                    def _render_row(msg: dict[str, Any], unread: bool) -> None:
+                        """渲染一条消息；未读的点一下即标记为已读。
+
+                        :param msg: 消息字典
+                        :param unread: 是否未读（未读带圆点、加粗、可点击）
+                        """
+                        message_id: str = str(msg.get("id", ""))
+                        title: str = str(msg.get("title", ""))
+                        content: str = str(msg.get("message", ""))
+                        create_time: str = str(msg.get("create_time", ""))[:16]
+                        row: ui.column = ui.column().classes("w-full gap-1").style(
+                            f"padding: 16px 24px; cursor: {'pointer' if unread else 'default'};"
+                        )
+                        if unread:
+                            row.on("click", _row_click_handler(message_id))
+                        with row:
+                            with ui.row().classes("w-full items-center justify-between"):
+                                with ui.row().classes("items-center gap-2"):
+                                    if unread:
+                                        ui.element("span").classes(
+                                            "w-2 h-2 rounded-full inline-block"
+                                        ).style("background-color: var(--qs-negative);")
+                                    ui.label(title).classes(
+                                        "text-sm font-semibold" if unread else "text-sm"
+                                    ).style(
+                                        f"color: {'var(--qs-text)' if unread else 'var(--qs-muted)'};"
                                     )
+                                ui.label(create_time).classes("text-xs").style("color: var(--qs-faint);")
+                            ui.label(content).classes("text-sm").style(
+                                "color: var(--qs-muted); white-space: pre-wrap; word-break: break-all;"
+                            )
+
+                    def _render_body() -> None:
+                        """按 state 重绘消息列表（未读段 + 历史段）。"""
+                        body.clear()
+                        current: list[dict[str, Any]] = state["msgs"]
+                        unread_list: list[dict[str, Any]] = [
+                            m for m in current if not m.get("is_read", False)
+                        ]
+                        history_list: list[dict[str, Any]] = [
+                            m for m in current if m.get("is_read", False)
+                        ]
+                        with body:
+                            if not current:
+                                with ui.row().classes("w-full items-center justify-center").style(
+                                    "padding: 48px 0;"
+                                ):
+                                    ui.icon("notifications_none").style(
+                                        "color: var(--qs-icon-muted); font-size: 48px;"
+                                    )
+                                with ui.row().classes("w-full items-center justify-center").style(
+                                    "padding-bottom: 24px;"
+                                ):
+                                    ui.label("暂无系统消息").classes("text-sm").style(
+                                        "color: var(--qs-faint);"
+                                    )
+                                return
+                            for section, items, unread in (
+                                ("未读消息", unread_list, True),
+                                ("历史消息", history_list, False),
+                            ):
+                                if not items:
+                                    continue
+                                with ui.row().classes("w-full items-center justify-between").style(
+                                    "padding: 12px 24px; background-color: var(--qs-surface-alt);"
+                                ):
+                                    ui.label(section).classes(
+                                        "text-xs font-semibold uppercase tracking-wider"
+                                    ).style("color: var(--qs-muted);")
+                                    ui.label(str(len(items))).classes("text-xs").style(
+                                        "color: var(--qs-faint);"
+                                    )
+                                for idx, msg in enumerate(items):
+                                    if idx > 0:
+                                        ui.separator().style("background-color: var(--qs-border);")
+                                    _render_row(msg, unread)
+
+                    async def _mark_and_refresh(message_id: str) -> None:
+                        """标记单条消息已读，然后重新拉取并刷新列表与角标。
+
+                        :param message_id: 系统消息 ID
+                        """
+                        await run_blocking(_mark_message_read, message_id)
+                        current: list[dict[str, Any]] = await run_blocking(_fetch_notif_messages)
+                        state["msgs"] = current
+                        _sync_badge(current)
+                        _render_body()
+
+                    def _row_click_handler(message_id: str) -> Any:
+                        """为某条消息生成点击处理器。
+
+                        这里返回真正的 async 函数（而不是 lambda）：NiceGUI 对协程函数会在
+                        事件循环里 await，lambda 返回协程对象的写法依赖框架内部实现细节。
+
+                        :param message_id: 系统消息 ID
+                        :return: 无参 async 事件处理器
+                        """
+                        async def _handler() -> None:
+                            await _mark_and_refresh(message_id)
+                        return _handler
+
+                    _render_body()
+                    _sync_badge(state["msgs"])
                 dialog.open()
 
             notif_btn = ui.button(icon="notifications", on_click=_on_notif_click).props(
@@ -630,27 +753,7 @@ def _build_topbar(
             with notif_btn:
                 notif_badge  # noqa: B018
 
-            # 定时轮询系统消息，有新消息则显示红点
-            def _fetch_notif_messages() -> list[dict[str, Any]]:
-                """查询系统消息（在线程池中执行）。
-
-                :return: 消息列表；查询失败返回空列表
-                """
-                try:
-                    return list(AppContext().system_message_api.user_messages() or [])
-                except Exception:
-                    logger.debug("查询系统消息失败", exc_info=True)
-                    return []
-
-            async def _update_notif_badge() -> None:
-                """定时检查系统消息，新消息到达时显示红点。"""
-                for m in await run_blocking(_fetch_notif_messages):
-                    mid = str(m.get("id", ""))
-                    if mid and mid not in seen_msg_ids:
-                        notif_badge.set_text("1")
-                        notif_badge.set_visibility(True)
-                        return
-
+            # 定时轮询系统消息，按服务端未读数刷新角标
             PollingTask(10.0, _update_notif_badge, name="顶栏未读消息角标").start()
 
 
@@ -830,14 +933,17 @@ def _build_profit_chart(
     """构建系统累计收益概览卡片 — ECharts 折线图（可叠加一条单策略对比线）。
 
     两条曲线（口径见 core/holdings.py 头部）：
-    - **系统总收益**：按 update_time 落到日期，每天取当天**全部**执行记录
-      current_return_rate 的算术平均（只含已实现，×100 后为百分数）。代表「当前」
-      的末点由 average_current_rate_pct 覆盖成各策略「含持仓浮盈」收益率的平均
-      —— 历史点的实时价无法回溯，浮盈只能在末点体现。
+    - **系统总收益**：按 update_time 落到日期，每个点 = 各用户策略收益率的**平均值** ——
+      单个策略当天的取值是它当天**最后一条**执行记录的 current_return_rate（该字段是
+      累计值，同日多条相加会重复累加），当天没交易的策略沿用最近一次的取值，
+      **收益为 0 的策略不计入平均**（只含已实现，×100 后为百分数）。代表「当前」的
+      末点由 average_current_rate_pct 覆盖成各策略「含持仓浮盈」收益率的平均值
+      （同样排除 0）—— 历史点的实时价无法回溯，浮盈只能在末点体现。
     - **单策略对比**：右上角下拉框选中某个用户策略后追加，数据是同一批记录按
-      user_strategy_id 过滤后的当日平均，琥珀色、不带面积，避免与主曲线互相遮盖。
+      user_strategy_id 过滤后的该策略取值，琥珀色、不带面积，避免与主曲线互相遮盖。
 
-    取数分两步：先用 list_executions() 全量确定窗口基准（最后一个数据点）与末点，
+    取数分三步：先用 list_executions() 全量确定窗口基准（最后一个数据点）、末点，
+    以及**窗口开始前各策略的取值**（求和的起始基准，窗口数据里没有这部分）；
     再调 executions/range 按窗口做服务端过滤取数据点。两者都带 30 秒 TTL ——
     切换周期只重查窗口；切换策略连窗口都复用；页面加载后首次绘制与表格共用行情缓存。
 
@@ -968,6 +1074,9 @@ def _build_profit_chart(
                 average_current_rate_pct(all_execs, price_map),
                 us_id,
                 _strategy_current_rate_pct(all_execs, us_id, price_map),
+                # 窗口开始前的各策略取值：求和要带上「窗口外没再交易的策略」，
+                # 而时间范围接口只回窗口内的记录
+                history=all_execs,
             )
 
             series: list[dict[str, Any]] = [
@@ -1004,12 +1113,16 @@ def _build_cumulative_series(
     last_rate_pct: float | None = None,
     select_us_id: str = "",
     select_last_rate_pct: float | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[float | None], list[float | None]]:
     """把执行记录转成曲线序列（系统总收益 + 可选的单策略对比曲线）。
 
-    - 总收益曲线：每天取当天**全部**执行记录 current_return_rate 的算术平均
-      （不按策略去重，见 core.holdings.daily_average_rates）；
-    - 单策略曲线：先按 user_strategy_id 过滤，再按同一规则取当日平均；
+    - 总收益曲线：每个点 = 各用户策略收益率的**平均值**（见
+      core.holdings.daily_average_rates）—— 单个策略当天的取值是它当天**最后一条**
+      记录的 current_return_rate（该字段是累计值，同日多条相加会重复累加），当天没
+      交易的策略沿用最近一次的取值，**收益为 0 的策略不计入分子也不占分母**；
+    - 单策略曲线：按 user_strategy_id 过滤后按同一规则取值
+      （见 core.holdings.strategy_levels_on_days）；
     - 两条曲线的日期取**并集**，各自缺失的日期补 ``None``（ECharts 断线）。
       不能补 0：补 0 会在图上画出一条跌到 0 的假线。
 
@@ -1020,18 +1133,38 @@ def _build_cumulative_series(
                           None 表示不覆盖
     :param select_us_id: 要叠加对比曲线的用户策略 ID，空表示不叠加
     :param select_last_rate_pct: 对比曲线末点要覆盖成的百分数，None 表示不覆盖
+    :param history: 全量执行记录，用来取「窗口开始前各策略的取值」。时间范围接口
+                    只回窗口内的记录，缺这一份时窗口外已停交易的策略会在整个窗口里
+                    凭空消失（总和少一截）
     :return: (日期标签列表 MM-DD, 总收益曲线数据, 单策略曲线数据；
               未选策略时第三个为空列表)
     """
-    total_daily: dict[str, float] = daily_average_rates(executions)
-    single_daily: dict[str, float] = {}
+    # 窗口第一天：求和的起始基准要取「它之前各策略的取值」，由全量记录算
+    window_days: list[str] = sorted(
+        d for d in (execution_day(ex) for ex in executions) if d
+    )
+    source: list[dict[str, Any]] = history if history is not None else executions
+    carry_in: dict[str, float] = (
+        strategy_levels_before(source, window_days[0]) if window_days else {}
+    )
+    total_daily: dict[str, float] = daily_average_rates(executions, carry_in)
+
+    # 单策略曲线：同一批记录按 user_strategy_id 过滤，规则与总和里的单策略口径一致
+    single_execs: list[dict[str, Any]] = []
+    single_carry: dict[str, float] = {}
     if select_us_id:
-        single_daily = daily_average_rates(
+        single_execs = [
             ex for ex in executions
             if str(ex.get("user_strategy_id", "") or "") == select_us_id
-        )
+        ]
+        if window_days:
+            single_carry = strategy_levels_before(
+                [ex for ex in source
+                 if str(ex.get("user_strategy_id", "") or "") == select_us_id],
+                window_days[0],
+            )
 
-    days: list[str] = sorted(set(total_daily) | set(single_daily))
+    days: list[str] = sorted(total_daily)
     if not days:
         return [], [], []
 
@@ -1048,7 +1181,10 @@ def _build_cumulative_series(
 
     total_rates: list[float | None] = [total_daily.get(d) for d in days]
     single_rates: list[float | None] = (
-        [single_daily.get(d) for d in days] if select_us_id else []
+        strategy_levels_on_days(
+            single_execs, days, single_carry.get(select_us_id),
+        )
+        if select_us_id else []
     )
 
     # 末点代表「当前」：叠加持仓未实现盈亏（历史点无实时价可回溯，保持已实现口径）

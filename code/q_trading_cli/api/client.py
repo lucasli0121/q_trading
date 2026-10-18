@@ -43,6 +43,33 @@ class UnauthorizedError(Exception):
         super().__init__(message)
 
 
+def extract_error_detail(resp: httpx.Response) -> str:
+    """从错误响应体里取出后端给的可展示提示（取不到返回空串）。
+
+    兼容两种格式：
+    - FastAPI ``HTTPException``（后端用 ``raise HTTPException(status_code=409,
+      detail="账号已存在")``）⇒ ``{"detail": "账号已存在"}``
+    - 统一 ``ApiResponse`` ⇒ ``{"code": ..., "message": "..."}``
+
+    422 的 ``detail`` 是一个列表（字段级校验错误），不是给人看的句子，
+    这种情况返回空串，由调用方给出状态码兜底文案。
+
+    :param resp: 出错的 httpx 响应
+    :return: 提示文案；取不到时为 ""
+    """
+    try:
+        body: Any = resp.json()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    for key in ("detail", "message"):
+        value: Any = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 class ApiClient:
     """统一的 HTTP API 客户端。
 
@@ -180,12 +207,7 @@ class ApiClient:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 # 从响应体中提取错误详情（如 "账号或密码错误"）
-                detail: str = ""
-                try:
-                    body: dict = e.response.json()
-                    detail = body.get("detail", "")
-                except Exception:  # noqa: BLE001, S110
-                    pass
+                detail: str = extract_error_detail(e.response)
                 # 仅当请求确实携带过 token（会话已认证）时才走“会话过期”流程；
                 # 登录/注册等匿名请求的 401 直接抛出，由调用方提示“账号或密码错误”。
                 if self._get_effective_token() is not None:

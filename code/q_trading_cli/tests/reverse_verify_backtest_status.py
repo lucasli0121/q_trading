@@ -34,6 +34,8 @@ BACKTEST_CHECK = ROOT / "tests" / "strategy_backtest_smokecheck.py"
 DIALOG_CHECK = ROOT / "tests" / "strategies_dialog_smokecheck.py"
 MONITOR_CHECK = ROOT / "tests" / "strategy_monitor_smokecheck.py"
 MAIN_PAGE_CHECK = ROOT / "tests" / "main_page_smokecheck.py"
+PREFERENCES_CHECK = ROOT / "tests" / "settings_preferences_smokecheck.py"
+LOGIN_CHECK = ROOT / "tests" / "login_page_smokecheck.py"
 
 BACKTEST_PAGE = ROOT / "pages" / "strategy_backtest.py"
 DIALOG_PAGE = ROOT / "pages" / "strategies.py"
@@ -44,6 +46,9 @@ API_USER_STRATEGY = ROOT / "api" / "user_strategy.py"
 SIGNAL_MGR = ROOT / "mq" / "signal_manager.py"
 ROUTES = ROOT / "core" / "routes.py"
 MAIN = ROOT / "main.py"
+PREFERENCES_PAGE = ROOT / "pages" / "settings_preferences.py"
+LOGIN_PAGE = ROOT / "pages" / "login_page.py"
+API_CLIENT = ROOT / "api" / "client.py"
 
 # 每个用例：(用例名, 源文件, env 变量名, [(旧片段, 新片段), ...], 期望在输出里出现的关键词)
 CASES: list[tuple[str, pathlib.Path, str, list[tuple[str, str]], list[str]]] = [
@@ -464,32 +469,43 @@ CASES: list[tuple[str, pathlib.Path, str, list[tuple[str, str]], list[str]]] = [
         [('    if last_rate_pct is not None and total_rates:\n'
           '        total_rates[-1] = round(float(last_rate_pct), 2)',
           '    pass')],
-        ["总收益曲线 = 当日全部记录直接平均，末点 = 各策略含浮盈平均"],
+        ["总收益曲线 = 各策略收益率的平均值（窗口外策略沿用最近一次取值），末点 = 含浮盈均值"],
     ),
     (
         "曲线每个点都叠加未实现（历史点被污染）",
         MAIN_PAGE, "SMOKE_MAIN_PAGE_SRC",
         [('        total_rates[-1] = round(float(last_rate_pct), 2)',
           '        total_rates = [round(float(last_rate_pct), 2)] * len(total_rates)')],
-        ["总收益曲线 = 当日全部记录直接平均，末点 = 各策略含浮盈平均"],
+        ["总收益曲线 = 各策略收益率的平均值（窗口外策略沿用最近一次取值），末点 = 含浮盈均值"],
     ),
-    # ---- 曲线改版（2026-09-23：平均值口径 + 时间范围查询 + 单策略对比线）----
+    # ---- 曲线改版（2026-09-23 平均值口径 + 时间范围查询 + 单策略对比线；
+    #      2026-09-30 一度改成求和，同日拍板改回平均值并排除零收益策略）----
     (
-        "日均值改成「每个策略当天只算一票」（与需求方选定的直接平均口径不符）",
+        "同一天同一策略的多条记录相加（累计快照被重复累加，曲线虚高）",
         HOLDINGS, "SMOKE_HOLDINGS_SRC",
-        [('        buckets.setdefault(day, []).append(to_float(raw) * 100.0)',
-          '        buckets[day] = [to_float(raw) * 100.0]')],
-        ["daily_average_rates 同一天多条记录**直接平均**"],
+        [('        bucket[us_id] = to_float(raw) * 100.0',
+          '        bucket[us_id] = bucket.get(us_id, 0.0) + to_float(raw) * 100.0')],
+        ["strategy_day_rates 同一天同一策略取**最后一条**记录"],
     ),
     (
-        "末点改用窗口内记录算平均（窗口外的策略被漏掉，分母随窗口变化）",
+        "同一天同一策略取先出现的那条（输入顺序决定结果，乱序数据会取错）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('        if us_id in bucket and at < times[us_id]:\n'
+          '            continue',
+          '        if us_id in bucket:\n'
+          '            continue')],
+        ["strategy_day_rates 同一天同一策略取**最后一条**记录",
+         "strategy_day_rates 输入顺序不影响结果（乱序传入也取时间最大的那条）"],
+    ),
+    (
+        "末点改用窗口内记录聚合（窗口外的策略被漏掉，均值随窗口变化）",
         MAIN_PAGE, "SMOKE_MAIN_PAGE_SRC",
         [('                average_current_rate_pct(all_execs, price_map),',
           '                average_current_rate_pct(window_execs, price_map),')],
-        ["总收益曲线 = 当日全部记录直接平均，末点 = 各策略含浮盈平均"],
+        ["总收益曲线 = 各策略收益率的平均值（窗口外策略沿用最近一次取值），末点 = 含浮盈均值"],
     ),
     (
-        "缺实时价的策略从平均值里剔除（分母被改写）",
+        "缺实时价的策略从聚合里剔除（均值少一票、数值偏一边）",
         HOLDINGS, "SMOKE_HOLDINGS_SRC",
         [('    raw: Any = record.get("current_return_rate")\n'
           '    if raw is None:\n'
@@ -501,19 +517,19 @@ CASES: list[tuple[str, pathlib.Path, str, list[tuple[str, str]], list[str]]] = [
     (
         "单策略曲线不按 user_strategy_id 过滤（画成第二条总曲线）",
         MAIN_PAGE, "SMOKE_MAIN_PAGE_SRC",
-        [('        single_daily = daily_average_rates(\n'
+        [('        single_execs = [\n'
           '            ex for ex in executions\n'
           '            if str(ex.get("user_strategy_id", "") or "") == select_us_id\n'
-          '        )',
-          '        single_daily = daily_average_rates(executions)')],
+          '        ]',
+          '        single_execs = list(executions)')],
         ["对比曲线按 user_strategy_id 过滤"],
     ),
     (
         "单策略曲线缺失日期补 0（在图上画出跌到 0 的假线）",
-        MAIN_PAGE, "SMOKE_MAIN_PAGE_SRC",
-        [('        [single_daily.get(d) for d in days] if select_us_id else []',
-          '        [single_daily.get(d, 0.0) for d in days] if select_us_id else []')],
-        ["叠加单策略曲线：日期取并集、缺失补 None"],
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('        out.append(round(level, 2) if level is not None else None)',
+          '        out.append(round(level, 2) if level is not None else 0.0)')],
+        ["strategy_levels_on_days 在它第一条记录之前 ⇒ None（不补 0）"],
     ),
     (
         "窗口基准改用今天（久未交易的策略会画出空图）",
@@ -721,6 +737,166 @@ CASES: list[tuple[str, pathlib.Path, str, list[tuple[str, str]], list[str]]] = [
           '    if not created:')],
         ["MQ 实时信号与历史记录按同一去重键合并（不是按 id 去重）"],
     ),
+    # ---- 平均口径的两条硬要求（2026-09-30）：窗口外策略别丢、当天没交易的别归零 ----
+    (
+        "聚合时窗口外策略没进起始基准（少一个分母，均值偏一边）",
+        MAIN_PAGE, "SMOKE_MAIN_PAGE_SRC",
+        [('    carry_in: dict[str, float] = (\n'
+          '        strategy_levels_before(source, window_days[0]) if window_days else {}\n'
+          '    )',
+          '    carry_in: dict[str, float] = {}')],
+        ["传 history ⇒ 起始基准补上窗口外 us-3 的 1.0（均值 (2+1)/2 = 1.5）"],
+    ),
+    (
+        "daily_average_rates 忽略 carry_in（窗口外停交易的策略不进均值）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('    levels: dict[str, float] = dict(carry_in or {})',
+          '    levels: dict[str, float] = {}')],
+        ["daily_average_rates 带 carry_in ⇒ 窗口外停交易的策略仍计入平均"],
+    ),
+    (
+        "当天没交易的策略直接归零（均值随当天谁交易而跳）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('        levels.update(per_day[day])\n'
+          '        rates: list[float] = effective_rates(levels.values())\n'
+          '        result[day] = round(sum(rates) / len(rates), 2) if rates else 0.0',
+          '        levels = dict(per_day[day])\n'
+          '        rates: list[float] = effective_rates(levels.values())\n'
+          '        result[day] = round(sum(rates) / len(rates), 2) if rates else 0.0')],
+        ["daily_average_rates = 各策略取值的**平均值**，当天没交易的策略沿用最近一次取值"],
+    ),
+    (
+        "曲线末点改回求和（旧口径，与需求方选定的平均值口径不符）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('    return round(sum(rates) / len(rates), 2)',
+          '    return round(sum(rates), 2)')],
+        ["average_current_rate_pct = 各策略含浮盈收益率的**平均值**"],
+    ),
+    (
+        "零收益策略算进平均（新建策略把平均值往 0 拉）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('    return [v for v in levels if abs(v) > _ZERO_EPS]',
+          '    return list(levels)')],
+        ["daily_average_rates 收益为 0 的策略不计入平均（7/2 = 3.5，不是 7/3 = 2.33）",
+         "average_current_rate_pct 排除收益为 0 的策略（(3.2+5.0+5.0+0)/4 是错的）"],
+    ),
+    (
+        "每天的分母写成全部策略数（零收益策略仍占分母）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('        rates: list[float] = effective_rates(levels.values())\n'
+          '        result[day] = round(sum(rates) / len(rates), 2) if rates else 0.0',
+          '        rates: list[float] = effective_rates(levels.values())\n'
+          '        result[day] = round(sum(rates) / max(len(levels), 1), 2)')],
+        ["daily_average_rates 收益为 0 的策略不计入平均（7/2 = 3.5，不是 7/3 = 2.33）"],
+    ),
+    (
+        "单策略曲线在它没交易的日期断线（不沿用最近一次取值）",
+        HOLDINGS, "SMOKE_HOLDINGS_SRC",
+        [('        if bucket:\n'
+          '            level = sum(bucket.values())\n'
+          '        out.append(',
+          '        if bucket:\n'
+          '            level = sum(bucket.values())\n'
+          '        else:\n'
+          '            level = None\n'
+          '        out.append(')],
+        ["对比曲线在它没交易的日期沿用最近一次取值（不是断线、更不是 0）"],
+    ),
+    # ---- 个人喜好页：推送星级滑块（2026-09-30 新增）----
+    (
+        "保存载荷漏掉星级字段（PUT 全量替换 ⇒ 星级被静默清成 0）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('            "push_buy_min_star": state["push_buy_min_star"],\n'
+          '            "push_sell_min_star": state["push_sell_min_star"],\n',
+          '')],
+        ["保存载荷带 push_buy_min_star（PUT 全量替换，漏了就被清成 0）"],
+    ),
+    (
+        "星级上限写成 10（与服务端 0~5 不一致，保存会被 400 拒）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('                                    max=_MAX_PUSH_STAR,',
+          '                                    max=10.0,')],
+        ["滑块 max = 5.0（与服务端 MAX_PUSH_STAR 一致）"],
+    ),
+    (
+        "步长改成 1.0（0.5 星的档位没了）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('                                    step=_STAR_STEP,',
+          '                                    step=1.0,')],
+        ["滑块 step = 0.5"],
+    ),
+    (
+        "星级区只看微信开关（只开短信时不显示）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('                bool(state["enable_wx_push"] or state["enable_phone_text"])',
+          '                bool(state["enable_wx_push"])')],
+        ["只开短信推送 ⇒ 星级区同样显示"],
+    ),
+    (
+        "拖动滑块不写回 state（页面能拖，保存还是旧值）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('            state[field] = star', '            star = star')],
+        ["保存载荷带 push_buy_min_star（PUT 全量替换，漏了就被清成 0）"],
+    ),
+    (
+        "_star_val 不夹上界（脏数据 9 会被服务端 400 拒）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('    if star > _MAX_PUSH_STAR:\n'
+          '        return _MAX_PUSH_STAR\n',
+          '')],
+        ["_star_val 超过 5 夹到 5.0（否则服务端 400）"],
+    ),
+    (
+        "切主题时不补星级字段（服务端旧记录没有 ⇒ 星级被清零）",
+        PREFERENCES_PAGE, "SMOKE_PREFERENCES_SRC",
+        [('        for key in ("push_buy_min_star", "push_sell_min_star"):\n'
+          '            if payload.get(key) is None:\n'
+          '                payload[key] = state[key]\n',
+          '')],
+        ["切主题时补上页面当前星级（服务端记录里没有也不清零）"],
+    ),
+    # ---- 登录页：HTTP 4xx 必须透出后端 detail（2026-10-01）----
+    (
+        "注册 409 没接住（落到 except Exception ⇒ 弹「网络错误: Client error '409 Conflict'」）",
+        LOGIN_PAGE, "SMOKE_LOGIN_PAGE_SRC",
+        [('        except httpx.HTTPStatusError as e:\n'
+          '            # 注册的 409 是**正常业务分支**（账号已存在 / 邮箱已被注册 /\n'
+          '            # 手机号已被注册），后端的 detail 就是该给用户看的那句话。\n'
+          '            detail: str = extract_error_detail(e.response)\n'
+          '            ui.notify(\n'
+          '                f"注册失败: {detail}" if detail\n'
+          '                else f"注册失败 (HTTP {e.response.status_code})，请稍后重试",\n'
+          '                type="negative",\n'
+          '            )\n',
+          '')],
+        ["注册 409 ⇒ 提示「注册失败: 账号已存在」"],
+    ),
+    (
+        "提示里塞的是 httpx 的英文异常串（用户读到 Client error '409 Conflict'）",
+        LOGIN_PAGE, "SMOKE_LOGIN_PAGE_SRC",
+        [('            # 手机号已被注册），后端的 detail 就是该给用户看的那句话。\n'
+          '            detail: str = extract_error_detail(e.response)',
+          '            # 手机号已被注册），后端的 detail 就是该给用户看的那句话。\n'
+          '            detail: str = str(e)')],
+        ["不再把 httpx 的英文异常串暴露给用户"],
+    ),
+    (
+        "错误详情只认 detail、不认 message（统一 ApiResponse 的提示取不到）",
+        API_CLIENT, "SMOKE_API_CLIENT_SRC",
+        [('    for key in ("detail", "message"):', '    for key in ("detail",):')],
+        ["统一 ApiResponse 的 message 也能取（detail 缺失时回退）"],
+    ),
+    (
+        "422 的字段级错误列表被拼成句子（弹出一串 {\"loc\": [...]} 给用户看）",
+        API_CLIENT, "SMOKE_API_CLIENT_SRC",
+        [('        value: Any = body.get(key)\n'
+          '        if isinstance(value, str) and value.strip():\n'
+          '            return value.strip()',
+          '        value: Any = body.get(key)\n'
+          '        if value:\n'
+          '            return str(value)')],
+        ["422 的 detail 是错误列表 ⇒ 不硬拼成句子，返回空串走状态码兜底"],
+    ),
 ]
 
 
@@ -751,6 +927,15 @@ def _targets_for(env_key: str) -> list[pathlib.Path]:
         # 历史信号的「本进程本会话只加载一次」语义在 mq/signal_manager.py 里，
         # 由监控页检查断言（页面侧只调用它、不实现它）。
         return [MONITOR_CHECK]
+    if env_key == "SMOKE_PREFERENCES_SRC":
+        # 个人喜好页检查专用（推送星级滑块与保存载荷只在这一页上验）
+        return [PREFERENCES_CHECK]
+    if env_key == "SMOKE_LOGIN_PAGE_SRC":
+        # 登录页检查专用（4xx 提示文案只在这一页上验）
+        return [LOGIN_CHECK]
+    if env_key == "SMOKE_API_CLIENT_SRC":
+        # 错误详情提取在 api/client.py 里，登录页检查会 exec 改坏副本
+        return [LOGIN_CHECK]
     return [BACKTEST_CHECK]
 
 

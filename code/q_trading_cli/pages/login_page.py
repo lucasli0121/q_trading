@@ -24,10 +24,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import httpx
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui
 
-from api.client import ApiError, UnauthorizedError
+from api.client import ApiError, UnauthorizedError, extract_error_detail
 from app_context import AppContext
 from colors.theme import theme_manager
 from components.login_background import install_login_background
@@ -491,6 +492,16 @@ def _render_login_panel(
             ui.notify(f"登录失败: {e.message}", type="negative")
         except UnauthorizedError as e:
             ui.notify(str(e), type="negative")
+        except httpx.HTTPStatusError as e:
+            # 后端用 HTTP 4xx 表达业务错误（401/409/422 等），响应体 detail 就是
+            # 给人看的中文提示。不取出来就会显示成
+            # "网络错误: Client error '409 Conflict' for url ..."，用户读不懂。
+            detail: str = extract_error_detail(e.response)
+            ui.notify(
+                f"登录失败: {detail}" if detail
+                else f"登录失败 (HTTP {e.response.status_code})，请稍后重试",
+                type="negative",
+            )
         except Exception as e:  # noqa: BLE001
             ui.notify(f"网络错误: {e!s}", type="negative")
 
@@ -594,6 +605,15 @@ def _render_register_panel(
                 switch_tab("login")
         except ApiError as e:
             ui.notify(f"注册失败: {e.message}", type="negative")
+        except httpx.HTTPStatusError as e:
+            # 注册的 409 是**正常业务分支**（账号已存在 / 邮箱已被注册 /
+            # 手机号已被注册），后端的 detail 就是该给用户看的那句话。
+            detail: str = extract_error_detail(e.response)
+            ui.notify(
+                f"注册失败: {detail}" if detail
+                else f"注册失败 (HTTP {e.response.status_code})，请稍后重试",
+                type="negative",
+            )
         except Exception as e:  # noqa: BLE001
             ui.notify(f"网络错误: {e!s}", type="negative")
 

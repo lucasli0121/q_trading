@@ -5,7 +5,11 @@ Date: 2026-07-11
 LastEditors: liguoqiang
 LastEditTime: 2026-08-03
 Description: 个人喜好设置页面 — 通过 /api/user/preference 接口查询和保存用户偏好
-    字段: theme_mode / enable_wx_push / wx_push_url / enable_phone_text / phone
+    字段: theme_mode / enable_wx_push / wx_push_url / enable_phone_text / phone /
+    push_buy_min_star / push_sell_min_star
+
+    两个星级（买入 / 卖出信号推送的最小星级）是**两个推送通道共用**的：企业微信与短信
+    任一打开就显示这一组滑块，两者都关时整块隐藏（此时改它也没有意义）。
 """
 from __future__ import annotations
 
@@ -27,7 +31,14 @@ _PREF_FIELDS: tuple[str, ...] = (
     "wx_push_url",
     "enable_phone_text",
     "phone",
+    "push_buy_min_star",
+    "push_sell_min_star",
 )
+
+# 推送星级上限与步长，与服务端 web_api/routers/user_preference.py 的 MAX_PUSH_STAR 一致
+# （服务端 0~5 且保留一位小数，超范围会被 400 拒绝）
+_MAX_PUSH_STAR: float = 5.0
+_STAR_STEP: float = 0.5
 
 
 def _load_preferences() -> dict[str, Any]:
@@ -70,6 +81,35 @@ def _bool_val(value: Any, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return default
+
+
+def _star_val(value: Any) -> float:
+    """安全转星级，落在 0~5 之间并保留一位小数。
+
+    后端对这两个字段是「先校验再落库」，超范围直接 400；前端同样要夹紧，
+    否则一个脏数据（字符串 / 负数 / 旧记录里的 None）就会让保存整条失败。
+
+    :param value: 待转换值
+    :return: 0~5 之间、一位小数的星级；无法解析时按 0（不限）处理
+    """
+    try:
+        star: float = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if star < 0.0:
+        return 0.0
+    if star > _MAX_PUSH_STAR:
+        return _MAX_PUSH_STAR
+    return round(star, 1)
+
+
+def _star_text(value: float) -> str:
+    """星级显示文案：0 表示不限，其余显示「N.N 星」。
+
+    :param value: 星级
+    :return: 展示文案
+    """
+    return "不限" if value <= 0 else f"{value:.1f} 星"
 
 
 def show_preferences_page() -> None:
@@ -120,7 +160,11 @@ def _render_preferences_content(is_dialog: bool) -> None:
         "wx_push_url": saved_prefs.get("wx_push_url", ""),
         "enable_phone_text": _bool_val(saved_prefs.get("enable_phone_text", False)),
         "phone": saved_prefs.get("phone", ""),
+        "push_buy_min_star": _star_val(saved_prefs.get("push_buy_min_star", 0.0)),
+        "push_sell_min_star": _star_val(saved_prefs.get("push_sell_min_star", 0.0)),
     }
+    # 两个星级滑块右侧的文案标签（拖动后要改文案，留引用）
+    star_text_refs: dict[str, Any] = {}
 
     def on_save() -> None:
         """保存更改到 API。"""
@@ -130,6 +174,8 @@ def _render_preferences_content(is_dialog: bool) -> None:
             "wx_push_url": state["wx_push_url"],
             "enable_phone_text": state["enable_phone_text"],
             "phone": state["phone"],
+            "push_buy_min_star": state["push_buy_min_star"],
+            "push_sell_min_star": state["push_sell_min_star"],
         }
         if _save_preferences(prefs):
             server_prefs.update(prefs)
@@ -158,6 +204,11 @@ def _render_preferences_content(is_dialog: bool) -> None:
         payload: dict[str, Any] = {
             key: server_prefs[key] for key in _PREF_FIELDS if key in server_prefs
         }
+        # 星级字段在**服务端旧记录**里可能还没有（PUT 是全量替换，缺字段会被当成 0）；
+        # 此时用页面当前值补上，别把用户刚拖好的星级冲掉。
+        for key in ("push_buy_min_star", "push_sell_min_star"):
+            if payload.get(key) is None:
+                payload[key] = state[key]
         if _save_preferences(payload):
             ui.notify(f"已切换到{label}主题", type="positive")
         else:
@@ -282,15 +333,75 @@ def _render_preferences_content(is_dialog: bool) -> None:
                     if not state["enable_phone_text"]:
                         phone_container.set_visibility(False)
 
+            # ---- 区4: 推送星级（两个通道共用，任一开关打开才显示） ----
+            star_container = ui.card().classes("w-full gap-0 overflow-hidden").style(
+                f"background-color: {card_bg}; border: 1px solid {border_color}; "
+                f"border-radius: 12px;"
+            )
+            with star_container:
+                with ui.row().classes("w-full").style(
+                    f"padding: 24px; border-bottom: 1px solid {border_color};"
+                ):
+                    ui.label("推送星级").classes("font-bold").style("color: var(--qs-heading);")
+
+                with ui.column().classes("w-full gap-5").style("padding: 24px;"):
+                    ui.label("信号星级低于设定值时不推送；拖到 0 表示不限制星级").classes(
+                        "text-xs"
+                    ).style("color: var(--qs-faint);")
+
+                    for field, title in (
+                        ("push_buy_min_star", "买入信号最小星级"),
+                        ("push_sell_min_star", "卖出信号最小星级"),
+                    ):
+                        with ui.column().classes("w-full gap-1"):
+                            with ui.row().classes("w-full items-center justify-between"):
+                                ui.label(title).classes("text-sm font-semibold").style(
+                                    "color: var(--qs-text);"
+                                )
+                                star_text = ui.label(_star_text(state[field])).classes(
+                                    "text-xs font-semibold"
+                                ).style(f"color: {theme_manager.var('primary')};")
+                                star_text_refs[field] = star_text
+                            (
+                                ui.slider(
+                                    min=0.0,
+                                    max=_MAX_PUSH_STAR,
+                                    step=_STAR_STEP,
+                                    value=state[field],
+                                    on_change=lambda e, _f=field: _update_star(_f, e.value),
+                                )
+                                .props("label-always")
+                                .classes("w-full")
+                            )
+
+        def _update_star(field: str, val: Any) -> None:
+            """滑块拖动 → 记录星级并刷新右侧文案。"""
+            star: float = _star_val(val)
+            state[field] = star
+            label = star_text_refs.get(field)
+            if label is not None:
+                label.set_text(_star_text(star))
+
+        def _update_star_visibility() -> None:
+            """星级区只在**任一推送通道打开**时显示。"""
+            star_container.set_visibility(
+                bool(state["enable_wx_push"] or state["enable_phone_text"])
+            )
+
         def _update_wx_state(val: bool) -> None:
             """更新企业微信推送开关状态。"""
             state["enable_wx_push"] = val
             url_container.set_visibility(val)
+            _update_star_visibility()
 
         def _update_phone_state(val: bool) -> None:
             """更新短信推送开关状态。"""
             state["enable_phone_text"] = val
             phone_container.set_visibility(val)
+            _update_star_visibility()
+
+        # 初始显隐：两个开关都关时整块隐藏（此时设星级没有意义）
+        _update_star_visibility()
 
     if is_dialog:
         with ui.dialog(value=True).props("persistent") as _dialog, ui.card().classes("gap-0").style(

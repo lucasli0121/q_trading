@@ -22,11 +22,19 @@ Description: 持仓盈亏口径 — 「当前持仓未实现盈亏」与「当�
 
 未实现那一段只对**最新一条执行记录**计算：历史记录对应的是当时的持仓，实时价无法回溯。
 
-概要页「系统总收益曲线」（2026-09-23 改版）：
-- 曲线**每个点** = 该日期下**全部**执行记录 ``current_return_rate`` 的算术平均
-  （不按策略去重，见 :func:`daily_average_rates`），只含已实现；
-- **末点**由 :func:`average_current_rate_pct` 覆盖：各策略最新记录的含浮盈收益率
-  再取平均；缺实时价的策略退化到已实现口径，不改变分母。
+概要页「系统总收益曲线」（2026-09-30 定稿，此前一度改成求和）：
+- 曲线**每个点** = 各用户策略收益率的**平均值**（见 :func:`daily_average_rates`），
+  只含已实现。单个策略当天的取值 = 它当天**最后一条**记录的 ``current_return_rate``
+  （见 :func:`strategy_day_rates`）：该字段是累计值，同一天多条记录相加会把已实现收益
+  重复累加（真机上一天 17 条记录把总收益从 -3.73 放大到 -39.36），所以**不取和**。
+  当天没有记录的策略**沿用其最近一次的取值**（不归零，否则平均值会随「当天谁交易了」
+  上下跳）。窗口开始之前的策略取值由全量记录补（时间范围接口只回窗口内的记录，见
+  :func:`strategy_levels_before`）。
+- ⚠ **收益为 0 的策略不计入平均**（既不算进分子、也不占分母，见
+  :func:`effective_rates`）：新建 / 还没交易过的策略收益率恒为 0，把它们算进分母会
+  把平均值往 0 拉。某天所有策略的取值都是 0 ⇒ 该点就是 0.0（曲线不中断）。
+- **末点**由 :func:`average_current_rate_pct` 覆盖：各策略最新记录的含浮盈收益率取
+  **平均**（同样排除 0）；缺实时价的策略退化到已实现口径，不剔除。
 
 行情与股票名称：:func:`fetch_price_map`（实时价）与 :func:`fetch_stock_name_map`
 （名称，进程级缓存）是展示层的取数出口；代码比对一律走 :func:`lookup_stock_name`，
@@ -268,34 +276,141 @@ def last_execution_day(executions: Iterable[dict[str, Any]]) -> str:
     return max(days) if days else ""
 
 
-def daily_average_rates(
+def strategy_day_rates(
     executions: Iterable[dict[str, Any]],
-) -> dict[str, float]:
-    """按日期聚合执行记录的 ``current_return_rate`` **算术平均**（百分数）。
+) -> dict[str, dict[str, float]]:
+    """按日期 + 用户策略聚合出「该策略当天的收益率」（百分数）。
 
-    同一天内的**所有**执行记录都参与平均，**不按策略去重**——某策略当天交易
-    频繁、记录条数多，它对当天均值的影响就更大。这是 2026-09-23 需求方明确
-    选定的口径（另一选项是「每个策略当天只算一票」，未采用）。
+    当天该策略的取值 = 当天它**最后一条**执行记录的 ``current_return_rate``
+    （按 ``update_time`` 取最大，输入顺序不影响结果）。
 
-    只含已实现，不含持仓浮盈：历史记录的实时价无法回溯，浮盈只能在
-    代表「当前」的末点叠加（见 :func:`average_current_rate_pct`）。
+    ⚠ 不能取当天多条之和：``current_return_rate`` 是**累计**收益率，同一天 N 条记录
+    相加等于把已实现收益累加 N 次（真机上一天 17 条记录把总收益从 -3.73 放大到
+    -39.36）。历史上曾按「相加」实现，2026-09-30 改回取最后一条。
+
+    缺 ``user_strategy_id`` 的记录无法归并到策略上，直接跳过。
 
     :param executions: 执行记录列表（可以是按时间范围查回来的子集）
-    :return: {日期 YYYY-MM-DD: 收益率百分数}；无有效记录时为空字典
+    :return: {日期 YYYY-MM-DD: {user_strategy_id: 收益率百分数}}；无有效记录时为空字典
     """
-    buckets: dict[str, list[float]] = {}
+    per_day: dict[str, dict[str, float]] = {}
+    seen_time: dict[str, dict[str, str]] = {}
     for ex in executions:
         day: str = execution_day(ex)
         if not day:
             continue
+        us_id: str = str(ex.get("user_strategy_id", "") or "")
+        if not us_id:
+            continue
         raw: Any = ex.get("current_return_rate")
         if raw is None:
             continue
-        buckets.setdefault(day, []).append(to_float(raw) * 100.0)
-    return {
-        day: round(sum(rates) / len(rates), 2)
-        for day, rates in buckets.items() if rates
-    }
+        at: str = str(ex.get("update_time") or ex.get("create_time") or "")
+        bucket: dict[str, float] = per_day.setdefault(day, {})
+        times: dict[str, str] = seen_time.setdefault(day, {})
+        # 同一天同一策略只留时间最大的那条（相等时留先出现的）
+        if us_id in bucket and at < times[us_id]:
+            continue
+        bucket[us_id] = to_float(raw) * 100.0
+        times[us_id] = at
+    return per_day
+
+
+# 「收益为 0」的判定阈值。current_return_rate 是浮点除法的结果，严格判等
+# （``v != 0``）会把 -1e-16 这类残差当成「有收益」，所以用 epsilon。
+_ZERO_EPS: float = 1e-9
+
+
+def effective_rates(levels: Iterable[float]) -> list[float]:
+    """从各策略的取值里剔除**收益为 0**的那些（需求方口径：只统计有收益的策略）。
+
+    既不计入分子、也不占分母 —— 新建或从未交易过的策略收益率恒为 0，把它们留在分母里
+    会把平均值往 0 拉。
+
+    :param levels: 各策略的收益率（百分数）
+    :return: 非零取值列表；全为 0 时为空列表（调用方按「该点为 0.0」处理）
+    """
+    return [v for v in levels if abs(v) > _ZERO_EPS]
+
+
+def strategy_levels_before(
+    executions: Iterable[dict[str, Any]], before_day: str,
+) -> dict[str, float]:
+    """各用户策略在 ``before_day`` **之前**（不含当天）的最后一次取值。
+
+    曲线每个点要把「当天没交易的策略」按它最近一次的值计进去，而按时间范围
+    查回来的窗口数据里没有这些历史记录 —— 只能用全量记录算出这个起始基准。
+    不补这一份，窗口外的策略会在整个窗口里凭空消失（总和大一截）。
+
+    :param executions: 全部执行记录（不是窗口子集）
+    :param before_day: 窗口第一天的日期 ``YYYY-MM-DD``
+    :return: {user_strategy_id: 收益率百分数}；之前从未有记录的策略不在结果里
+    """
+    levels: dict[str, float] = {}
+    if not before_day:
+        return levels
+    per_day: dict[str, dict[str, float]] = strategy_day_rates(executions)
+    for day in sorted(d for d in per_day if d < before_day):
+        levels.update(per_day[day])
+    return levels
+
+
+def daily_average_rates(
+    executions: Iterable[dict[str, Any]],
+    carry_in: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """按日期聚合出「各用户策略收益率的平均值」（百分数），用于总收益曲线的数据点。
+
+    逐个日期累积：先记下每个策略当天的取值（当天取最后一条记录，见
+    :func:`strategy_day_rates`），当天没有记录的策略**沿用其最近一次的取值**，
+    再对**非零**取值取算术平均（见 :func:`effective_rates`）。沿用最近一次取值保证
+    平均值不会因为某个策略当天没交易而少一块；排除 0 保证「还没交易过的策略」不占分母。
+
+    ``carry_in`` 是窗口开始之前的各策略取值（见 :func:`strategy_levels_before`）：
+    按时间范围查回来的窗口数据里没有窗口外记录的策略，不给它起始基准就会漏算。
+
+    :param executions: 要出点的执行记录（通常是窗口内的记录）
+    :param carry_in: {user_strategy_id: 窗口开始前的取值}；可为 None
+    :return: {日期 YYYY-MM-DD: 各策略收益率平均值}；无有效记录时为空字典
+    """
+    per_day: dict[str, dict[str, float]] = strategy_day_rates(executions)
+    levels: dict[str, float] = dict(carry_in or {})
+    result: dict[str, float] = {}
+    for day in sorted(per_day):
+        levels.update(per_day[day])
+        rates: list[float] = effective_rates(levels.values())
+        result[day] = round(sum(rates) / len(rates), 2) if rates else 0.0
+    return result
+
+
+def strategy_levels_on_days(
+    executions: Iterable[dict[str, Any]],
+    days: Iterable[str],
+    carry_in: float | None = None,
+) -> list[float | None]:
+    """单个用户策略在给定日期上的取值序列（用于对比曲线）。
+
+    取值规则与 :func:`daily_average_rates` 里的单策略口径一致：当天有记录 ⇒ 当天最后一条
+    记录的值；当天没记录 ⇒ 沿用最近一次的取值；在它第一条记录之前 ⇒ ``None``
+    （「尚未有数据」与「值就是 0」要区分开，画出来是断线而不是贴着 0 的假线）。
+
+    ⚠ 传入的 ``executions`` 必须**只含该策略**的记录（由调用方按 user_strategy_id
+    过滤）：本函数不做归属判断，混进别的策略的记录就会算成它们的合计。
+
+    :param executions: 该策略窗口内的执行记录
+    :param days: 要出的日期序列（升序）
+    :param carry_in: 该策略在窗口开始前的取值；None 表示窗口前没有它的记录
+    :return: 与 days 等长的取值列表，未知处为 None
+    """
+    per_day: dict[str, dict[str, float]] = strategy_day_rates(executions)
+    level: float | None = carry_in
+    out: list[float | None] = []
+    for day in days:
+        bucket: dict[str, float] | None = per_day.get(day)
+        if bucket:
+            level = sum(bucket.values())
+        out.append(round(level, 2) if level is not None else None)
+    return out
 
 
 def latest_execution_map(
@@ -389,9 +504,8 @@ def current_rate_pct_with_fallback(
     （``(current_profit + 未实现) / base_amount × 100``）；
     缺实时价 ⇒ **退回记录自带的 current_return_rate**（只含已实现）。
 
-    退化而不是丢弃，是为了曲线末点的平均值口径稳定：缺价只是这一条记录算不准，
-    若整个策略从平均里消失，平均值的分母就变了，曲线末点会无故跳变
-    （2026-09-23 需求方选定的处理方式）。
+    退化而不是丢弃，是为了曲线末点的聚合口径稳定：缺价只是这一条记录算不准，
+    若整个策略从平均值里消失，均值就少了一整块（2026-09-30 需求方选定的处理方式）。
 
     :param record: 该策略最新一条执行记录
     :param price_map: {股票代码: 实时价}
@@ -412,21 +526,23 @@ def current_rate_pct_with_fallback(
 def average_current_rate_pct(
     executions: Iterable[dict[str, Any]], price_map: dict[str, float],
 ) -> float | None:
-    """所有用户策略「当前」收益率的**算术平均**（百分数），用于曲线末点。
+    """所有用户策略「当前」收益率的**平均值**（百分数），用于曲线末点。
 
     每个策略取最新一条执行记录（按 ``user_strategy_id`` 归并），各自算出含
-    浮动盈亏的当前收益率后取平均。缺实时价的策略按
-    :func:`current_rate_pct_with_fallback` 退化到已实现口径，不改变分母。
+    浮动盈亏的当前收益率后取**算术平均**，并排除收益为 0 的策略（与
+    :func:`daily_average_rates` 同一口径）。缺实时价的策略按
+    :func:`current_rate_pct_with_fallback` 退化到已实现口径，不剔除。
 
     :param executions: 全部执行记录（窗口外也要传，否则漏掉久未更新的策略）
     :param price_map: {股票代码: 实时价}，需覆盖各策略最新记录的持仓代码
-    :return: 平均收益率百分数；无有效记录时返回 None
+    :return: 收益率平均值（百分数）；无有效记录时返回 None
     """
-    values: list[float] = []
-    for record in latest_execution_map(executions).values():
-        rate: float | None = current_rate_pct_with_fallback(record, price_map)
-        if rate is not None:
-            values.append(rate)
-    if not values:
+    rates: list[float] = effective_rates(
+        rate for rate in (
+            current_rate_pct_with_fallback(record, price_map)
+            for record in latest_execution_map(executions).values()
+        ) if rate is not None
+    )
+    if not rates:
         return None
-    return round(sum(values) / len(values), 2)
+    return round(sum(rates) / len(rates), 2)

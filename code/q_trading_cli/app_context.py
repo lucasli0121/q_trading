@@ -183,7 +183,7 @@ class AppContext:
     def system_message_api(self) -> "SystemMessageApi":
         """获取系统消息 API 实例（懒加载）。
 
-        提供当前用户系统消息查询接口。
+        提供当前用户系统消息查询与单条已读标记接口。
         """
         if not hasattr(self, '_system_message_api'):
             from api.system_message import SystemMessageApi

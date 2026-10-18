@@ -6,8 +6,8 @@ LastEditTime: 2026-06-21 20:00:00
 Description: 用户偏好数据对象 - 包含界面主题、消息推送等偏好设置
 """
 
-import logging
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ class UserPreferenceDao:
     wx_push_url: str  # 企业微信推送链接
     enable_phone_text: bool  # 是否手机短信推送
     phone: str  # 推送手机
+    push_buy_min_star: float # 推送买入最小星级
+    push_sell_min_star: float # 推送卖出最小星级
     update_time: str  # 更新时间
 
     def __init__(
@@ -35,6 +37,8 @@ class UserPreferenceDao:
         wx_push_url: str = "",
         enable_phone_text: bool = False,
         phone: str = "",
+        push_buy_min_star: float = 0.0,
+        push_sell_min_star: float = 0.0,
         update_time: str = "",
     ) -> None:
         """初始化用户偏好对象。"""
@@ -45,6 +49,8 @@ class UserPreferenceDao:
         self.wx_push_url = wx_push_url
         self.enable_phone_text = enable_phone_text
         self.phone = phone
+        self.push_buy_min_star = push_buy_min_star
+        self.push_sell_min_star = push_sell_min_star
         self.update_time = update_time
 
     def from_db(self, data: dict[str, Any]) -> None:
@@ -56,6 +62,8 @@ class UserPreferenceDao:
         self.wx_push_url = data.get("wx_push_url", "")
         self.enable_phone_text = data.get("enable_phone_text", False)
         self.phone = data.get("phone", "")
+        self.push_buy_min_star = data.get("push_buy_min_star", 0.0)
+        self.push_sell_min_star = data.get("push_sell_min_star", 0.0)
         self.update_time = data.get("update_time", "")
 
     def to_db(self) -> dict[str, Any]:
@@ -67,5 +75,7 @@ class UserPreferenceDao:
             "wx_push_url": self.wx_push_url,
             "enable_phone_text": self.enable_phone_text,
             "phone": self.phone,
+            "push_buy_min_star": self.push_buy_min_star,
+            "push_sell_min_star": self.push_sell_min_star,
             "update_time": self.update_time,
         }
