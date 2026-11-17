@@ -57,6 +57,8 @@ bin/
 *.p12
 *.pfx
 cert/
+# CA 签发目录（私钥 + 证书 + 签发配置，整体不入库）
+openssl_ca/
 
 # ===== IDE / 编辑器 =====
 .idea/
