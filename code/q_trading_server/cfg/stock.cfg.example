@@ -1,66 +1,124 @@
 # ============================================================
-# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+# stock.cfg 配置模板
 #
-# 使用方法：
-#   1) 复制为同目录下的 stock.cfg
+# 用法：
+#   1) 复制为本目录下的 stock.cfg
 #        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
 #        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
-#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
-#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
-#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
-#
-# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+#   2) 按注释逐项填写。模板内所有值一律留空；未填写的必填项
+#      会在启动阶段明确报错。这是刻意设计——避免未配置时
+#      静默连到错误的环境。
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会进入版本库。
 # ============================================================
 
 
 [redis]
-enable=true
-host=example.com
-# host=192.168.1.63
-port=16379
-password=REPLACE_WITH_REDIS_PASSWORD
-db=0
-enable_ssl=true
-cert = cert/client.crt
-key = cert/client.key
-ca = cert/ca.crt
+# 是否启用 Redis：true / false
+enable=
+# 主机（域名或 IP）
+host=
+# 端口
+port=
+# 访问口令
+password=
+# 库号，常用 0
+db=
+# 是否启用 TLS：true / false
+enable_ssl=
+# TLS 客户端证书、私钥、CA 文件路径（enable_ssl=true 时需要）
+cert=
+key=
+ca=
+
 [mongo]
-host=example.com
-# host=192.168.1.63
-port=27017
-username=qshare
-password=REPLACE_WITH_MONGO_PASSWORD
-database=q_share
+# 主机（域名或 IP）
+host=
+# 端口
+port=
+# 认证用户名
+username=
+# 认证口令
+password=
+# 数据库名
+database=
+# 是否经 SSH 隧道连接：true / false，不写默认 false
+#ssh_tunnel_enable=false
+
+# SSH 隧道参数，仅在 ssh_tunnel_enable=true 时生效
+#[mongo_ssh]
+#host=
+#user=
+#port=22
+# 认证方式：key / password
+#auth_method=key
+# 认证方式为 key 时填私钥路径
+#key_file=
+# 私钥口令（私钥无口令则留空）
+#key_passphrase=
+# 认证方式为 password 时填登录口令
+#password=
+# 主机密钥校验策略：auto_add / reject
+#host_key_policy=auto_add
+#known_hosts=~/.ssh/known_hosts
+# 隧道对端地址（一般指向数据库所在机器）
+#remote_host=127.0.0.1
+# 隧道对端端口，缺省取 [mongo] port
+#remote_port=27017
+
 [stock_fetch]
-real_time_sync_interval=6
-sync_workers=5
+# 实时行情同步间隔（秒）
+real_time_sync_interval=
+# 同步线程数
+sync_workers=
+
 [tickflow]
-api_token=REPLACE_WITH_TICKFLOW_API_TOKEN
-server_url=https://api.tickflow.org/v1
-real_time_limit=5
-industry_hq_sync_interval=6
-history_hq_sync_interval=6
-history_hq_sync_number_of_once=1
+# 数据源 API Token
+api_token=
+# 服务地址
+server_url=
+# 实时行情订阅上限（股票只数）
+real_time_limit=
+# 行业行情同步间隔（秒）
+industry_hq_sync_interval=
+# 历史行情同步间隔（秒）
+history_hq_sync_interval=
+# 每次同步的历史行情数量
+history_hq_sync_number_of_once=
+
 [akshare]
-industry_hq_sync_interval=60
+# 行业行情同步间隔（秒）
+industry_hq_sync_interval=
+
 [stock]
-csv_path=csv
-start_date=2004-07-22
+# 本地 CSV 数据目录
+csv_path=
+# 历史数据起始日期，格式 YYYY-MM-DD
+start_date=
+
 [web]
-listen_host=0.0.0.0
-listen_port=8000
+# 监听地址，如 0.0.0.0
+listen_host=
+# 监听端口
+listen_port=
+
 [mqtt]
-#host=example.com
-host=192.168.1.63
-#port=8883
-port=1883
-client_id=q_share_mqtt_client_0
-username=q_share
-password=REPLACE_WITH_MQTT_PASSWORD
-need_tls=false
-cert_file=./cert/client.crt
-key_file=./cert/client.key
-ca_file=./cert/ca.crt
+# Broker 主机（域名或 IP）
+host=
+# 端口
+port=
+# 客户端 ID，同一 Broker 上需唯一
+client_id=
+# 用户名
+username=
+# 口令
+password=
+# 是否启用 TLS：true / false
+need_tls=
+# TLS 客户端证书、私钥、CA 文件路径（need_tls=true 时需要）
+cert_file=
+key_file=
+ca_file=
 
 [log]
-config=cfg/log.yaml
+# 日志配置文件路径，相对进程工作目录
+config=

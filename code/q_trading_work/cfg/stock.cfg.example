@@ -1,113 +1,132 @@
 # ============================================================
-# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+# stock.cfg 配置模板（策略引擎）
 #
-# 使用方法：
-#   1) 复制为同目录下的 stock.cfg
+# 用法：
+#   1) 复制为本目录下的 stock.cfg
 #        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
 #        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
-#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
-#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
-#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
-#
-# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+#   2) 按注释逐项填写。模板内所有值一律留空；未填写的必填项
+#      会在启动阶段明确报错。这是刻意设计——避免未配置时
+#      静默连到错误的环境。
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会进入版本库。
 # ============================================================
 
 
 [server]
-#host=host.docker.internal
-host=example.com
-port=8000
-admin_token=REPLACE_WITH_ADMIN_TOKEN
-#admin_token=REPLACE_WITH_ADMIN_TOKEN
+# 服务端地址（域名或 IP）
+host=
+# 服务端端口
+port=
+# 服务端管理令牌，需与服务端一致
+admin_token=
+
 [mqtt]
-host=example.com
-#host=192.168.1.63
-port=8883
-#port=1883
-client_id=q_trading_work_1
-username=q_share
-password=REPLACE_WITH_MQTT_PASSWORD
-keep_alive=15
-need_tls=true
-cert_file=./cert/client.crt
-key_file=./cert/client.key
-ca_file=./cert/ca.crt
+# Broker 主机（域名或 IP）
+host=
+# 端口，TLS 常用 8883，明文常用 1883
+port=
+# 客户端 ID，同一 Broker 上需唯一
+client_id=
+# 用户名
+username=
+# 口令
+password=
+# 心跳间隔（秒）
+keep_alive=
+# 是否启用 TLS：true / false
+need_tls=
+# TLS 客户端证书、私钥、CA 文件路径（need_tls=true 时需要）
+cert_file=
+key_file=
+ca_file=
+
 [log]
-config=cfg/log.yaml
+# 日志配置文件路径
+config=
+
 [scheduler]
-before_trading_hour = 9
-before_trading_minute = 0
-# 盘后阀门计算（当日信号 + 分钟行情 → 次日门槛偏移）的执行时刻
-after_trading_hour = 15
-after_trading_minute = 10
+# 盘前任务执行时刻（24 小时制）
+before_trading_hour=
+before_trading_minute=
+# 盘后阀门计算执行时刻（当日信号 + 分钟行情 → 次日门槛偏移）
+after_trading_hour=
+after_trading_minute=
+
 [market_breadth]
-# 前一交易日跌停家数 → 全局买卖门槛偏移的分档，格式「上界:偏移」逗号分隔，上界升序。
-# 超出最后一档上界的按最后一档取值（不必写 inf）。
-# 基数来自实测（2026-09-14~10-13 共 16 个交易日，跌停 0~56，中位 10，90 分位 27）。
-# 买入门槛上调该偏移；卖出侧取负号（更容易卖），另有独立上限。
-bands = 5:0,10:0.5,20:1,30:2,9999:3
+# 前一交易日跌停家数 → 全局买卖门槛偏移的分档，
+# 格式「上界:偏移」逗号分隔，上界需升序；超出最后一档的按最后一档取值。
+# 买入门槛上调该偏移；卖出侧取负号，另有独立上限。
+bands=
 # 卖出侧放宽幅度上限（绝对值）。买入侧最大 3.0，卖出侧取一半不到，
-# 避免市场偏移把卖出条件放宽成「见正分就抛」；设为 0 表示不设上限。
-max_sell_offset = 1.5
-# 极端利空禁买（2026-10-13）：前一交易日跌停家数**超过**该值，且该股盘后阀门
-# 达到最高档（当日买入侧跌破 S3）时，该股当日**只卖不买**（跳过买入判定）。
-# 两个条件必须同时成立：单看市场只抬门槛、单看个股也只抬门槛。
-# 取不到跌停家数（akshare 抖动）时不触发 —— 不许一次接口抖动停掉整个实例的买入。
+# 避免市场偏移把卖出条件放宽成「见正分就抛」。0 表示不设上限。
+max_sell_offset=
+# 极端利空禁买：前一交易日跌停家数超过该值，且该股盘后阀门达到最高档
+# （当日买入侧跌破 S3）时，该股当日只卖不买。两个条件需同时成立。
+# 取不到跌停家数时不触发，避免一次接口抖动停掉整个实例的买入。
 # 设为 0 或负数表示关闭该联动，只保留上面的门槛偏移。
-# 默认 30 对应实测分布（2026-09-14~10-13）的最后一档上界，仅 09-28 的 56 家越界。
-stop_buy_limit_down = 30
+stop_buy_limit_down=
+
 [trade]
-enterprise_wechat_webhook_url=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPLACE_WITH_WEBHOOK_KEY
+# 企业微信机器人 webhook 地址，留空则不推送
+enterprise_wechat_webhook_url=
+# 微信通知 webhook 地址，留空则不推送
 wechat_webhook_url=
+# 微信通知接收人，留空则不指定
 wechat_friend_name=
+
 [strategy]
-type=趋势追踪, 反弹策略, 网格交易策略, 反转策略, 多因子选股, 基本面策略
+# 启用的策略类型，逗号分隔
+type=
+
 [signal_filter]
 # 信号风暴过滤：连续相同方向信号需同时满足以下条件才发出新信号
-# 价格变化阈值（%）：超过此阈值才发出新信号
-price_change_threshold=2.0
-# 时间间隔阈值（分钟）：超过此间隔才发出新信号
-time_gap_minutes=10
-# --- 成交间隔限制（2026-10-11 新增）---
-# 不分方向：距上一条交易信号不足此间隔（分钟）即抑制，0 = 关闭。
-# 与上面的风暴过滤是两件事 —— 那条只比较**同方向**连续信号（防同方向重复下单），
-# 压不住「卖完又买回」这类跨方向的高频进出；本项不分方向，直接限制交易频率。
-# 跨日不判：隔夜必然超过任何合理阈值，等于自动放行。
-# 与回测侧同名开关 --min-trade-interval-minutes 语义一致。
-# 回测实测（000988 分钟频，2026-07-21~10-08，其余参数固定）：
-#   关闭 36 笔 / -15.53% / 回撤 21.59%；10 分钟 23 笔 / -10.29% / 16.92%；
-#   30 分钟 9 笔 / -8.81% / 13.36%；60 分钟 7 笔 / -5.63% / 10.34%。
-#   间隔越长亏损越小，但这几组都是亏的 —— 调间隔是「少亏」不是「转正」。
-min_trade_interval_minutes=0
+# 价格变化阈值（%）：超过此阈值才发出
+price_change_threshold=
+# 时间间隔阈值（分钟）：超过此间隔才发出
+time_gap_minutes=
+# 成交间隔限制：不分方向，距上一条交易信号不足此间隔（分钟）即抑制，
+# 0 表示关闭。与上面的风暴过滤是两件事——那条只比较同方向连续信号，
+# 压不住「卖完又买回」这类跨方向的高频进出。跨日不判。
+# 与回测参数 --min-trade-interval-minutes 语义一致。
+min_trade_interval_minutes=
+
 [cost_config]
-# 买入滑点（元）：成交价 = 当前价 + buy_slip，为了快速成交
-buy_slip=0.02
+# 买入滑点（元）：成交价 = 当前价 + buy_slip
+buy_slip=
 # 卖出滑点（元）：成交价 = 当前价 - sell_slip
-sell_slip=0.02
-# 手续费百分率（%）：如 0.02 表示 0.02%，成交 100 元收 0.02 元
-fee_pct=0.02
-# 最低手续费（元）：按比例计算不足时按此收取
-fee_low=5
+sell_slip=
+# 手续费百分率（%），如 0.02 表示 0.02%
+fee_pct=
+# 最低手续费（元），按比例计算不足时按此收取
+fee_low=
+
 [workflow]
-service_name=workflow_service_1
-# 是否派发实时 tick 行情任务。内置策略的 check_tick_buy / check_tick_sell 均未实现
-# （恒返回 False），开启只会用空转任务占满线程池并延迟分钟信号，故默认关闭。
-enable_handle_tick=false
-# 行情派发队列上限（背压）：队列满时丢弃最旧的待处理行情，避免内存无限增长
-order_queue_size=512
+# 工作流服务名，同一部署内需唯一
+service_name=
+# 是否派发实时 tick 行情任务：true / false
+enable_handle_tick=
+# 行情派发队列上限（背压）：队列满时丢弃最旧的待处理行情
+order_queue_size=
+
 [benchmark]
-# 基准标的代码（用于计算 benchmark_return_rate，即策略同期对比基准）
-# **当前置空 = 关闭基准计算**：后台目前没有获取任何指数行情，
-#   填了代码也取不到数据，只会周期性打无效请求并记 warning。
-# 后续接入指数/ETF 行情后，把代码填上即可启用（填 510300 之类 ETF 也行）。
+# 基准标的代码，用于计算 benchmark_return_rate。
+# 留空 = 关闭基准计算。
 code=
+
 [redis]
-enable=true
-host=192.168.1.63
-port=16379
-password=REPLACE_WITH_REDIS_PASSWORD
-db=0
-enable_ssl=false
-cert = cert/client.crt
-key = cert/client.key
-ca = cert/ca.crt
+# 是否启用 Redis：true / false
+enable=
+# 主机（域名或 IP）
+host=
+# 端口
+port=
+# 访问口令
+password=
+# 库号，常用 0
+db=
+# 是否启用 TLS：true / false
+enable_ssl=
+# TLS 客户端证书、私钥、CA 文件路径（enable_ssl=true 时需要）
+cert=
+key=
+ca=

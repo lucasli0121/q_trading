@@ -2,7 +2,7 @@ tickflow 股票接口配置说明
 ================================
 
 本文件说明 tickflow 数据源接入所需的配置项。
-请自行到 tickflow 官网注册账号后，将真实值填入各模块的 cfg/stock.cfg：
+请到 tickflow 官网注册账号后，将真实值填入各模块的 cfg/stock.cfg：
   - code/q_trading_server/cfg/stock.cfg
   - code/q_trading_work/cfg/stock.cfg
   - code/q_data_proxy/cfg/stock.cfg
@@ -12,12 +12,15 @@ tickflow 股票接口配置说明
 配置项
 ------
 [tickflow]
-api_token=<你的 API Token，形如 tk_xxxxxxxxxxxxxxxxxxxxxxxx>
-server_url=https://api.tickflow.org/v1
-timeout=30
+# API Token
+api_token=
+# 服务地址
+server_url=
+# 请求超时（秒）
+timeout=
 
 安全提示
 --------
-1. 不要把真实 token、账号密码写进任何会被提交的文件（.example 模板只放占位符）。
-2. token 一旦误提交到公开仓库，应立即在 tickflow 后台重置。
+1. 真实 token、账号密码不写进任何会被提交的文件。
+2. token 一旦误提交到公开仓库，应立即在后台重置。
 3. 生产环境建议通过环境变量注入，而不是写死在配置文件里。

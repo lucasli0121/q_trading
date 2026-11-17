@@ -85,10 +85,19 @@ code/THSDataInterface_Windows/
 .git_backup_*/
 
 # ===== 本地真实配置（含明文凭据，禁止提交；模板见同目录 *.example） =====
-code/*/cfg/stock.cfg
-code/*/cfg/cfg.yml
+# 任意层级：模块自身、子目录、打包目录下的真实配置一律忽略
+code/**/cfg/stock.cfg
+code/**/cfg/cfg.yml
+code/**/stock.cfg
 redis.conf
 tickflow 股票接口.txt
+# 提交前自检：git ls-files | grep -E 'stock\.cfg$|cfg\.yml$' 应只输出 *.example
+
+# NiceGUI 会话存储：含登录 token 与用户 ID，属运行数据
+code/**/.nicegui/
+
+# 本地开发工具设置（每台机器不同）
+code/**/.claude/settings.local.json
 
 # 软著申请材料（含源程序与著作权信息，不公开）
 doc/软著/

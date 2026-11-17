@@ -1,62 +1,95 @@
 # ============================================================
-# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+# stock.cfg 配置模板（数据代理）
 #
-# 使用方法：
-#   1) 复制为同目录下的 stock.cfg
+# 用法：
+#   1) 复制为本目录下的 stock.cfg
 #        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
 #        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
-#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
-#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
-#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
-#
-# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+#   2) 按注释逐项填写。模板内所有值一律留空；未填写的必填项
+#      会在启动阶段明确报错。这是刻意设计——避免未配置时
+#      静默连到错误的环境。
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会进入版本库。
 # ============================================================
 
 
 [redis]
-enable=true
-#host=example.com
-host=192.168.1.63
-port=16379
-password=REPLACE_WITH_REDIS_PASSWORD
-db=0
-enable_ssl=false
-cert = cert/client.crt
-key = cert/client.key
-ca = cert/ca.crt
+# 是否启用 Redis：true / false
+enable=
+# 主机（域名或 IP）
+host=
+# 端口
+port=
+# 访问口令
+password=
+# 库号，常用 0
+db=
+# 是否启用 TLS：true / false
+enable_ssl=
+# TLS 客户端证书、私钥、CA 文件路径（enable_ssl=true 时需要）
+cert=
+key=
+ca=
+
 [mongo]
-host=example.com
-#host=192.168.1.63
-port=27017
-username=qshare
-password=REPLACE_WITH_MONGO_PASSWORD
-database=q_share
+# 主机（域名或 IP）
+host=
+# 端口
+port=
+# 认证用户名
+username=
+# 认证口令
+password=
+# 数据库名
+database=
+
 [stock_fetch]
-real_time_sync_interval=6
-minute_sync_interval=2
-sync_workers=5
-real_time_stock_limit=5
+# 实时行情同步间隔（秒）
+real_time_sync_interval=
+# 分钟行情同步间隔（秒）
+minute_sync_interval=
+# 同步线程数
+sync_workers=
+# 实时行情订阅上限（股票只数）
+real_time_stock_limit=
+
 [tickflow]
-api_token=REPLACE_WITH_TICKFLOW_API_TOKEN
-server_url=https://api.tickflow.org/v1
-industry_hq_sync_interval=12
-history_hq_sync_interval=6
-history_hq_sync_number_of_once=1
+# 数据源 API Token
+api_token=
+# 服务地址
+server_url=
+# 行业行情同步间隔（秒）
+industry_hq_sync_interval=
+# 历史行情同步间隔（秒）
+history_hq_sync_interval=
+# 每次同步的历史行情数量
+history_hq_sync_number_of_once=
+
 [akshare]
-industry_hq_sync_interval=120
+# 行业行情同步间隔（秒）
+industry_hq_sync_interval=
+
 [mqtt]
-host=example.com
-#host=192.168.1.63
-port=8883
-#port=1883
-client_id=q_share_mqtt_client_10
-username=q_share
-password=REPLACE_WITH_MQTT_PASSWORD
-need_tls=true
-cert_file=./cert/client.crt
-key_file=./cert/client.key
-ca_file=./cert/ca.crt
+# Broker 主机（域名或 IP）
+host=
+# 端口，TLS 常用 8883，明文常用 1883
+port=
+# 客户端 ID，同一 Broker 上需唯一
+client_id=
+# 用户名
+username=
+# 口令
+password=
+# 是否启用 TLS：true / false
+need_tls=
+# TLS 客户端证书、私钥、CA 文件路径（need_tls=true 时需要）
+cert_file=
+key_file=
+ca_file=
+
 [log]
-config=cfg/log.yaml
+# 日志配置文件路径
+config=
+
 [data_proxy]
-name=q_share_proxy_1
+# 本代理实例名，多实例部署时需唯一
+name=

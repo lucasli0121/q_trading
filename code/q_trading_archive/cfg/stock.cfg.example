@@ -1,42 +1,50 @@
 # ============================================================
-# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+# stock.cfg 配置模板（行情归档）
 #
-# 使用方法：
-#   1) 复制为同目录下的 stock.cfg
+# 用法：
+#   1) 复制为本目录下的 stock.cfg
 #        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
 #        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
-#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
-#   3) 真实 stock.cfg 已被 .gitignore 忽略
-# ============================================================
+#   2) 按注释逐项填写。模板内所有值一律留空；未填写的必填项
+#      会在启动阶段明确报错。这是刻意设计——避免未配置时
+#      静默连到错误的环境。
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会进入版本库。
 #
 # 本进程只读 mongo，不写任何库、不连 redis、不订阅 mqtt。
-# 它把服务端 90 天滚动窗口内的行情，按日转存为本地 parquet 长期留存。
+# 它把服务端滚动窗口内的行情，按日转存为本地 parquet 长期留存。
+# ============================================================
+
 
 [mongo]
-host=example.com
-port=27017
-username=qshare
-password=REPLACE_WITH_MONGO_PASSWORD
-database=q_share
+# 主机（域名或 IP）
+host=
+# 端口
+port=
+# 认证用户名
+username=
+# 认证口令
+password=
+# 数据库名
+database=
 
 [archive]
 # 产物根目录（相对项目根，或写绝对路径）
-data_dir=data
+data_dir=
 
 # 每次运行额外重刷最近 N 个交易日。
 # 盘中写入的当日数据可能不完整，重刷可自愈；0 表示只补缺失日期。
-refresh_days=2
+refresh_days=
 
 # 单次从 mongo 读取的批量大小（游标批大小）
-batch_size=20000
+batch_size=
 
 # 常驻模式（--daemon）每日归档触发时间，24 小时制，取收盘后
-schedule_hour=15
-schedule_minute=30
+schedule_hour=
+schedule_minute=
 
 # --full-refresh 时最多向前回溯的自然日数
-max_lookback_days=400
+max_lookback_days=
 
-# 是否写入空交易日文件（该日库里一条记录都没有）。默认关闭，
-# 便于区分「非交易日」与「漏归档」。
-write_empty_day=false
+# 是否写入空交易日文件（该日库里一条记录都没有）。
+# 开启后可区分「非交易日」与「漏归档」。
+write_empty_day=

@@ -1,44 +1,58 @@
 # ============================================================
-# stock.cfg 示例模板（脱敏，可安全提交到版本库）
+# stock.cfg 配置模板（Web 端）
 #
-# 使用方法：
-#   1) 复制为同目录下的 stock.cfg
+# 用法：
+#   1) 复制为本目录下的 stock.cfg
 #        Windows:  copy cfg\stock.cfg.example cfg\stock.cfg
 #        Linux  :  cp cfg/stock.cfg.example cfg/stock.cfg
-#   2) 把下方所有 REPLACE_WITH_* 占位符替换为真实凭据
-#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会被提交
-#      （改动后可用 `git status --short` 确认它没有出现在变更列表里）
-#
-# 注意：真实凭据曾存在于历史提交中，若仓库曾共享/公开，建议同步轮换凭据。
+#   2) 按注释逐项填写。模板内所有值一律留空；未填写的必填项
+#      会在启动阶段明确报错。这是刻意设计——避免未配置时
+#      静默连到错误的环境。
+#   3) 真实 stock.cfg 已被 .gitignore 忽略，不会进入版本库。
 # ============================================================
 
 
 [server]
-#host=host.docker.internal
-host=example.com
-port=8000
-admin_token=REPLACE_WITH_ADMIN_TOKEN
+# 服务端地址（域名或 IP）
+host=
+# 服务端端口
+port=
+# 服务端管理令牌，需与服务端一致
+admin_token=
+
 [mqtt]
-host=example.com
-#host=192.168.1.63
-port=8883
-#port=1883
-client_id=q_trading_cli_1
-username=q_share
-password=REPLACE_WITH_MQTT_PASSWORD
-need_tls=true
-cert_file=./cert/client.crt
-key_file=./cert/client.key
-ca_file=./cert/ca.crt
+# Broker 主机（域名或 IP）
+host=
+# 端口，TLS 常用 8883，明文常用 1883
+port=
+# 客户端 ID，同一 Broker 上需唯一
+client_id=
+# 用户名
+username=
+# 口令
+password=
+# 是否启用 TLS：true / false
+need_tls=
+# TLS 客户端证书、私钥、CA 文件路径（need_tls=true 时需要）
+cert_file=
+key_file=
+ca_file=
+
 [web]
-listen_host=0.0.0.0
-listen_port=8085
+# 监听地址，如 0.0.0.0
+listen_host=
+# 监听端口
+listen_port=
 # 会话存储签名密钥（NiceGUI storage_secret）。
 # 不配置则每次启动随机生成：更安全，但进程重启后所有会话失效、用户需重新登录。
 # 生产环境请显式配置一个足够随机的值（例如 openssl rand -hex 32 的输出）。
 # 也可用环境变量 Q_TRADING_STORAGE_SECRET 覆盖本项。
-storage_secret=REPLACE_WITH_RANDOM_32_BYTE_HEX
+storage_secret=
+
 [log]
-config=cfg/log.yaml
+# 日志配置文件路径
+config=
+
 [strategy]
-type=趋势追踪, 反弹策略, 网格交易策略, 反转策略, 多因子选股, 基本面策略
+# 页面展示的策略类型，逗号分隔
+type=
