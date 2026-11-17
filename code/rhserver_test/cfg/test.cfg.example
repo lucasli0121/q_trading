@@ -1,0 +1,19 @@
+# ============================================================
+# test.cfg 配置模板（rhserver 联调用）
+#
+# 用法：
+#   1) 复制为本目录下的 test.cfg
+#        Windows:  copy cfg\test.cfg.example cfg\test.cfg
+#        Linux  :  cp cfg/test.cfg.example cfg/test.cfg
+#   2) 按注释逐项填写；真实 test.cfg 已被 .gitignore 排除，不会入库。
+# ============================================================
+
+[server]
+# 服务端地址，含协议与路径，如 https://host:port/v1
+url=
+# 客户端证书路径
+cert=
+
+[log]
+# 日志配置文件路径
+config=

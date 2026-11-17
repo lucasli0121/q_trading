@@ -88,10 +88,10 @@ code/THSDataInterface_Windows/
 # 任意层级：模块自身、子目录、打包目录下的真实配置一律忽略
 code/**/cfg/stock.cfg
 code/**/cfg/cfg.yml
-code/**/stock.cfg
+code/**/*.cfg
 redis.conf
 tickflow 股票接口.txt
-# 提交前自检：git ls-files | grep -E 'stock\.cfg$|cfg\.yml$' 应只输出 *.example
+# 提交前自检：git ls-files | grep -E '\.cfg$|cfg\.yml$' 应只输出 *.example
 
 # NiceGUI 会话存储：含登录 token 与用户 ID，属运行数据
 code/**/.nicegui/

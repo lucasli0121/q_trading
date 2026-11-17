@@ -1,27 +1,32 @@
 /**
- * 全局配置 —— 所有环境相关参数集中在此文件，切环境只改这里。
+ * 全局配置模板 —— 本文件入库，但**不要在这里写真实地址**。
+ *
+ * 构建时由 tools/gen-config.js 把 __BASE_URL__ / __WS_URL__ / __WX_APPID__
+ * 替换为实际值，生成 config/index.js（该产物已被 .gitignore 排除，不入库）。
+ *
+ * 取值优先级：环境变量 > config/.env.local > 脚本缺省值（http://127.0.0.1:8000）。
+ * 非环境类常量（分页、轮询间隔等）直接维护在本模板里。
  *
  * ⚠️ 上线前必读：
- *   微信小程序真机 / 线上环境**只允许 HTTPS**，且域名必须在小程序后台
+ *   微信小程序真机 / 线上环境**只允许 HTTPS/WSS**，且域名必须在小程序后台
  *   「开发管理 → 开发设置 → 服务器域名」里配置（request 合法域名 / socket 合法域名）。
- *   当前 BASE_URL 是 http 的测试地址，仅能在「微信开发者工具 → 详情 → 本地设置 →
- *   不校验合法域名...」勾选后联调，真机与体验版一律不通。
+ *   生成时若 MP_ENV=production，脚本会强制校验地址是否为 https/wss。
  *   上线步骤见 doc/上线步骤.md。
  */
 
 // 后端 FastAPI 服务地址（q_trading_server，默认监听 8000）
-const BASE_URL = 'http://example.com:8000';
+const BASE_URL = '__BASE_URL__';
 
 // 交易信号 WebSocket 网关（后端需实现，见 doc/接口契约.md「小程序新增接口」）
 // 为空字符串时不启用 WS，自动降级为 HTTP 轮询。
-const WS_URL = 'ws://example.com:8000/ws/trade_signal';
+const WS_URL = '__WS_URL__';
 
 module.exports = {
   BASE_URL,
   WS_URL,
 
   // 微信小程序 appId：上线前替换为真实 appId（同时改 project.config.json）
-  WX_APPID: '',
+  WX_APPID: '__WX_APPID__',
 
   // 单次请求超时（毫秒）
   REQUEST_TIMEOUT: 20000,

@@ -1,0 +1,19 @@
+# ============================================================
+# sync.cfg 配置模板（qlib 数据同步）
+#
+# 用法：
+#   1) 复制为本目录下的 sync.cfg
+#        Windows:  copy sync.cfg.example sync.cfg
+#        Linux  :  cp sync.cfg.example sync.cfg
+#   2) 按注释逐项填写；真实 sync.cfg 已被 .gitignore 排除，不会入库。
+# ============================================================
+
+[qlib]
+# 本地 qlib 数据目录（绝对路径）
+data_path=
+# 同步起始日期，格式 YYYY-MM-DD
+start_date=
+
+[log]
+# 日志配置文件路径
+config=

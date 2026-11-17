@@ -1,15 +1,17 @@
 # QTrade 量化交易小程序
 
 微信小程序前端，功能与 `q_trading_cli`（Web 端）保持一致。
-后端复用 `q_trading_server`（FastAPI），**零 npm 依赖、零构建步骤**，克隆下来用微信开发者工具直接打开即可运行。
+后端复用 `q_trading_server`（FastAPI），**零 npm 依赖**；只有一步配置生成，把后台地址在构建时注入，真实地址不入库。
 
 ---
 
 ## 快速开始
 
 ```bash
-# 1. 选一个后台地址（默认已指向开发机）
-#    编辑 config/index.js 里的 BASE_URL / WS_URL
+# 1. 生成本地配置：把后台地址写进 config/.env.local（该文件不入库）
+cp config/.env.local.example config/.env.local   # Windows: copy config\.env.local.example config\.env.local
+#    编辑 MP_BASE_URL / MP_WS_URL（留空则用缺省 http://127.0.0.1:8000）
+node tools/gen-config.js
 
 # 2. 结构自检（可选，1 秒跑完，不需要装依赖）
 node tools/check.js
@@ -41,14 +43,46 @@ node tools/check.js
 
 ```
 mini_program/
-├── config/index.js      ★ 环境配置总入口（地址、轮询间隔、分页）
+├── config/
+│   ├── index.template.js   ★ 配置模板（入库）：地址用占位符，常量在此维护
+│   ├── .env.local.example  本机配置模板（入库，复制为 .env.local）
+│   ├── .env.local          本机真实地址（不入库）
+│   └── index.js            构建产物（不入库，由 tools/gen-config.js 生成）
 ├── utils/               纯逻辑层：请求 / 接口 / 缓存 / 格式化 / 主题 / 信号通道
 ├── components/          8 个自研组件（导航、空态、图表、状态、行情行、骨架屏、字段、标签）
 ├── pages/               15 个页面
 ├── custom-tab-bar/      自定义底部导航
-├── tools/check.js       离线静态自检
+├── tools/               离线静态自检 check.js、配置生成 gen-config.js
 └── doc/                 代码说明 / 接口契约 / 上线步骤
 ```
+
+---
+
+## 环境配置（构建时注入）
+
+真实服务地址不写进仓库。配置分两层：
+
+| 文件 | 是否入库 | 作用 |
+| --- | --- | --- |
+| `config/index.template.js` | 是 | 模板与常量（分页、轮询间隔），地址处是占位符 |
+| `config/.env.local.example` | 是 | 本机配置样板 |
+| `config/.env.local` | 否 | 本机真实地址，构建输入 |
+| `config/index.js` | 否 | 构建产物，小程序实际 require 的文件 |
+
+生成命令：
+
+```bash
+node tools/gen-config.js
+```
+
+取值优先级：环境变量 > `.env.local` > 缺省值 `http://127.0.0.1:8000`。
+
+```bash
+# 也可以直接用环境变量（CI / 发布机）
+MP_ENV=production MP_BASE_URL=https://api.example.com node tools/gen-config.js
+```
+
+`MP_ENV=production` 时会强制校验：`BASE_URL` 必须是 `https://`，`WS_URL` 必须是 `wss://`，不满足直接失败退出。`MP_WS_URL` 显式留空表示关闭 WebSocket，自动降级为 HTTP 轮询。
 
 ---
 

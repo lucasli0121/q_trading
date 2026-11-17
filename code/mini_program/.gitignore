@@ -2,6 +2,12 @@
 node_modules/
 miniprogram_npm/
 
+# 构建时注入的配置（由 tools/gen-config.js 从 index.template.js 生成）
+config/index.js
+
+# 本机环境配置（含真实服务地址，不入库；模板见 config/.env.local.example）
+config/.env.local
+
 # 微信开发者工具本地产物
 project.private.config.json
 .idea/
