@@ -95,6 +95,9 @@ redis.conf
 tickflow 股票接口.txt
 # 提交前自检：git ls-files | grep -E '\.cfg$|cfg\.yml$' 应只输出 *.example
 
+# 本机 docker 启动脚本（含容器口令与宿主机路径，如 MYSQL_ROOT_PASSWORD / RABBITMQ_DEFAULT_PASS）
+make*_docker
+
 # NiceGUI 会话存储：含登录 token 与用户 ID，属运行数据
 code/**/.nicegui/
 
