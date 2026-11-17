@@ -89,3 +89,6 @@ code/*/cfg/stock.cfg
 code/*/cfg/cfg.yml
 redis.conf
 tickflow 股票接口.txt
+
+# 软著申请材料（含源程序与著作权信息，不公开）
+doc/软著/

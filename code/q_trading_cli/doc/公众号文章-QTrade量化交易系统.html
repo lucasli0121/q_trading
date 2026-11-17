@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QTrade 量化交易系统 · Web 客户端</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #f4f5f7;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+                 "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+    color: #2c2c2a;
+    font-size: 16px;
+    line-height: 1.9;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 700px; margin: 0 auto; padding: 0 20px 72px; }
+  .article {
+    background: #fff;
+    padding: 48px 44px 56px;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 12px 32px rgba(0,0,0,.05);
+  }
+  @media (max-width: 560px) {
+    .article { padding: 32px 20px 40px; }
+    body { font-size: 15px; }
+  }
+
+  h1 {
+    font-size: 26px; line-height: 1.5; font-weight: 600;
+    margin: 0 0 10px; letter-spacing: -.2px; color: #14140f;
+  }
+  .sub {
+    font-size: 14px; color: #888780; margin: 0 0 8px;
+    padding-bottom: 22px; border-bottom: 2px solid #f0efec;
+  }
+  .meta { font-size: 13px; color: #b4b2a9; margin: 0 0 34px; }
+
+  h2 {
+    font-size: 18px; font-weight: 600; margin: 44px 0 16px;
+    padding-left: 12px; border-left: 3px solid #185fa5; color: #14140f;
+    line-height: 1.5;
+  }
+  h3 { font-size: 16px; font-weight: 600; margin: 26px 0 10px; color: #1a1a17; }
+  p { margin: 0 0 16px; }
+  strong { font-weight: 600; color: #14140f; }
+  em { font-style: normal; color: #185fa5; font-weight: 500; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px; background: #f5f4f0; padding: 2px 6px;
+    border-radius: 3px; color: #4a1b0c;
+  }
+  ul { margin: 0 0 16px; padding-left: 20px; }
+  li { margin-bottom: 7px; }
+
+  .lead {
+    font-size: 17px; color: #3d3d38; background: #faf9f6;
+    border-left: 3px solid #d3d1c7; padding: 16px 20px; margin: 0 0 30px;
+  }
+
+  .figure {
+    margin: 26px 0 30px; padding: 26px 20px;
+    border: 1.5px dashed #c9c7be; border-radius: 6px;
+    background: #fbfaf8; text-align: center;
+  }
+  .figure .no {
+    display: inline-block; font-size: 12px; letter-spacing: .5px;
+    color: #b4b2a9; border: 1px solid #e3e1da; border-radius: 20px;
+    padding: 3px 12px; margin-bottom: 10px;
+  }
+  .figure .desc { font-size: 14px; color: #6b6a64; line-height: 1.7; }
+  .figure .desc b { color: #185fa5; font-weight: 500; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0 26px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    border: 1px solid #ecebe4; border-radius: 8px; padding: 16px 18px; background: #fdfdfc;
+  }
+  .card .t { font-size: 15px; font-weight: 600; color: #14140f; margin-bottom: 4px; }
+  .card .t span {
+    display: inline-block; width: 20px; height: 20px; line-height: 20px;
+    text-align: center; border-radius: 4px; background: #e6f1fb; color: #185fa5;
+    font-size: 12px; margin-right: 8px; font-weight: 600;
+  }
+  .card .d { font-size: 14px; color: #5f5e5a; line-height: 1.75; }
+
+  table { width: 100%; border-collapse: collapse; margin: 18px 0 26px; font-size: 14.5px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid #efeee8; }
+  th { color: #888780; font-weight: 500; font-size: 13px; background: #faf9f6; }
+  td:first-child { color: #14140f; font-weight: 500; white-space: nowrap; }
+  td code { font-size: 12.5px; }
+
+  .note {
+    font-size: 14px; color: #5f5e5a; background: #faf9f6;
+    border-radius: 6px; padding: 14px 18px; margin: 20px 0;
+  }
+  .note b { color: #854f0b; font-weight: 600; }
+
+  .tags { margin: 0 0 30px; }
+  .tag {
+    display: inline-block; font-size: 12.5px; color: #5f5e5a;
+    background: #f1efe8; border-radius: 3px; padding: 3px 9px; margin: 0 6px 6px 0;
+  }
+  .tag.on { background: #e6f1fb; color: #185fa5; }
+  .tag.on2 { background: #e1f5ee; color: #0f6e56; }
+
+  .foot {
+    margin-top: 46px; padding-top: 22px; border-top: 1px solid #efeee8;
+    font-size: 13.5px; color: #888780; line-height: 1.9;
+  }
+  .foot code { font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<article class="article">
+
+  <h1>你的策略今天赚了多少，60 秒内看完</h1>
+  <p class="sub">QTrade 量化交易系统 · Web 客户端</p>
+  <p class="meta">产品介绍 / 2026</p>
+
+  <p class="lead">策略跑在服务器上，凌晨两点触发了信号，仓位变了。你要么一直盯着屏幕，要么赌一封邮件会准时到。第二天早上三封未读，一封说"运行中"，一封说"收益 -3.7%"，一封说"某个指标缺失"——你想知道今天该不该停掉这个策略，但这些邮件什么都告诉你不了。</p>
+
+  <div class="figure">
+    <div class="no">配图 1</div>
+    <div class="desc">登录页全屏：<b>动态量化终端风背景</b>，登录卡片偏左</div>
+  </div>
+
+  <h2>它是什么</h2>
+
+  <p>QTrade 分三层：策略引擎（q_trading_work）定时取数算信号下单，数据接口层（q_trading_server）用 FastAPI + MongoDB + Redis 对外供数，<em>你正在用的这个 q_trading_cli 是 Web 客户端</em>。</p>
+
+  <p>它的边界很明确：<strong>不碰数据库、不跑策略，只做展示与干预。</strong>好处是客户端可以独立部署、独立发版、独立回滚——改界面文案不用动交易引擎，引擎半夜崩了也不影响你查历史数据。反过来，客户端出 bug 顶多看到数字不对，不会误下单。</p>
+
+  <div class="tags">
+    <span class="tag on">Python 3.12</span>
+    <span class="tag on">NiceGUI 3.x / FastAPI</span>
+    <span class="tag on2">httpx → REST</span>
+    <span class="tag on2">MQTT 实时推送</span>
+    <span class="tag">ECharts</span>
+    <span class="tag">Docker / PyInstaller</span>
+  </div>
+
+  <h2>什么时候会打开它</h2>
+
+  <div class="grid">
+    <div class="card">
+      <div class="t"><span>1</span>盘前 · 今天买什么</div>
+      <div class="d">策略选股页按实例分 Tab，看当天选出的股票、现价、涨跌幅。红涨绿跌，和所有 A 股软件一致。顺手看股票池同步是否正常。</div>
+    </div>
+    <div class="card">
+      <div class="t"><span>2</span>盘中 · 信号与启停</div>
+      <div class="d">监控页顶部四张信号统计卡，中间策略卡片显示已运行多久、持仓数、浮动盈亏，底部实时信号表：时间 / 策略 / 代码（带名称）/ 类型 / 成交价 / 盈亏率 / 原因。信号由 MQTT 推来，看到 undesired 信号直接在卡片上启停。</div>
+    </div>
+    <div class="card">
+      <div class="t"><span>3</span>盘后 · 这周怎么样</div>
+      <div class="d">仪表盘的累计收益曲线，右上角下拉选一个策略叠加琥珀色对比线，日期取并集，缺数据断线不补 0。回测记录页看指标与逐笔成交。</div>
+    </div>
+    <div class="card">
+      <div class="t"><span>4</span>离开屏幕之后</div>
+      <div class="d">个人喜好页开企业微信 / 短信推送，各配一个推送星级滑块（0 ~ 5.0 星，步长 0.5，<b>0 表示不限</b>）。低质信号刷屏是监控系统最常见的死法。</div>
+    </div>
+  </div>
+
+  <div class="figure">
+    <div class="no">配图 2</div>
+    <div class="desc">仪表盘收益曲线 + 对比副线，或监控页信号表</div>
+  </div>
+
+  <h2>它给谁用</h2>
+
+  <p>主要用户是<strong>自建策略的量化交易者</strong>：懂 Python 和 K 线，用现成模板（强势反弹、趋势追踪、网格交易、多因子选股）跑实盘，只是不想每次查数据都开终端 curl 接口。他们要的是"策略跑得怎么样、我该管还是该放"。</p>
+
+  <p>次要用户是<strong>跟着信号做决策的人</strong>，不改参数，只关心今天出了什么信号、选了哪几只票。</p>
+
+  <p>不适合的场景也要说清楚：需要自己写因子代码、需要 tick 级数据、需要 24×7 无人值守盯盘——那是策略引擎和小程序端的活。移动端由微信小程序承担，接同一套后端 API。</p>
+
+  <div class="figure">
+    <div class="no">配图 3</div>
+    <div class="desc">微信小程序首页，与 Web 端仪表盘内容一致</div>
+  </div>
+
+  <h2>功能地图</h2>
+
+  <table>
+    <thead><tr><th>页面</th><th>路径</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td>仪表盘</td><td><code>/</code></td><td>收益曲线、策略统计、今日信号、运行状态、系统消息</td></tr>
+      <tr><td>策略列表</td><td><code>/strategies</code></td><td>创建 / 编辑策略、启停、持仓与订单、进回测记录</td></tr>
+      <tr><td>策略监控</td><td><code>/strategy-monitor</code></td><td>策略卡片 + 实时信号流 + 卡片内启停</td></tr>
+      <tr><td>策略选股</td><td><code>/strategy-select</code></td><td>按策略查当天选股结果</td></tr>
+      <tr><td>回测记录</td><td><code>/strategy-backtest</code></td><td>回测指标 + 逐笔成交明细</td></tr>
+      <tr><td>股票池</td><td><code>/stock-pools</code></td><td>池子管理、自动更新状态</td></tr>
+      <tr><td>行情</td><td><code>/stock-quotes</code></td><td>按池子分 Tab 看行情</td></tr>
+      <tr><td>个人喜好</td><td><code>/settings-preferences</code></td><td>主题、推送通道、推送星级</td></tr>
+      <tr><td>黑名单</td><td><code>/settings-blacklist</code></td><td>批量排除股票并记录原因</td></tr>
+    </tbody>
+  </table>
+
+  <h3>四个做得细的地方</h3>
+
+  <ul>
+    <li><strong>创建策略是一个表单，不是向导。</strong>选模板卡片 → 配股票池 → 填参数 → 勾"立即运行"（默认勾上，创建即 running），不用创建完再去列表页改一遍状态。</li>
+    <li><strong>回测记录页的返回按钮跟随入口。</strong>从监控进就回监控，从列表进就回列表，侧边栏高亮也跟着变。</li>
+    <li><strong>持仓盈亏是现算的。</strong>接口返回的盈亏率是<em>成交时点快照</em>，买入写入、卖出才重算，直接显示就是过期数字。页面一律用「成本价 + 数量 + 实时价」现推，缺价显示 <code>--</code>。</li>
+    <li><strong>状态选项不会静默改掉你的设置。</strong>后端 <code>error</code> 是故障态不可选，但若某策略当前恰是 error，编辑框会临时补进下拉——否则会出现"下拉空白、保存时写回旧值"。</li>
+  </ul>
+
+  <div class="figure">
+    <div class="no">配图 4</div>
+    <div class="desc">侧边栏展开全图（标出九个入口），或策略列表<b>编辑对话框的「运行状态」下拉打开状态</b></div>
+  </div>
+
+  <h2>体验上的几个决定</h2>
+
+  <ul>
+    <li><strong>颜色全部走设计令牌。</strong>一份 <code>TOKENS</code> 字典，一个变量名对应深浅两套值，切主题会话级即时生效、零重渲染。图表配色单独一套 API，因为 ECharts 画在 canvas 上读不到 CSS 变量。</li>
+    <li><strong>数字错误会说人话。</strong>4xx 会提取后端 <code>detail</code> 显示，而不是甩一串 <code>Client error '409 Conflict' for url ...</code>。401 弹确认框跳登录。</li>
+    <li><strong>刷新不会打爆后端。</strong>行情 30 秒 TTL、策略表 60 秒会话节流，信号靠推送；收益曲线只在构建、切换周期、切换对比策略时重算，不做无意义定时刷新。</li>
+    <li><strong>深色模式即时保存</strong>，不是"改了要记得点保存"。</li>
+  </ul>
+
+  <div class="figure">
+    <div class="no">配图 5</div>
+    <div class="desc">深色模式下的策略监控页：信号表与卡片配色</div>
+  </div>
+
+  <h2>它是怎么被验证的</h2>
+
+  <p>这类界面最怕"看着对、数字错"。所以验证分三层：</p>
+
+  <ul>
+    <li><strong>桩冒烟</strong>——把 nicegui、app_context 等依赖替成桩，<em>真跑一次页面入口函数</em>，断言不抛异常、DOM 结构符合预期。六个页面各一份（概要 115 项、监控 82 项、回测 91 项、列表对话框 64 项、喜好页 30 项）。</li>
+    <li><strong>反向验证</strong>——把源码指向一份"故意改坏"的副本再跑，<em>要求它必须报错</em>。"当天多条记录相加"这种真实发生过的口径错误被写成专门用例守着，目前 101 个改坏用例全部被抓到。它验证的不是"现在对"，而是"以后改坏了会被立刻发现"。</li>
+    <li><strong>真机对账</strong>——涉及"数字对不对"的结论必须起真实实例、连真实后端、读渲染后的图表数据，与独立复算逐点比对。桩检查只能证明不抛异常。</li>
+  </ul>
+
+  <div class="figure">
+    <div class="no">配图 6</div>
+    <div class="desc">左：仪表盘曲线截图；右：复算脚本输出的逐点对照表</div>
+  </div>
+
+  <h2>最后</h2>
+
+  <p>量化交易真正的瓶颈通常不在算信号，而在<strong>看懂并干预</strong>：收益是多少、哪些策略该停、今天出了什么信号、浮盈是正是负。</p>
+
+  <p>QTrade 把这四件事收进一个登录后即用的界面，并且刻意不碰交易本身。<em>前端可以随便改，引擎必须稳。</em>这条边界是系统能长期跑下去的前提。</p>
+
+  <p>如果你也在跑策略，欢迎打开看看。</p>
+
+  <div class="figure">
+    <div class="no">配图 7</div>
+    <div class="desc">收尾全站图：仪表盘 + 侧边栏 + 收益曲线</div>
+  </div>
+
+  <div class="foot">
+    <strong>技术速览</strong><br>
+    运行环境 Python 3.12 · 界面 NiceGUI 3.x / FastAPI / uvicorn · 数据 httpx → q_trading_server · 推送 paho-mqtt（双向 TLS）· 图表 ECharts · 配置 <code>cfg/stock.cfg</code> + <code>cfg/log.yaml</code> · 部署 Docker / PyInstaller onedir<br><br>
+    仓库：前端 <code>q_trading_cli</code> · 后端 <code>q_trading_server</code> · 引擎 <code>q_trading_work</code> · 小程序 <code>mini_program</code>
+  </div>
+
+</article>
+</div>
+</body>
+</html>
